@@ -2,13 +2,13 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/walt-verweij/herdr-auto-resume/internal/detection"
-	"github.com/walt-verweij/herdr-auto-resume/internal/tmux"
+	"github.com/walt-verweij/herdr-auto-resume/internal/coordinator"
+	runtimeapi "github.com/walt-verweij/herdr-auto-resume/internal/runtime"
+	tmuxadapter "github.com/walt-verweij/herdr-auto-resume/internal/runtime/tmux"
 )
 
 const pollInterval = 3 * time.Second
@@ -50,65 +50,62 @@ var (
 
 // Messages
 type layoutUpdateMsg struct {
-	layout *tmux.Layout
-	err    error
+	panes []runtimeapi.Pane
+	err   error
 }
 
 type pollTickMsg time.Time
 
 type initMsg struct {
-	ownPaneID   string
-	ownWindowID string
-	layout      *tmux.Layout
-	err         error
+	ownPaneID string
+	panes     []runtimeapi.Pane
+	err       error
 }
 
 type Model struct {
-	version          string
-	width            int
-	height           int
-	layout           *tmux.Layout
-	selectedPaneID   string
-	ownPaneID        string    // The pane running autoclaude (excluded from detection)
-	ownWindowID      string    // The window to monitor (pinned at startup)
-	err              error
-	errTime          time.Time // When the error occurred (for auto-clear)
-	testPattern      string    // Test mode: trigger on this string instead of rate limit
-	lastContinueSent time.Time // When we last sent a continue command
-	lastContinuePane string    // Which pane we sent it to
-	showHelp         bool      // Whether to show the help overlay
+	version        string
+	width          int
+	height         int
+	rt             *tmuxadapter.Adapter
+	coord          *coordinator.Coordinator
+	panes          []runtimeapi.Pane
+	selectedPaneID string
+	ownPaneID      string // The pane running autoclaude (excluded from detection)
+	testPattern    string
+	dryRun         bool
+	err            error
+	errTime        time.Time // When the error occurred (for auto-clear)
+	showHelp       bool      // Whether to show the help overlay
 }
 
-func New(version string, testPattern string) Model {
+func New(version, testPattern string, rt *tmuxadapter.Adapter, dryRun bool) Model {
 	return Model{
 		version:     version,
+		rt:          rt,
 		testPattern: testPattern,
+		dryRun:      dryRun,
 		width:       80,
 		height:      24,
+		coord:       coordinator.New(rt, coordinator.Config{TestPattern: testPattern, DryRun: dryRun}),
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return doInit
+	return m.doInit
 }
 
-func doInit() tea.Msg {
-	ownPaneID, err := tmux.CurrentPaneID()
+func (m Model) doInit() tea.Msg {
+	ownPaneID, err := m.rt.SelfPaneID()
 	if err != nil {
 		return initMsg{err: err}
 	}
 
-	ownWindowID, err := tmux.CurrentWindowID()
+	panes, err := m.rt.ListPanes()
 	if err != nil {
 		return initMsg{ownPaneID: ownPaneID, err: err}
 	}
 
-	layout, err := tmux.ListPanes(ownWindowID)
-	if err != nil {
-		return initMsg{ownPaneID: ownPaneID, ownWindowID: ownWindowID, err: err}
-	}
-
-	return initMsg{ownPaneID: ownPaneID, ownWindowID: ownWindowID, layout: layout}
+	return initMsg{ownPaneID: ownPaneID, panes: panes}
 }
 
 func tickCmd() tea.Cmd {
@@ -117,10 +114,10 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-func fetchLayoutCmd(windowID string) tea.Cmd {
+func (m Model) fetchLayoutCmd() tea.Cmd {
 	return func() tea.Msg {
-		layout, err := tmux.ListPanes(windowID)
-		return layoutUpdateMsg{layout: layout, err: err}
+		panes, err := m.rt.ListPanes()
+		return layoutUpdateMsg{panes: panes, err: err}
 	}
 }
 
@@ -139,13 +136,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "h", "?":
 			m.showHelp = true
 		case "left":
-			m.moveSelection(tmux.DirLeft)
+			m.moveSelection(runtimeapi.DirLeft)
 		case "right":
-			m.moveSelection(tmux.DirRight)
+			m.moveSelection(runtimeapi.DirRight)
 		case "up":
-			m.moveSelection(tmux.DirUp)
+			m.moveSelection(runtimeapi.DirUp)
 		case "down":
-			m.moveSelection(tmux.DirDown)
+			m.moveSelection(runtimeapi.DirDown)
 		case "tab":
 			m.cycleMode()
 		case "a":
@@ -154,7 +151,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.disableAll()
 		case "r":
 			m.pollPanes()
-			return m, fetchLayoutCmd(m.ownWindowID)
+			return m, m.fetchLayoutCmd()
 		}
 
 	case tea.WindowSizeMsg:
@@ -168,8 +165,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.ownPaneID = msg.ownPaneID
-		m.ownWindowID = msg.ownWindowID
-		m.updateLayout(msg.layout)
+		m.coord = coordinator.New(m.rt, coordinator.Config{
+			OwnPaneID:   m.ownPaneID,
+			TestPattern: m.testPattern,
+			DryRun:      m.dryRun,
+		})
+		m.updateLayout(msg.panes)
 		m.pollPanes() // Poll immediately
 		return m, tickCmd()
 
@@ -178,7 +179,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			m.errTime = time.Now()
 		} else {
-			m.updateLayout(msg.layout)
+			m.updateLayout(msg.panes)
 		}
 
 	case pollTickMsg:
@@ -187,205 +188,59 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 		}
 		m.pollPanes()
-		return m, tea.Batch(fetchLayoutCmd(m.ownWindowID), tickCmd())
+		return m, tea.Batch(m.fetchLayoutCmd(), tickCmd())
 	}
 
 	return m, nil
 }
 
 func (m *Model) pollPanes() {
-	if m.layout == nil {
+	if m.coord != nil {
+		m.coord.Poll()
+	}
+}
+
+func (m *Model) updateLayout(panes []runtimeapi.Pane) {
+	m.panes = append([]runtimeapi.Pane(nil), panes...)
+	if m.coord != nil {
+		m.coord.SetPanes(panes)
+	}
+	if len(panes) > 0 && runtimeapi.PaneByID(panes, m.selectedPaneID) == nil {
+		m.selectedPaneID = panes[0].ID
+	}
+}
+
+func (m *Model) moveSelection(dir runtimeapi.Direction) {
+	if m.coord == nil {
 		return
 	}
 
-	for _, pane := range m.layout.Panes {
-		// Skip our own pane
-		if pane.ID == m.ownPaneID {
-			pane.HasClaudeCode = false
-			continue
-		}
-
-		content, err := tmux.CapturePane(pane.ID)
-		if err != nil {
-			continue
-		}
-
-		pane.HasClaudeCode = detection.IsClaudeCode(content)
-
-		// Check rate limit status for Claude Code panes
-		if pane.HasClaudeCode {
-			status := detection.CheckRateLimit(content)
-
-			// Track rate limit state
-			wasLimited := pane.IsRateLimited
-			pane.IsRateLimited = status.IsLimited
-			pane.RateLimitResets = status.ResetsAt
-			pane.RateLimitTime = status.ResetTime
-
-			// Reset ContinueSent and LastPeriodicContinue when a new rate limit appears
-			if !wasLimited && status.IsLimited {
-				pane.ContinueSent = false
-				pane.LastPeriodicContinue = time.Time{}
-			}
-
-			// Auto-continue logic for rate-limited panes in auto mode
-			if pane.IsRateLimited && pane.Mode == tmux.ModeContinueOnRateLimit {
-				now := time.Now()
-
-				if !pane.RateLimitTime.IsZero() {
-					// Known reset time: send continue when time has passed
-					if !pane.ContinueSent && now.After(pane.RateLimitTime) {
-						m.sendContinue(pane.ID)
-						pane.ContinueSent = true
-					}
-				} else {
-					// Unknown reset time: send continue every 15 minutes
-					periodicInterval := 15 * time.Minute
-					if pane.LastPeriodicContinue.IsZero() || now.Sub(pane.LastPeriodicContinue) >= periodicInterval {
-						m.sendContinue(pane.ID)
-						pane.LastPeriodicContinue = now
-					}
-				}
-			}
-
-			// Test mode: trigger on test pattern (with cooldown)
-			if m.testPattern != "" &&
-				strings.Contains(content, m.testPattern) &&
-				pane.Mode == tmux.ModeContinueOnRateLimit &&
-				!pane.ContinueSent {
-				m.sendContinue(pane.ID)
-				pane.ContinueSent = true
-			}
-		} else {
-			pane.IsRateLimited = false
-			pane.RateLimitResets = ""
-			pane.RateLimitTime = time.Time{}
-			pane.ContinueSent = false
-			pane.LastPeriodicContinue = time.Time{}
-		}
-	}
-}
-
-// sendContinue sends the continue command sequence to a pane
-func (m *Model) sendContinue(paneID string) {
-	// Send: Escape (dismiss any menu), wait for UI to settle, then "continue", Enter
-	_ = tmux.SendKeys(paneID, "Escape")
-	time.Sleep(100 * time.Millisecond) // Wait for Escape to be processed
-	_ = tmux.SendKeys(paneID, "continue")
-	_ = tmux.SendKeys(paneID, "Enter")
-
-	// Track for UI feedback
-	m.lastContinueSent = time.Now()
-	m.lastContinuePane = paneID
-}
-
-func (m *Model) updateLayout(layout *tmux.Layout) {
-	// Preserve state from old layout
-	if m.layout != nil && layout != nil {
-		for _, newPane := range layout.Panes {
-			if oldPane := m.layout.PaneByID(newPane.ID); oldPane != nil {
-				newPane.Mode = oldPane.Mode
-				newPane.HasClaudeCode = oldPane.HasClaudeCode
-				newPane.IsRateLimited = oldPane.IsRateLimited
-				newPane.RateLimitResets = oldPane.RateLimitResets
-				newPane.RateLimitTime = oldPane.RateLimitTime
-				newPane.ContinueSent = oldPane.ContinueSent
-				newPane.LastPeriodicContinue = oldPane.LastPeriodicContinue
-			}
-		}
-	}
-
-	m.layout = layout
-
-	// Ensure we have a selected pane
-	if layout != nil && len(layout.Panes) > 0 {
-		// Keep current selection if still valid
-		if m.selectedPaneID != "" && layout.PaneByID(m.selectedPaneID) != nil {
-			return
-		}
-		// Otherwise select first pane
-		m.selectedPaneID = layout.Panes[0].ID
-	}
-}
-
-func (m *Model) moveSelection(dir tmux.Direction) {
-	if m.layout == nil {
-		return
-	}
-
-	current := m.layout.PaneByID(m.selectedPaneID)
+	current := runtimeapi.PaneByID(m.panes, m.selectedPaneID)
 	if current == nil {
 		return
 	}
 
-	next := m.layout.PaneInDirection(current, dir)
+	next := runtimeapi.PaneInDirection(m.panes, current, dir)
 	if next != nil {
 		m.selectedPaneID = next.ID
 	}
 }
 
 func (m *Model) cycleMode() {
-	if m.layout == nil {
-		return
+	if m.coord != nil {
+		m.coord.ToggleMode(m.selectedPaneID)
 	}
-
-	pane := m.layout.PaneByID(m.selectedPaneID)
-	if pane == nil {
-		return
-	}
-
-	// Only allow mode changes on Claude Code panes
-	if !pane.HasClaudeCode {
-		return
-	}
-
-	if pane.Mode == tmux.ModeOff {
-		pane.Mode = tmux.ModeContinueOnRateLimit
-		// Check rate limit immediately when enabling
-		m.checkPaneRateLimit(pane)
-	} else {
-		pane.Mode = tmux.ModeOff
-	}
-}
-
-// checkPaneRateLimit checks the rate limit status for a single pane
-func (m *Model) checkPaneRateLimit(pane *tmux.Pane) {
-	if pane == nil || pane.ID == m.ownPaneID {
-		return
-	}
-
-	content, err := tmux.CapturePane(pane.ID)
-	if err != nil {
-		return
-	}
-
-	status := detection.CheckRateLimit(content)
-	pane.IsRateLimited = status.IsLimited
-	pane.RateLimitResets = status.ResetsAt
-	pane.RateLimitTime = status.ResetTime
-	pane.ContinueSent = false
 }
 
 func (m *Model) enableAll() {
-	if m.layout == nil {
-		return
-	}
-	for _, pane := range m.layout.Panes {
-		if pane.HasClaudeCode {
-			pane.Mode = tmux.ModeContinueOnRateLimit
-			m.checkPaneRateLimit(pane)
-		}
+	if m.coord != nil {
+		m.coord.EnableAll()
 	}
 }
 
 func (m *Model) disableAll() {
-	if m.layout == nil {
-		return
-	}
-	for _, pane := range m.layout.Panes {
-		if pane.HasClaudeCode {
-			pane.Mode = tmux.ModeOff
-		}
+	if m.coord != nil {
+		m.coord.DisableAll()
 	}
 }
 
@@ -422,17 +277,22 @@ func (m Model) View() string {
 		mainHeight = 3
 	}
 
+	states := []coordinator.PaneState(nil)
+	if m.coord != nil {
+		states = m.coord.Snapshot()
+	}
+
 	// Render content
 	var content string
 	if m.err != nil {
 		content = errorStyle.Render(fmt.Sprintf("Error: %v", m.err))
-	} else if m.layout == nil || len(m.layout.Panes) == 0 {
+	} else if len(states) == 0 {
 		content = dimTextStyle.Render("No panes found")
 	} else {
 		// Render the ASCII layout
-		layoutWidth := mainWidth - 4  // Account for padding
+		layoutWidth := mainWidth - 4 // Account for padding
 		layoutHeight := mainHeight - 2
-		content = renderLayout(m.layout, m.selectedPaneID, layoutWidth, layoutHeight)
+		content = renderLayout(states, m.selectedPaneID, layoutWidth, layoutHeight)
 	}
 
 	mainPane := mainPaneStyle.
@@ -444,20 +304,23 @@ func (m Model) View() string {
 	var statusText string
 
 	// Show "continue sent" message for 20 seconds after sending
-	if !m.lastContinueSent.IsZero() && time.Since(m.lastContinueSent) < 20*time.Second {
-		statusText = lipgloss.NewStyle().Foreground(lipgloss.Color("#f1fa8c")).Bold(true).Render("↳ continue sent!")
-	} else if m.layout != nil {
-		if pane := m.layout.PaneByID(m.selectedPaneID); pane != nil {
-			if pane.HasClaudeCode {
+	if m.coord != nil {
+		if action, ok := m.coord.LastAction(); ok && time.Since(action.Time) < 20*time.Second {
+			statusText = lipgloss.NewStyle().Foreground(lipgloss.Color("#f1fa8c")).Bold(true).Render("↳ continue sent!")
+		} else {
+			for _, state := range states {
+				if state.Pane.ID != m.selectedPaneID || !state.HasClaudeCode {
+					continue
+				}
 				// Always show auto-continue status first
-				if pane.Mode == tmux.ModeContinueOnRateLimit {
+				if state.Mode == coordinator.ModeAuto {
 					statusText = lipgloss.NewStyle().Foreground(lipgloss.Color("#50fa7b")).Render("● Auto-continue enabled")
 					// Add rate limit info on same line if applicable (only when auto mode)
-					if pane.IsRateLimited {
-						if pane.ContinueSent {
+					if state.IsRateLimited {
+						if state.ContinueSent {
 							statusText += lipgloss.NewStyle().Foreground(lipgloss.Color("#f1fa8c")).Bold(true).Render(" continue sent")
-						} else if pane.RateLimitResets != "" {
-							statusText += errorStyle.Render(" resets " + pane.RateLimitResets)
+						} else if state.RateLimitResets != "" {
+							statusText += errorStyle.Render(" resets " + state.RateLimitResets)
 						} else {
 							statusText += errorStyle.Render(" rate limited")
 						}
@@ -465,6 +328,7 @@ func (m Model) View() string {
 				} else {
 					statusText = dimTextStyle.Render("○ Auto-continue disabled")
 				}
+				break
 			}
 		}
 	}
