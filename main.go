@@ -22,7 +22,9 @@ func main() {
 func runCLI(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		switch args[0] {
-		case "run", "doctor":
+		case "run":
+			return runCommand(args[1:], stdout, stderr)
+		case "doctor":
 			fmt.Fprintf(stderr, "%s: not implemented\n", args[0])
 			return 2
 		case "version":
