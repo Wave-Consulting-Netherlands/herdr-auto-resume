@@ -86,6 +86,20 @@ Fork remote: `https://github.com/walt-verweij/herdr-auto-resume` (origin);
   ?    github.com/walt-verweij/herdr-auto-resume/internal/tui [no test files]
   ```
 
+- 2026-07-30, Phase 2 live E2E on this host (herdr 0.7.5, protocol 17, server running):
+  - `herdr-auto-resume doctor` → all 6 checks PASS (binary, socket, status/protocol,
+    adapter round-trip decoded 6 panes, schema JSON, self-pane `wA:p1` detected with
+    self-exclusion).
+  - Dry-run: scratch workspace `wB`, pane staged with the Claude-prompt fixture +
+    `PING-E2E-MARKER`; `run --pane wB:p1 --dry-run --test-pattern PING-E2E-MARKER
+    --interval 1s` → exactly one `DRY-RUN` action line, zero input delivered to the pane.
+  - Live send: same setup without `--dry-run` → exactly one action; pane received
+    escape → "continue" → enter. (In the zsh scratch pane the leading `c` was consumed
+    by vi-mode Escape handling — an artifact of testing against a shell; a real Claude
+    pane consumes Escape harmlessly. Upstream tmux behavior is identical.)
+  - Latch verified: no duplicate sends across subsequent polls; clean exit on SIGTERM.
+  - Scratch workspace closed after the test.
+
 ## Next task
 
 BRIEF.md Phase 3 — persistent scheduler and safety gates (state machine, atomic JSON store) — not in current scope
