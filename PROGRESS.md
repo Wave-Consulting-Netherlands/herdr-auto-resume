@@ -25,6 +25,9 @@ Fork remote: `https://github.com/walt-verweij/herdr-auto-resume` (origin);
   - Extracted the tmux-independent runtime interface, geometry, fake runtime, and resume
     coordinator; moved tmux behind its runtime adapter; rewired the TUI and CLI dry-run
     support.
+- **Phase 2 complete** — 2026-07-30
+  - Added CLI subcommand dispatch, the fixture-driven Herdr CLI runtime adapter, headless
+    run loop/command, and ordered doctor diagnostics.
 
 ## Design decisions
 
@@ -44,6 +47,15 @@ Fork remote: `https://github.com/walt-verweij/herdr-auto-resume` (origin);
   visible viewport.
 - Window pinning moved into `tmux.New`, which calls `CurrentWindowID` once at startup.
 - Runtime pane descriptors are separate from coordinator-owned pane state.
+- Herdr child processes scrub every `HERDR_*` variable inherited from the parent; only an
+  explicitly configured `SocketPath` is re-added. This avoids the inherited socket hazard,
+  where a child could accidentally target the controller's own Herdr session.
+- Headless `run` requires strict `--pane` opt-in. This prefers false negatives over
+  accidentally sending input to an unselected pane.
+- Herdr pane reads use `--source recent` and consume plain text directly; pane reads do not
+  decode the JSON envelope used by the other CLI commands.
+- Herdr command failures first decode the JSON error envelope and otherwise preserve the
+  command failure for callers to report.
 
 ## Test results
 
@@ -61,6 +73,33 @@ Fork remote: `https://github.com/walt-verweij/herdr-auto-resume` (origin);
   ?    github.com/walt-verweij/herdr-auto-resume/internal/tui [no test files]
   ```
 
+- 2026-07-30, Phase 2 final `go test ./...`:
+
+  ```text
+  ok   github.com/walt-verweij/herdr-auto-resume (cached)
+  ok   github.com/walt-verweij/herdr-auto-resume/internal/arch (cached)
+  ok   github.com/walt-verweij/herdr-auto-resume/internal/coordinator (cached)
+  ok   github.com/walt-verweij/herdr-auto-resume/internal/detection (cached)
+  ok   github.com/walt-verweij/herdr-auto-resume/internal/runtime (cached)
+  ok   github.com/walt-verweij/herdr-auto-resume/internal/runtime/herdr (cached)
+  ok   github.com/walt-verweij/herdr-auto-resume/internal/runtime/tmux (cached)
+  ?    github.com/walt-verweij/herdr-auto-resume/internal/tui [no test files]
+  ```
+
+- 2026-07-30, Phase 2 live E2E on this host (herdr 0.7.5, protocol 17, server running):
+  - `herdr-auto-resume doctor` → all 6 checks PASS (binary, socket, status/protocol,
+    adapter round-trip decoded 6 panes, schema JSON, self-pane `wA:p1` detected with
+    self-exclusion).
+  - Dry-run: scratch workspace `wB`, pane staged with the Claude-prompt fixture +
+    `PING-E2E-MARKER`; `run --pane wB:p1 --dry-run --test-pattern PING-E2E-MARKER
+    --interval 1s` → exactly one `DRY-RUN` action line, zero input delivered to the pane.
+  - Live send: same setup without `--dry-run` → exactly one action; pane received
+    escape → "continue" → enter. (In the zsh scratch pane the leading `c` was consumed
+    by vi-mode Escape handling — an artifact of testing against a shell; a real Claude
+    pane consumes Escape harmlessly. Upstream tmux behavior is identical.)
+  - Latch verified: no duplicate sends across subsequent polls; clean exit on SIGTERM.
+  - Scratch workspace closed after the test.
+
 ## Next task
 
-Phase 2 Step 2.1 (CLI subcommand dispatch)
+BRIEF.md Phase 3 — persistent scheduler and safety gates (state machine, atomic JSON store) — not in current scope

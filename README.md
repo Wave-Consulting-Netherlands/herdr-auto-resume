@@ -67,6 +67,21 @@ autoclaude
 | `h` / `?` | Show help |
 | `q` | Quit |
 
+### Herdr usage
+
+The headless Herdr adapter requires explicit pane selection:
+
+```bash
+herdr-auto-resume run --pane w1:p1
+herdr-auto-resume run --pane w1:p1 --pane w2:p1 --interval 5s
+herdr-auto-resume run --pane w1:p1 --dry-run --test-pattern "<<<TEST>>>"
+herdr-auto-resume doctor
+```
+
+Use `--herdr-bin`, `--socket`, `--session`, and `--workspace` to select a Herdr
+installation or scope. The bare invocation remains the original tmux TUI; use
+`herdr-auto-resume run --runtime tmux --pane %1` for the headless tmux path.
+
 ### Pane Colors
 
 | Color | Meaning |
