@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,14 +16,41 @@ import (
 var version = "dev"
 
 func main() {
-	testPattern := flag.String("test-pattern", "", "Test mode: trigger auto-continue when this string is found (for debugging)")
-	dryRun := flag.Bool("dry-run", false, "Record automatic continuations without sending them")
-	flag.Parse()
+	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func runCLI(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "run", "doctor":
+			fmt.Fprintf(stderr, "%s: not implemented\n", args[0])
+			return 2
+		case "version":
+			fmt.Fprintln(stdout, version)
+			return 0
+		}
+		if args[0][0] != '-' {
+			fmt.Fprintf(stderr, "unknown subcommand: %s\n", args[0])
+			return 2
+		}
+	}
+
+	return runTUI(args, stderr, stdout)
+}
+
+func runTUI(args []string, stderr, _ io.Writer) int {
+	fs := flag.NewFlagSet("herdr-auto-resume", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	testPattern := fs.String("test-pattern", "", "Test mode: trigger auto-continue when this string is found (for debugging)")
+	dryRun := fs.Bool("dry-run", false, "Record automatic continuations without sending them")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
 
 	rt, err := tmuxadapter.New()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
 	}
 
 	p := tea.NewProgram(
@@ -39,7 +67,8 @@ func main() {
 	}()
 
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 1
 	}
+	return 0
 }
