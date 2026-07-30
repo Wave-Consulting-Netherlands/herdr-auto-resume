@@ -42,18 +42,7 @@ func (a *Adapter) ListPanes() ([]runtimeapi.Pane, error) {
 		return nil, err
 	}
 
-	panes := make([]runtimeapi.Pane, 0, len(layout.Panes))
-	for _, pane := range layout.Panes {
-		panes = append(panes, runtimeapi.Pane{
-			ID:     pane.ID,
-			Title:  pane.Title,
-			Left:   pane.Left,
-			Top:    pane.Top,
-			Width:  pane.Width,
-			Height: pane.Height,
-		})
-	}
-	return panes, nil
+	return layout, nil
 }
 
 func (a *Adapter) ReadPane(paneID string, lines int) (string, error) {

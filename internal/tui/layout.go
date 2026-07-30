@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/walt-verweij/herdr-auto-resume/internal/runtime/tmux"
 	"github.com/mattn/go-runewidth"
+	"github.com/walt-verweij/herdr-auto-resume/internal/coordinator"
 )
 
 // Colors for pane rendering - bold, high-contrast
@@ -38,16 +38,16 @@ const (
 )
 
 // renderLayout renders the tmux pane layout as ASCII art with colors
-func renderLayout(layout *tmux.Layout, selectedID string, width, height int) string {
-	if layout == nil || len(layout.Panes) == 0 {
+func renderLayout(states []coordinator.PaneState, selectedID string, width, height int) string {
+	if len(states) == 0 {
 		return ""
 	}
 
 	// Find the bounds of all panes
 	maxRight, maxBottom := 0, 0
-	for _, p := range layout.Panes {
-		right := p.Left + p.Width
-		bottom := p.Top + p.Height
+	for _, state := range states {
+		right := state.Pane.Left + state.Pane.Width
+		bottom := state.Pane.Top + state.Pane.Height
 		if right > maxRight {
 			maxRight = right
 		}
@@ -74,9 +74,9 @@ func renderLayout(layout *tmux.Layout, selectedID string, width, height int) str
 	scaleY := float64(height-1) / float64(maxBottom)
 
 	// Draw each pane
-	for _, p := range layout.Panes {
-		isSelected := p.ID == selectedID
-		drawPane(grid, p, isSelected, scaleX, scaleY, width, height)
+	for _, state := range states {
+		isSelected := state.Pane.ID == selectedID
+		drawPane(grid, state, isSelected, scaleX, scaleY, width, height)
 	}
 
 	// Convert grid to string
@@ -94,7 +94,8 @@ func renderLayout(layout *tmux.Layout, selectedID string, width, height int) str
 }
 
 // drawPane draws a single pane on the grid with appropriate styling
-func drawPane(grid [][]string, p *tmux.Pane, selected bool, scaleX, scaleY float64, gridW, gridH int) {
+func drawPane(grid [][]string, state coordinator.PaneState, selected bool, scaleX, scaleY float64, gridW, gridH int) {
+	p := &state.Pane
 	// Calculate scaled coordinates using round to minimize gaps between adjacent panes
 	x1 := int(math.Round(float64(p.Left) * scaleX))
 	y1 := int(math.Round(float64(p.Top) * scaleY))
@@ -125,15 +126,15 @@ func drawPane(grid [][]string, p *tmux.Pane, selected bool, scaleX, scaleY float
 
 	// Determine colors based on state
 	var borderColor, labelColor lipgloss.Color
-	if p.IsRateLimited && p.Mode == tmux.ModeContinueOnRateLimit {
+	if state.IsRateLimited && state.Mode == coordinator.ModeAuto {
 		// Rate limited with auto mode: red
 		borderColor = rateLimitRed
 		labelColor = rateLimitRed
-	} else if p.HasClaudeCode && p.Mode == tmux.ModeContinueOnRateLimit {
+	} else if state.HasClaudeCode && state.Mode == coordinator.ModeAuto {
 		// Auto mode: green
 		borderColor = autoGreen
 		labelColor = autoGreen
-	} else if p.HasClaudeCode {
+	} else if state.HasClaudeCode {
 		// Claude Code but off: orange
 		borderColor = claudeOrange
 		labelColor = claudeOrange
@@ -185,21 +186,21 @@ func drawPane(grid [][]string, p *tmux.Pane, selected bool, scaleX, scaleY float
 	centerY := y1 + (y2-y1)/2
 	paneWidth := x2 - x1 - 2 // Available width inside borders
 
-	if p.HasClaudeCode {
+	if state.HasClaudeCode {
 		// CC panes: always show mode (auto/off) on center line
-		statusLabel := p.Mode.String()
+		statusLabel := state.Mode.String()
 		drawCenteredText(grid, statusLabel, x1, x2, centerY, labelStyle)
 
 		// Show rate limit info below mode if auto and rate limited
 		nextLine := centerY + 1
-		if p.IsRateLimited && p.Mode == tmux.ModeContinueOnRateLimit && nextLine < y2 {
+		if state.IsRateLimited && state.Mode == coordinator.ModeAuto && nextLine < y2 {
 			var rateLimitLabel string
 			var rateLimitStyle lipgloss.Style
-			if p.ContinueSent {
+			if state.ContinueSent {
 				rateLimitLabel = "continue sent"
 				rateLimitStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#f1fa8c")) // Yellow
-			} else if p.RateLimitResets != "" {
-				rateLimitLabel = "resets " + p.RateLimitResets
+			} else if state.RateLimitResets != "" {
+				rateLimitLabel = "resets " + state.RateLimitResets
 				rateLimitStyle = lipgloss.NewStyle().Foreground(rateLimitRed)
 			} else {
 				rateLimitLabel = "rate limited"

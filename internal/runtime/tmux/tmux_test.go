@@ -10,14 +10,14 @@ func TestParseListPanes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseListPanes returned error: %v", err)
 	}
-	if len(got.Panes) != 2 {
-		t.Fatalf("parseListPanes returned %d panes, want 2", len(got.Panes))
+	if len(got) != 2 {
+		t.Fatalf("parseListPanes returned %d panes, want 2", len(got))
 	}
-	if got.Panes[0].Title != "title with spaces" {
-		t.Fatalf("first title = %q, want %q", got.Panes[0].Title, "title with spaces")
+	if got[0].Title != "title with spaces" {
+		t.Fatalf("first title = %q, want %q", got[0].Title, "title with spaces")
 	}
-	if got.Panes[1].Title != "editor" {
-		t.Fatalf("second title = %q, want %q", got.Panes[1].Title, "editor")
+	if got[1].Title != "editor" {
+		t.Fatalf("second title = %q, want %q", got[1].Title, "editor")
 	}
 }
 

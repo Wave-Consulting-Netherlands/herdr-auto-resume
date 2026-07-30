@@ -8,7 +8,7 @@ import (
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/walt-verweij/herdr-auto-resume/internal/runtime/tmux"
+	tmuxadapter "github.com/walt-verweij/herdr-auto-resume/internal/runtime/tmux"
 	"github.com/walt-verweij/herdr-auto-resume/internal/tui"
 )
 
@@ -16,16 +16,17 @@ var version = "dev"
 
 func main() {
 	testPattern := flag.String("test-pattern", "", "Test mode: trigger auto-continue when this string is found (for debugging)")
+	dryRun := flag.Bool("dry-run", false, "Record automatic continuations without sending them")
 	flag.Parse()
 
-	// Validate tmux environment
-	if err := tmux.CheckTmuxEnv(); err != nil {
+	rt, err := tmuxadapter.New()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
 	p := tea.NewProgram(
-		tui.New(version, *testPattern),
+		tui.New(version, *testPattern, rt, *dryRun),
 		tea.WithAltScreen(),
 	)
 

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	runtimeapi "github.com/walt-verweij/herdr-auto-resume/internal/runtime"
 )
 
 var (
@@ -61,7 +63,7 @@ func CurrentWindowID() (string, error) {
 }
 
 // ListPanes returns the layout of panes in the specified window (or current window if empty)
-func ListPanes(windowID string) (*Layout, error) {
+func ListPanes(windowID string) ([]runtimeapi.Pane, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 
@@ -83,10 +85,9 @@ func ListPanes(windowID string) (*Layout, error) {
 }
 
 // parseListPanes parses the output of tmux list-panes
-func parseListPanes(output string) (*Layout, error) {
-	layout := &Layout{
-		Panes: make([]*Pane, 0),
-	}
+
+func parseListPanes(output string) ([]runtimeapi.Pane, error) {
+	panes := make([]runtimeapi.Pane, 0)
 
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	for _, line := range lines {
@@ -99,14 +100,14 @@ func parseListPanes(output string) (*Layout, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse pane line %q: %w", line, err)
 		}
-		layout.Panes = append(layout.Panes, pane)
+		panes = append(panes, *pane)
 	}
 
-	return layout, nil
+	return panes, nil
 }
 
 // parsePaneLine parses a single line of tmux list-panes output
-func parsePaneLine(line string) (*Pane, error) {
+func parsePaneLine(line string) (*runtimeapi.Pane, error) {
 	fields := strings.Fields(line)
 	if len(fields) < 5 {
 		return nil, fmt.Errorf("expected at least 5 fields, got %d", len(fields))
@@ -138,14 +139,13 @@ func parsePaneLine(line string) (*Pane, error) {
 		title = strings.Join(fields[5:], " ")
 	}
 
-	return &Pane{
-		ID:      fields[0],
-		Left:    left,
-		Top:     top,
-		Width:   width,
-		Height:  height,
-		Title:   title,
-		Mode:    ModeOff,
+	return &runtimeapi.Pane{
+		ID:     fields[0],
+		Left:   left,
+		Top:    top,
+		Width:  width,
+		Height: height,
+		Title:  title,
 	}, nil
 }
 
