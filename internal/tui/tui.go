@@ -7,8 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/henryaj/autoclaude/internal/detection"
-	"github.com/henryaj/autoclaude/internal/tmux"
+	"github.com/walt-verweij/herdr-auto-resume/internal/detection"
+	"github.com/walt-verweij/herdr-auto-resume/internal/tmux"
 )
 
 const pollInterval = 3 * time.Second
