@@ -8,7 +8,7 @@ import (
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/walt-verweij/herdr-auto-resume/internal/tmux"
+	"github.com/walt-verweij/herdr-auto-resume/internal/runtime/tmux"
 	"github.com/walt-verweij/herdr-auto-resume/internal/tui"
 )
 
