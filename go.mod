@@ -1,4 +1,4 @@
-module github.com/henryaj/autoclaude
+module github.com/walt-verweij/herdr-auto-resume
 
 go 1.23
 

@@ -1,4 +1,11 @@
-# autoclaude
+# herdr-auto-resume
+
+> **Fork notice:** this is a fork of [`henryaj/autoclaude`](https://github.com/henryaj/autoclaude)
+> (MIT, Copyright (c) 2025 Henry Stanley — see [LICENSE](LICENSE), preserved unmodified).
+> The fork refactors the tmux-specific core behind a runtime abstraction and adds
+> [Herdr](https://herdr.dev) support, per [BRIEF.md](BRIEF.md). Progress and design
+> decisions are tracked in [PROGRESS.md](PROGRESS.md). The original tmux TUI behavior
+> is preserved.
 
 A TUI app that monitors tmux panes running [Claude Code](https://claude.com/claude-code) and automatically sends "continue" when rate limits reset.
 

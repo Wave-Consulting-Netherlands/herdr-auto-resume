@@ -8,8 +8,8 @@ import (
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/henryaj/autoclaude/internal/tmux"
-	"github.com/henryaj/autoclaude/internal/tui"
+	"github.com/walt-verweij/herdr-auto-resume/internal/tmux"
+	"github.com/walt-verweij/herdr-auto-resume/internal/tui"
 )
 
 var version = "dev"

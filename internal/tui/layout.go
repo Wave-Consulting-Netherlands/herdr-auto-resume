@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/henryaj/autoclaude/internal/tmux"
+	"github.com/walt-verweij/herdr-auto-resume/internal/tmux"
 	"github.com/mattn/go-runewidth"
 )
 
