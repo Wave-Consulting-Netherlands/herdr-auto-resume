@@ -25,8 +25,7 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 		case "run":
 			return runCommand(args[1:], stdout, stderr)
 		case "doctor":
-			fmt.Fprintf(stderr, "%s: not implemented\n", args[0])
-			return 2
+			return doctorCommand(args[1:], stdout, stderr)
 		case "version":
 			fmt.Fprintln(stdout, version)
 			return 0

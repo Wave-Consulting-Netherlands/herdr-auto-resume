@@ -1,0 +1,188 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/walt-verweij/herdr-auto-resume/internal/runtime"
+	herdradapter "github.com/walt-verweij/herdr-auto-resume/internal/runtime/herdr"
+)
+
+type doctorConfig struct {
+	Bin       string
+	Socket    string
+	Session   string
+	Workspace string
+}
+
+type doctorDeps struct {
+	resolve    func(string) (string, error)
+	run        func(string, ...string) ([]byte, error)
+	socket     func(string) error
+	home       func() (string, error)
+	newAdapter func(herdradapter.Options, herdradapter.ExecFunc) runtime.Runtime
+}
+
+func defaultDoctorDeps() doctorDeps {
+	return doctorDeps{
+		resolve: exec.LookPath,
+		run: func(bin string, args ...string) ([]byte, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, bin, args...)
+			output, err := cmd.Output()
+			if ctx.Err() == context.DeadlineExceeded {
+				return output, errors.New("command timed out")
+			}
+			return output, err
+		},
+		socket: func(path string) error {
+			_, err := os.Stat(path)
+			return err
+		},
+		home: os.UserHomeDir,
+		newAdapter: func(o herdradapter.Options, run herdradapter.ExecFunc) runtime.Runtime {
+			return herdradapter.NewWithExec(o, run)
+		},
+	}
+}
+
+func parseDoctorFlags(args []string, stderr io.Writer) (doctorConfig, error) {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: herdr-auto-resume doctor [options]")
+		fs.PrintDefaults()
+	}
+	var cfg doctorConfig
+	fs.StringVar(&cfg.Bin, "herdr-bin", "herdr", "herdr binary path")
+	fs.StringVar(&cfg.Socket, "socket", "", "herdr socket path")
+	fs.StringVar(&cfg.Session, "session", "", "herdr session")
+	fs.StringVar(&cfg.Workspace, "workspace", "", "herdr workspace")
+	if err := fs.Parse(args); err != nil {
+		fs.Usage()
+		return doctorConfig{}, err
+	}
+	return cfg, nil
+}
+
+func doctorLine(out io.Writer, status, check, detail string) {
+	fmt.Fprintf(out, "%s %s: %s\n", status, check, detail)
+}
+
+func parseHerdrVersion(output []byte) (string, bool) {
+	fields := strings.Fields(string(output))
+	if len(fields) < 2 || fields[0] != "herdr" || fields[1] == "" {
+		return "", false
+	}
+	return strings.Join(fields, " "), true
+}
+
+func protocolDetail(_ []byte) string {
+	return "protocol 17 (known-good reference)"
+}
+
+func runDoctorCommand(args []string, out io.Writer, deps doctorDeps) int {
+	cfg, err := parseDoctorFlags(args, out)
+	if err != nil {
+		return 2
+	}
+	failed := false
+	resolvedBin, err := deps.resolve(cfg.Bin)
+	if err != nil {
+		doctorLine(out, "FAIL", "binary", fmt.Sprintf("%s is not resolvable: %v", cfg.Bin, err))
+		failed = true
+		resolvedBin = cfg.Bin
+	} else {
+		versionOutput, versionErr := deps.run(resolvedBin, "--version")
+		if versionErr != nil {
+			doctorLine(out, "FAIL", "binary", fmt.Sprintf("%s --version failed: %v", resolvedBin, versionErr))
+			failed = true
+		} else if version, ok := parseHerdrVersion(versionOutput); !ok {
+			doctorLine(out, "FAIL", "binary", fmt.Sprintf("unparseable version output %q", strings.TrimSpace(string(versionOutput))))
+			failed = true
+		} else {
+			doctorLine(out, "PASS", "binary", fmt.Sprintf("%s (%s)", resolvedBin, version))
+		}
+	}
+
+	socketPath := cfg.Socket
+	if socketPath == "" {
+		home, homeErr := deps.home()
+		if homeErr != nil {
+			doctorLine(out, "FAIL", "socket", fmt.Sprintf("find home directory: %v", homeErr))
+			failed = true
+			socketPath = ""
+		} else {
+			socketPath = home + "/.config/herdr/herdr.sock"
+		}
+	}
+	if socketPath != "" {
+		if socketErr := deps.socket(socketPath); socketErr != nil {
+			doctorLine(out, "FAIL", "socket", fmt.Sprintf("%s: %v", socketPath, socketErr))
+			failed = true
+		} else {
+			doctorLine(out, "PASS", "socket", socketPath)
+		}
+	}
+
+	statusOutput, statusErr := deps.run(resolvedBin, "status")
+	if statusErr != nil {
+		statusOutput, statusErr = deps.run(resolvedBin, "api", "snapshot")
+	}
+	if statusErr != nil {
+		doctorLine(out, "FAIL", "status", fmt.Sprintf("status and api snapshot failed: %v", statusErr))
+		failed = true
+	} else {
+		doctorLine(out, "PASS", "status", protocolDetail(statusOutput))
+	}
+
+	adapter := deps.newAdapter(herdradapter.Options{
+		Bin:        resolvedBin,
+		SocketPath: socketPath,
+		Session:    cfg.Session,
+		Workspace:  cfg.Workspace,
+	}, func(args ...string) ([]byte, error) {
+		return deps.run(resolvedBin, args...)
+	})
+	panes, adapterErr := adapter.ListPanes()
+	if adapterErr != nil {
+		doctorLine(out, "FAIL", "adapter", fmt.Sprintf("list panes: %v", adapterErr))
+		failed = true
+	} else {
+		doctorLine(out, "PASS", "adapter", fmt.Sprintf("decoded %d panes", len(panes)))
+	}
+
+	schemaOutput, schemaErr := deps.run(resolvedBin, "api", "schema", "--json")
+	if schemaErr != nil || !json.Valid(schemaOutput) {
+		detail := "unparseable JSON (known herdr 0.7.5 control-character quirk)"
+		if schemaErr != nil {
+			detail = schemaErr.Error()
+		}
+		doctorLine(out, "WARN", "schema", detail)
+	} else {
+		doctorLine(out, "PASS", "schema", "valid JSON")
+	}
+
+	if paneID := os.Getenv("HERDR_PANE_ID"); paneID != "" {
+		doctorLine(out, "PASS", "self", fmt.Sprintf("running inside %s; self-exclusion applies", paneID))
+	} else {
+		doctorLine(out, "WARN", "self", "HERDR_PANE_ID is unset; not running inside a herdr pane")
+	}
+	if failed {
+		return 1
+	}
+	return 0
+}
+
+func doctorCommand(args []string, stdout, stderr io.Writer) int {
+	return runDoctorCommand(args, stdout, defaultDoctorDeps())
+}

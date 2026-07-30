@@ -29,20 +29,6 @@ func TestRunCLIUnknownSubcommand(t *testing.T) {
 	}
 }
 
-func TestRunCLIStubSubcommand(t *testing.T) {
-	for _, subcommand := range []string{"doctor"} {
-		t.Run(subcommand, func(t *testing.T) {
-			var stdout, stderr bytes.Buffer
-			if got := runCLI([]string{subcommand}, &stdout, &stderr); got != 2 {
-				t.Fatalf("runCLI exit = %d, want 2", got)
-			}
-			if !strings.Contains(stderr.String(), "not implemented") {
-				t.Fatalf("stderr = %q, want not implemented", stderr.String())
-			}
-		})
-	}
-}
-
 func TestRunCLIRequiresPane(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if got := runCLI([]string{"run"}, &stdout, &stderr); got != 2 {

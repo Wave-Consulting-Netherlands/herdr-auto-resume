@@ -25,7 +25,9 @@ type Options struct {
 	ReadSource string
 }
 
-type runFunc func(args ...string) (stdout []byte, exitErr error)
+type ExecFunc func(args ...string) (stdout []byte, exitErr error)
+
+type runFunc = ExecFunc
 
 type Adapter struct {
 	options Options
@@ -33,13 +35,22 @@ type Adapter struct {
 }
 
 func New(o Options) *Adapter {
+	return NewWithExec(o, productionRunner(o))
+}
+
+// NewWithExec constructs an adapter with an injected command runner. It is
+// useful for callers that need to test protocol handling without invoking herdr.
+func NewWithExec(o Options, run ExecFunc) *Adapter {
 	if o.Bin == "" {
 		o.Bin = "herdr"
 	}
 	if o.ReadSource == "" {
 		o.ReadSource = "recent"
 	}
-	return &Adapter{options: o, run: productionRunner(o)}
+	if run == nil {
+		run = productionRunner(o)
+	}
+	return &Adapter{options: o, run: run}
 }
 
 func productionRunner(o Options) runFunc {
