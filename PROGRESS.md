@@ -21,6 +21,10 @@ Fork remote: `https://github.com/walt-verweij/herdr-auto-resume` (origin);
     `upstream/master` at `39ad5ef`; upstream tests green on import
     (`go build ./...` + `go test ./...`, detection package 55 assertions).
   - Branch `phase-0-bootstrap`: committed `BRIEF.md`, this file, README fork notice.
+- **Phase 1 complete** — 2026-07-30
+  - Extracted the tmux-independent runtime interface, geometry, fake runtime, and resume
+    coordinator; moved tmux behind its runtime adapter; rewired the TUI and CLI dry-run
+    support.
 
 ## Design decisions
 
@@ -33,16 +37,30 @@ Fork remote: `https://github.com/walt-verweij/herdr-auto-resume` (origin);
 - Scope of current work order: BRIEF.md Phases 0–2 only (bootstrap, runtime abstraction
   over tmux, Herdr CLI adapter with dry-run). No Codex provider, no socket client, no
   persistence/state-machine (Phase 3), no plugin.
+- Runtime interface intentionally has no `Subscribe` method; Phase 1 remains polling-based
+  and keeps the coordinator independent of any concrete adapter.
+- `SendText` delegates to plain tmux `send-keys` without `-l`, preserving upstream behavior.
+- The tmux adapter ignores `ReadPane`'s `lines` argument because upstream captures the
+  visible viewport.
+- Window pinning moved into `tmux.New`, which calls `CurrentWindowID` once at startup.
+- Runtime pane descriptors are separate from coordinator-owned pane state.
 
 ## Test results
 
 - 2026-07-30, upstream import at `39ad5ef`: `go build ./...` OK; `go test ./...` — all
   detection tests pass (only package with tests upstream). Toolchain go1.26.5 linux/arm64.
+- 2026-07-30, Phase 1 final `go test ./...`:
+
+  ```text
+  ?    github.com/walt-verweij/herdr-auto-resume [no test files]
+  ok   github.com/walt-verweij/herdr-auto-resume/internal/arch (cached)
+  ok   github.com/walt-verweij/herdr-auto-resume/internal/coordinator (cached)
+  ok   github.com/walt-verweij/herdr-auto-resume/internal/detection (cached)
+  ok   github.com/walt-verweij/herdr-auto-resume/internal/runtime (cached)
+  ok   github.com/walt-verweij/herdr-auto-resume/internal/runtime/tmux (cached)
+  ?    github.com/walt-verweij/herdr-auto-resume/internal/tui [no test files]
+  ```
 
 ## Next task
 
-Phase 0 Step 0.4: module rename commit (`go.mod` → `github.com/walt-verweij/herdr-auto-resume`;
-fix imports in `main.go`, `internal/tui/tui.go`, `internal/tui/layout.go`), then verify gate
-(`go build ./... && go vet ./... && go test ./...` + `go test -race ./...`), merge
-`phase-0-bootstrap` → `master`, push `master` + tag to origin. Then Phase 1 Step 1.1
-(`internal/runtime` package) per the approved plan.
+Phase 2 Step 2.1 (CLI subcommand dispatch)
