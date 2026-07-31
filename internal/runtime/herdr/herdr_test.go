@@ -38,7 +38,7 @@ func fixture(t *testing.T, name string) []byte {
 
 func TestNewAppliesDefaults(t *testing.T) {
 	a := New(Options{})
-	if a.options.Bin != "herdr" || a.options.ReadSource != "recent" {
+	if a.options.Bin != "herdr" || a.options.ReadSource != "detection" {
 		t.Fatalf("options = %#v, want herdr/recent defaults", a.options)
 	}
 }

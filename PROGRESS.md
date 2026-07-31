@@ -28,6 +28,12 @@ Fork remote: `https://github.com/Wave-Consulting-Netherlands/herdr-auto-resume` 
 - **Phase 2 complete** — 2026-07-30
   - Added CLI subcommand dispatch, the fixture-driven Herdr CLI runtime adapter, headless
     run loop/command, and ordered doctor diagnostics.
+- **Phase 3 code complete** — 2026-07-31
+  - Added atomic persistent JSON jobs, coordinator sink/post-poll seams, validation safety
+    gates, exactly-once resume persistence and verification, restart reconciliation, mtime
+    reload for external cancel, CLI status/inspect/cancel, and run-state wiring.
+  - Commit 7 live Herdr E2E remains intentionally with the orchestrator; no real herdr
+    binary was run in this implementation session.
 
 ## Design decisions
 
@@ -42,9 +48,9 @@ Fork remote: `https://github.com/Wave-Consulting-Netherlands/herdr-auto-resume` 
   LICENSE/README and the `upstream` remote.
 - `.goreleaser.yml` / CI workflows left untouched this phase; the goreleaser binary name
   still says `autoclaude`. To be revisited in the packaging phase (BRIEF.md Phase 7).
-- Scope of current work order: BRIEF.md Phases 0–2 only (bootstrap, runtime abstraction
-  over tmux, Herdr CLI adapter with dry-run). No Codex provider, no socket client, no
-  persistence/state-machine (Phase 3), no plugin.
+- Scope of current work order: BRIEF.md Phases 0–3 code (bootstrap, runtime abstraction,
+  Herdr CLI adapter, persistence, and safety-gated scheduler). No Codex provider, socket
+  client, or plugin; commit 7 live E2E remains pending.
 - Runtime interface intentionally has no `Subscribe` method; Phase 1 remains polling-based
   and keeps the coordinator independent of any concrete adapter.
 - `SendText` delegates to plain tmux `send-keys` without `-l`, preserving upstream behavior.
@@ -61,6 +67,23 @@ Fork remote: `https://github.com/Wave-Consulting-Netherlands/herdr-auto-resume` 
   decode the JSON envelope used by the other CLI commands.
 - Herdr command failures first decode the JSON error envelope and otherwise preserve the
   command failure for callers to report.
+
+### Phase 3 design decisions
+
+- **D1:** Persistence lives in `internal/store`; lifecycle and safety gates live in
+  `internal/jobs`; coordinator owns only its small sink interface and core packages do not
+  import concrete adapters or jobs/store.
+- **D2:** Known-reset headless episodes belong to the job store; unknown-reset and test-pattern
+  paths remain coordinator-owned; no-sink behavior remains the upstream path.
+- **D3:** The sink is level-triggered and deduplicates by pane while active; priming order is
+  unchanged and a resumed pane remains armed for later evidence.
+- **D4:** The manager persists `RESUMING` before using the shared Escape/continue/Enter helper.
+- **D5:** Validation rereads the tail and requires Claude identity plus a rate-limit or safe
+  idle prompt, rejecting menu selectors and unsafe fingerprints.
+- **D6:** Verification succeeds on a cleared limit or changed evidence hash before the strict
+  deadline; dry-run records `RESUMED` without pane input.
+- **D7:** Jobs beyond the configured horizon are durably `FAILED` while retaining ownership.
+- **D8:** Tick/HandleLimit mtime reloads let external terminal edits such as cancel win.
 
 ## Test results
 
@@ -105,6 +128,46 @@ Fork remote: `https://github.com/Wave-Consulting-Netherlands/herdr-auto-resume` 
   - Latch verified: no duplicate sends across subsequent polls; clean exit on SIGTERM.
   - Scratch workspace closed after the test.
 
+- 2026-07-31, Phase 3 final code gate:
+
+  ```text
+  ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume	1.097s
+  ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/arch	1.023s
+  ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator	1.236s
+  ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection	1.031s
+  ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/jobs	1.874s
+  ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime	1.027s
+  ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/herdr	1.023s
+  ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/tmux	1.015s
+  ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store	1.052s
+  ?   	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/tui	[no test files]
+  ```
+
+- 2026-07-31, Phase 3 live E2E on this host (herdr 0.7.5, scratch workspace `wC`,
+  `/bin/cat` fixture pane, banner "You've hit your limit · resets Nm"):
+  - **Detection-source fix found live:** `pane read --source recent` covers only
+    scrollback and is empty on fresh/quiet panes; adapter default switched to
+    `--source detection` (includes viewport). Commit `b9397cb`.
+  - Dry-run restart drill: watcher A created job → WAITING persisted → killed mid-wait;
+    watcher B reconciled, waited past reset+margin, exactly one dry-run resume →
+    RESUMED (attempts=1), zero input delivered.
+  - RESUMING-at-restart drill: job hand-set to RESUMING; restart → MANUAL_REQUIRED
+    ("watcher restarted during uncertain resume send"), zero sends.
+  - Live pass: restart mid-WAITING → single real esc→"continue"→enter delivered after
+    reset+margin → VERIFYING_RESUME → RESUMED (attempts=1). (Raw cat pane rendered
+    ESC+c as terminal reset — harness artifact only.)
+  - Cancel under running watcher (D8): new job cancelled from a second shell → job
+    CANCELLED (attempts=0), watcher honored it, no sends.
+  - Conservative behaviors observed and accepted: (1) a `❯` anywhere in the read tail
+    fails validation gate 9 → MANUAL_REQUIRED — protects real Claude rate-limit menus;
+    means panes with starship-style prompts in the tail window park safely instead of
+    resuming. (2) After RESUMED, identical evidence hash suppresses a new job (prevents
+    resend loops when the banner never cleared); a genuinely new limit re-arms because
+    its reset text differs. (3) Any non-RESUMED terminal job parks the pane until the
+    state file is cleaned — no `clear`/`ack` command yet (see BACKLOG.md).
+
 ## Next task
 
-BRIEF.md Phase 3 — persistent scheduler and safety gates (state machine, atomic JSON store) — not in current scope
+BRIEF.md Phase 4 — Claude Code production support: expanded reset parsing (timezones,
+DST, weekly), chrome-aware live-tail detection, conservative wait/stop menu handling,
+richer notifications. PLANS.md for Phase 3 is complete and can be superseded.

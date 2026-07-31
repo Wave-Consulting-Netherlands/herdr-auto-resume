@@ -13,7 +13,7 @@ import (
 const modulePath = "github.com/Wave-Consulting-Netherlands/herdr-auto-resume"
 
 func TestCoreImportHygiene(t *testing.T) {
-	for _, dir := range []string{"../coordinator", "../detection", "../runtime"} {
+	for _, dir := range []string{"../coordinator", "../detection", "../runtime", "../store", "../jobs"} {
 		t.Run(dir, func(t *testing.T) {
 			root, err := filepath.Abs(dir)
 			if err != nil {
@@ -39,7 +39,8 @@ func TestCoreImportHygiene(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					if forbiddenImport(importPath) {
+					if forbiddenImport(importPath) && !(dir == "../jobs" &&
+						(importPath == modulePath+"/internal/jobs" || importPath == modulePath+"/internal/store")) {
 						t.Errorf("%s imports forbidden %q", path, importPath)
 					}
 				}
@@ -56,5 +57,7 @@ func forbiddenImport(path string) bool {
 	return path == modulePath+"/internal/runtime/tmux" ||
 		path == modulePath+"/internal/runtime/herdr" ||
 		path == modulePath+"/internal/tui" ||
+		path == modulePath+"/internal/jobs" ||
+		path == modulePath+"/internal/store" ||
 		path == "os/exec"
 }

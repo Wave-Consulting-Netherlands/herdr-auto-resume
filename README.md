@@ -82,6 +82,22 @@ Use `--herdr-bin`, `--socket`, `--session`, and `--workspace` to select a Herdr
 installation or scope. The bare invocation remains the original tmux TUI; use
 `herdr-auto-resume run --runtime tmux --pane %1` for the headless tmux path.
 
+Headless Herdr runs persist known-reset jobs by default under the XDG state directory.
+Use `--state-file off` to disable persistence, or configure the schedule and verification
+safety margins explicitly:
+
+```bash
+herdr-auto-resume run --pane w1:p1 --margin 60s --max-wait 192h --verify-timeout 90s
+herdr-auto-resume status
+herdr-auto-resume inspect <job-id-prefix>
+herdr-auto-resume cancel <job-id-prefix>
+```
+
+The scheduler validates the pane, foreground process, working directory, and terminal
+state before sending one `Escape` → `continue` → `Enter` sequence. It persists before
+sending and verifies that the rate limit cleared or the pane evidence changed. Use
+`--dry-run` to exercise the lifecycle without writing pane input.
+
 ### Pane Colors
 
 | Color | Meaning |

@@ -1,6 +1,7 @@
 package detection
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -185,6 +186,27 @@ func TestGetVisibleLines(t *testing.T) {
 			got := GetVisibleLines(tc.content)
 			if len(got) != tc.want {
 				t.Errorf("GetVisibleLines() returned %d lines, want %d", len(got), tc.want)
+			}
+		})
+	}
+}
+
+func TestIsIdlePrompt(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "prompt in tail", content: "older output\n╭────╮\n> ", want: true},
+		{name: "ansi prompt in tail", content: "older output\n\x1b[32m> \x1b[0m", want: true},
+		{name: "menu selector in tail", content: "╭────╮\n❯ Upgrade\n> ", want: false},
+		{name: "not a prompt", content: "╭────╮\nready", want: false},
+		{name: "prompt only in old tail", content: "> old\n" + strings.Repeat("output\n", 25) + "ready", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsIdlePrompt(tc.content); got != tc.want {
+				t.Fatalf("IsIdlePrompt() = %v, want %v", got, tc.want)
 			}
 		})
 	}

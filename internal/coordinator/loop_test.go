@@ -3,6 +3,7 @@ package coordinator
 import (
 	"bytes"
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -124,5 +125,35 @@ func TestRunLoopNotifiesRealActionOnce(t *testing.T) {
 
 	if len(fake.Notes) != 1 || fake.Notes[0].Title != "auto-resume" || fake.Notes[0].Body != "continued pane p1" {
 		t.Fatalf("notifications = %#v, want one auto-resume notification", fake.Notes)
+	}
+}
+
+func TestRunLoopCallsPostPollWithInjectedClockAfterEachSuccessfulPoll(t *testing.T) {
+	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "plain shell"}}
+	now := time.Unix(42, 0)
+	var observed []time.Time
+	postPoll := make(chan time.Time, 2)
+	c := New(fake, Config{}, WithClock(func() time.Time { return now }), WithPostPoll(func(got time.Time) {
+		observed = append(observed, got)
+		postPoll <- got
+	}))
+	c.SetPanes(fake.PanesList)
+	c.Poll()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ticks := make(chan time.Time, 2)
+	done := make(chan struct{})
+	go func() {
+		c.RunLoop(ctx, ticks, func() ([]runtime.Pane, error) { return fake.PanesList, nil }, nil)
+		close(done)
+	}()
+	ticks <- time.Unix(1, 0)
+	ticks <- time.Unix(2, 0)
+	<-postPoll
+	<-postPoll
+	cancel()
+	<-done
+	if !reflect.DeepEqual(observed, []time.Time{now, now}) {
+		t.Fatalf("postPoll times = %#v, want %#v", observed, []time.Time{now, now})
 	}
 }

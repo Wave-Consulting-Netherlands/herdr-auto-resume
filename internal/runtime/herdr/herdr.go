@@ -45,7 +45,10 @@ func NewWithExec(o Options, run ExecFunc) *Adapter {
 		o.Bin = "herdr"
 	}
 	if o.ReadSource == "" {
-		o.ReadSource = "recent"
+		// "detection" includes the visible viewport; "recent" covers only
+		// scrollback and is empty on fresh/quiet panes, which would blind
+		// limit detection exactly when the banner is still on screen.
+		o.ReadSource = "detection"
 	}
 	if run == nil {
 		run = productionRunner(o)

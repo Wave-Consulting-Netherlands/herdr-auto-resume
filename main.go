@@ -8,9 +8,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	tea "github.com/charmbracelet/bubbletea"
 	tmuxadapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/tmux"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/tui"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 var version = "dev"
@@ -26,6 +26,8 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 			return runCommand(args[1:], stdout, stderr)
 		case "doctor":
 			return doctorCommand(args[1:], stdout, stderr)
+		case "status", "inspect", "cancel":
+			return jobCommand(args, stdout, stderr)
 		case "version":
 			fmt.Fprintln(stdout, version)
 			return 0
