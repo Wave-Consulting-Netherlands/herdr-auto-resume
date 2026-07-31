@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -82,5 +84,20 @@ func TestCLIJobDispatch(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if got := runCLI([]string{"status", "--state-file", path}, &out, &errOut); got != 0 {
 		t.Fatalf("runCLI status exit = %d, stderr=%q", got, errOut.String())
+	}
+}
+
+func TestJobCommandUsesStateFileFromConfigWhenFlagUnset(t *testing.T) {
+	statePath := writeCommandState(t)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\nstate:\n  file: "+statePath+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if got := jobCommand([]string{"status", "--config", configPath}, &out, &errOut); got != 0 {
+		t.Fatalf("jobCommand status exit = %d, stderr=%q", got, errOut.String())
+	}
+	if !strings.Contains(out.String(), "abcdefgh") {
+		t.Fatalf("status output = %q, want configured state file", out.String())
 	}
 }

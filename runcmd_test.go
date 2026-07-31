@@ -36,6 +36,58 @@ func TestParseRunFlagsDefaultsToCLITransport(t *testing.T) {
 	}
 }
 
+func TestParseRunFlagsAbsentConfigPreservesExistingDefaults(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var firstErr, secondErr bytes.Buffer
+	want, err := parseRunFlags([]string{"--pane", "w1:p1"}, &firstErr)
+	if err != nil {
+		t.Fatalf("baseline parseRunFlags: %v", err)
+	}
+	got, err := parseRunFlags([]string{"--pane", "w1:p1"}, &secondErr)
+	if err != nil {
+		t.Fatalf("default-path parity parseRunFlags: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("configless parse = %#v, baseline = %#v", got, want)
+	}
+}
+
+func TestParseRunFlagsConfigPrecedenceAndPanes(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(`version: 1
+runtime:
+  transport: socket
+monitoring:
+  panes: [configured:p1]
+  interval: 7s
+  lines: 99
+resume:
+  margin: 2m
+providers:
+  enabled: [claude]
+state:
+  file: /tmp/config-state.json
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cfg, err := parseRunFlags([]string{"--config", configPath, "--interval", "5s", "--dry-run=false", "--lines", "10"}, &stderr)
+	if err != nil {
+		t.Fatalf("parseRunFlags: %v\nstderr=%s", err, stderr.String())
+	}
+	if cfg.Transport != "socket" || !reflect.DeepEqual(cfg.Panes, []string{"configured:p1"}) || cfg.Interval != 5*time.Second || cfg.Lines != 10 || cfg.DryRun || cfg.Margin != 2*time.Minute || cfg.Providers != "claude" || cfg.StateFile != "/tmp/config-state.json" {
+		t.Fatalf("merged config = %#v", cfg)
+	}
+}
+
+func TestParseRunFlagsExplicitMissingConfigErrors(t *testing.T) {
+	var stderr bytes.Buffer
+	_, err := parseRunFlags([]string{"--config", filepath.Join(t.TempDir(), "missing.yaml"), "--pane", "w1:p1"}, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "config") {
+		t.Fatalf("error = %v, stderr=%q; want missing config error", err, stderr.String())
+	}
+}
+
 func TestParseRunFlagsValidatesSocketTransportSessionAndRuntime(t *testing.T) {
 	cases := []struct {
 		name string

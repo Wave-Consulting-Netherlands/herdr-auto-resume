@@ -13,18 +13,22 @@ import (
 	"strings"
 	"time"
 
+	appconfig "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/config"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	herdradapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/herdr"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
 
 type doctorConfig struct {
-	Transport string
-	Bin       string
-	Socket    string
-	Session   string
-	Workspace string
-	StateFile string
+	Transport      string
+	Bin            string
+	Socket         string
+	Session        string
+	Workspace      string
+	StateFile      string
+	ConfigPath     string
+	ConfigExplicit bool
+	StateFileSet   bool
 }
 
 type doctorDeps struct {
@@ -77,6 +81,7 @@ func parseDoctorFlags(args []string, stderr io.Writer) (doctorConfig, error) {
 	fs.StringVar(&cfg.Session, "session", "", "herdr session")
 	fs.StringVar(&cfg.Workspace, "workspace", "", "herdr workspace")
 	fs.StringVar(&cfg.StateFile, "state-file", "auto", "watcher state file path, auto, or off")
+	fs.StringVar(&cfg.ConfigPath, "config", appconfig.DefaultPath(), "configuration file path")
 	if err := fs.Parse(args); err != nil {
 		fs.Usage()
 		return doctorConfig{}, err
@@ -93,6 +98,14 @@ func parseDoctorFlags(args []string, stderr io.Writer) (doctorConfig, error) {
 		fs.Usage()
 		return doctorConfig{}, err
 	}
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "config":
+			cfg.ConfigExplicit = true
+		case "state-file":
+			cfg.StateFileSet = true
+		}
+	})
 	return cfg, nil
 }
 
@@ -165,14 +178,35 @@ func runDoctorCommand(args []string, out io.Writer, deps doctorDeps) int {
 	if err != nil {
 		return 2
 	}
+	fileConfig, found, configErr := appconfig.Load(cfg.ConfigPath)
+	configOK := true
+	if configErr != nil {
+		doctorLine(out, "FAIL", "config", configErr.Error())
+		configOK = false
+	} else if !found {
+		if cfg.ConfigExplicit {
+			doctorLine(out, "FAIL", "config", fmt.Sprintf("config file %s was not found", cfg.ConfigPath))
+			configOK = false
+		} else {
+			doctorLine(out, "INFO", "config", "none")
+		}
+	} else {
+		doctorLine(out, "PASS", "config", cfg.ConfigPath)
+		if !cfg.StateFileSet && fileConfig.Has("state.file") {
+			cfg.StateFile = fileConfig.State.File
+		}
+	}
 	watcherOK := reportWatcherLock(out, resolveStatePath(runConfig{Runtime: "herdr", StateFile: cfg.StateFile}))
 	if cfg.Transport == "socket" {
-		if !watcherOK {
+		if doctorErr := runSocketDoctor(cfg, out, deps); doctorErr != 0 {
+			return doctorErr
+		}
+		if !configOK || !watcherOK {
 			return 1
 		}
-		return runSocketDoctor(cfg, out, deps)
+		return 0
 	}
-	failed := !watcherOK
+	failed := !configOK || !watcherOK
 	resolvedBin, err := deps.resolve(cfg.Bin)
 	if err != nil {
 		doctorLine(out, "FAIL", "binary", fmt.Sprintf("%s is not resolvable: %v", cfg.Bin, err))

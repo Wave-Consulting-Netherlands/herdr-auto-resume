@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	appconfig "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/config"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
 
@@ -23,8 +24,36 @@ func jobCommand(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet(subcommand, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	statePath := fs.String("state-file", store.DefaultPath(), "state file path")
+	configPath := fs.String("config", appconfig.DefaultPath(), "configuration file path")
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
+	}
+	stateFileSet := false
+	configExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "state-file":
+			stateFileSet = true
+		case "config":
+			configExplicit = true
+		}
+	})
+	if !stateFileSet {
+		fileConfig, found, err := appconfig.Load(*configPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: load config: %v\n", err)
+			return 2
+		}
+		if configExplicit && !found {
+			fmt.Fprintf(stderr, "error: config file %s was not found\n", *configPath)
+			return 2
+		}
+		if found && fileConfig.Has("state.file") {
+			*statePath = fileConfig.State.File
+			if *statePath == "auto" {
+				*statePath = store.DefaultPath()
+			}
+		}
 	}
 	if *statePath == "off" {
 		fmt.Fprintln(stderr, "error: jobs require an enabled --state-file")
@@ -70,12 +99,12 @@ func jobCommand(args []string, stdout, stderr io.Writer) int {
 
 func splitJobArgs(args []string) (positionals, flags []string) {
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--state-file" && i+1 < len(args) {
+		if (args[i] == "--state-file" || args[i] == "--config") && i+1 < len(args) {
 			flags = append(flags, args[i], args[i+1])
 			i++
 			continue
 		}
-		if strings.HasPrefix(args[i], "--state-file=") {
+		if strings.HasPrefix(args[i], "--state-file=") || strings.HasPrefix(args[i], "--config=") {
 			flags = append(flags, args[i])
 			continue
 		}

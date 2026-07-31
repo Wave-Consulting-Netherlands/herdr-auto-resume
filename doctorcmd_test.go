@@ -91,6 +91,7 @@ func passingDoctorDeps() doctorDeps {
 func isolateDoctorState(t *testing.T) {
 	t.Helper()
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 }
 
 func TestDoctorReportPassesAllChecks(t *testing.T) {
@@ -122,18 +123,18 @@ func TestDoctorVersionLinePreservesCLIReportBody(t *testing.T) {
 	if lines[0] != "INFO version: herdr-auto-resume v0.2.0 (abc1234)" {
 		t.Fatalf("version line = %q", lines[0])
 	}
-	if !strings.HasPrefix(lines[1], "INFO watcher: none on ") {
-		t.Fatalf("watcher line = %q", lines[1])
+	if !strings.HasPrefix(lines[1], "INFO config: none\nINFO watcher: none on ") {
+		t.Fatalf("config/watcher lines = %q", lines[1])
 	}
-	body := strings.SplitN(lines[1], "\n", 2)
+	body := strings.SplitN(lines[1], "\n", 3)
 	wantBody := "PASS binary: /usr/bin/herdr (herdr 0.7.5)\n" +
 		"PASS socket: /home/user/.config/herdr/herdr.sock\n" +
 		"PASS status: protocol 17\n" +
 		"PASS adapter: decoded 1 panes\n" +
 		"PASS schema: valid JSON\n" +
 		"WARN self: HERDR_PANE_ID is unset; not running inside a herdr pane\n"
-	if len(lines) != 2 || len(body) != 2 || body[1] != wantBody {
-		t.Fatalf("doctor body changed: %q", strings.Join(body[1:], "\n"))
+	if len(lines) != 2 || len(body) != 3 || body[2] != wantBody {
+		t.Fatalf("doctor body changed: %q", strings.Join(body[2:], "\n"))
 	}
 }
 
@@ -176,6 +177,45 @@ func TestDoctorReportsWatcherLockState(t *testing.T) {
 			t.Fatalf("doctor exit = %d\n%s", got, out.String())
 		}
 		if !strings.Contains(out.String(), "INFO watcher: active (pid "+strconv.Itoa(os.Getpid())+") on "+statePath) {
+			t.Fatalf("report = %q", out.String())
+		}
+	})
+}
+
+func TestDoctorReportsConfigState(t *testing.T) {
+	isolateDoctorState(t)
+	t.Run("absent", func(t *testing.T) {
+		var out bytes.Buffer
+		if got := runDoctorCommand(nil, &out, passingDoctorDeps()); got != 0 {
+			t.Fatalf("doctor exit = %d\n%s", got, out.String())
+		}
+		if !strings.Contains(out.String(), "INFO config: none") {
+			t.Fatalf("report = %q", out.String())
+		}
+	})
+	t.Run("valid", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("version: 1\nstate:\n  file: /tmp/doctor-state.json\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		if got := runDoctorCommand([]string{"--config", path}, &out, passingDoctorDeps()); got != 0 {
+			t.Fatalf("doctor exit = %d\n%s", got, out.String())
+		}
+		if !strings.Contains(out.String(), "PASS config: "+path) || !strings.Contains(out.String(), "INFO watcher: none on /tmp/doctor-state.json") {
+			t.Fatalf("report = %q", out.String())
+		}
+	})
+	t.Run("invalid", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("version: 2\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		if got := runDoctorCommand([]string{"--config", path}, &out, passingDoctorDeps()); got == 0 {
+			t.Fatalf("doctor exit = %d\n%s", got, out.String())
+		}
+		if !strings.Contains(out.String(), "FAIL config:") || !strings.Contains(out.String(), "version") {
 			t.Fatalf("report = %q", out.String())
 		}
 	})

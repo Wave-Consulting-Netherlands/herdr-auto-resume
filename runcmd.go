@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	appconfig "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/config"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/jobs"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
@@ -65,7 +66,15 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 		fs.PrintDefaults()
 	}
 	var panes stringList
-	var cfg runConfig
+	defaults := runConfig{
+		Runtime: "herdr", Transport: "cli", Interval: 3 * time.Second, Lines: 200,
+		HerdrBin: "herdr", StateFile: "auto", Margin: time.Minute,
+		MaxWait: 192 * time.Hour, VerifyTimeout: 90 * time.Second,
+		Providers: "claude,codex", ClaudePrompt: claude.New("").ResumeAction().Text,
+		CodexPrompt: codex.New("").ResumeAction().Text,
+	}
+	cfg := defaults
+	configPath := fs.String("config", appconfig.DefaultPath(), "configuration file path")
 	fs.StringVar(&cfg.Runtime, "runtime", "herdr", "runtime adapter: tmux or herdr")
 	fs.StringVar(&cfg.Transport, "transport", "cli", "herdr transport: cli or socket")
 	fs.Var(&panes, "pane", "pane ID to monitor (repeatable; required)")
@@ -88,7 +97,29 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 		fs.Usage()
 		return runConfig{}, err
 	}
-	if len(panes) == 0 {
+	fileConfig, found, configErr := appconfig.Load(*configPath)
+	if configErr != nil {
+		err := fmt.Errorf("load config: %w", configErr)
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	configExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "config" {
+			configExplicit = true
+		}
+	})
+	if configExplicit && !found {
+		err := fmt.Errorf("config file %s was not found", *configPath)
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	parsedCfg := cfg
+	cfg = mergeRunConfig(defaults, fileConfig)
+	applyExplicitRunFlags(&cfg, &parsedCfg, &panes, fs)
+	if len(cfg.Panes) == 0 {
 		err := errors.New("at least one --pane is required")
 		fmt.Fprintln(stderr, "error:", err)
 		fs.Usage()
@@ -141,8 +172,100 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 		fs.Usage()
 		return runConfig{}, err
 	}
-	cfg.Panes = append([]string(nil), panes...)
 	return cfg, nil
+}
+
+func mergeRunConfig(defaults runConfig, file appconfig.Config) runConfig {
+	merged := defaults
+	if file.Has("runtime.type") {
+		merged.Runtime = file.Runtime.Type
+	}
+	if file.Has("runtime.transport") {
+		merged.Transport = file.Runtime.Transport
+	}
+	if file.Has("runtime.herdr_bin") {
+		merged.HerdrBin = file.Runtime.HerdrBin
+	}
+	if file.Has("runtime.socket") {
+		merged.Socket = file.Runtime.Socket
+	}
+	if file.Has("runtime.workspace") {
+		merged.Workspace = file.Runtime.Workspace
+	}
+	if file.Has("monitoring.panes") {
+		merged.Panes = append([]string(nil), file.Monitoring.Panes...)
+	}
+	if file.Has("monitoring.interval") {
+		merged.Interval = file.Monitoring.Interval
+	}
+	if file.Has("monitoring.lines") {
+		merged.Lines = file.Monitoring.Lines
+	}
+	if file.Has("resume.margin") {
+		merged.Margin = file.Resume.Margin
+	}
+	if file.Has("resume.max_wait") {
+		merged.MaxWait = file.Resume.MaxWait
+	}
+	if file.Has("resume.verify_timeout") {
+		merged.VerifyTimeout = file.Resume.VerifyTimeout
+	}
+	if file.Has("providers.enabled") {
+		merged.Providers = strings.Join(file.Providers.Enabled, ",")
+	}
+	if file.Has("providers.claude_prompt") {
+		merged.ClaudePrompt = file.Providers.ClaudePrompt
+	}
+	if file.Has("providers.codex_prompt") {
+		merged.CodexPrompt = file.Providers.CodexPrompt
+	}
+	if file.Has("state.file") {
+		merged.StateFile = file.State.File
+	}
+	return merged
+}
+
+func applyExplicitRunFlags(dst, parsed *runConfig, panes *stringList, fs *flag.FlagSet) {
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "runtime":
+			dst.Runtime = parsed.Runtime
+		case "transport":
+			dst.Transport = parsed.Transport
+		case "pane":
+			dst.Panes = append([]string(nil), (*panes)...)
+		case "interval":
+			dst.Interval = parsed.Interval
+		case "lines":
+			dst.Lines = parsed.Lines
+		case "dry-run":
+			dst.DryRun = parsed.DryRun
+		case "test-pattern":
+			dst.TestPattern = parsed.TestPattern
+		case "herdr-bin":
+			dst.HerdrBin = parsed.HerdrBin
+		case "socket":
+			dst.Socket = parsed.Socket
+		case "session":
+			dst.Session = parsed.Session
+		case "workspace":
+			dst.Workspace = parsed.Workspace
+		case "state-file":
+			dst.StateFile = parsed.StateFile
+		case "margin":
+			dst.Margin = parsed.Margin
+		case "max-wait":
+			dst.MaxWait = parsed.MaxWait
+		case "verify-timeout":
+			dst.VerifyTimeout = parsed.VerifyTimeout
+		case "providers":
+			dst.Providers = parsed.Providers
+		case "claude-prompt":
+			dst.ClaudePrompt = parsed.ClaudePrompt
+		case "codex-prompt":
+			dst.CodexPrompt = parsed.CodexPrompt
+		}
+	})
 }
 
 func buildProviderRegistry(names, claudePrompt, codexPrompt string) (*provider.Registry, error) {
