@@ -8,11 +8,8 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
    CLI verb to acknowledge/clear a handled job. Found during Phase 3 live E2E.
 2. **`status` RESET column shows UTC despite the `RESET(local)` header.** Cosmetic;
    render in the local timezone or rename the header.
-3. **Validation gate 9 `❯` sensitivity.** Any `❯` in the read tail → MANUAL_REQUIRED.
-   Correct for Claude's rate-limit menu, but panes whose scrollback contains
-   starship/p10k-style `❯` prompts inside the read window park instead of resuming.
-   Revisit in Phase 4 chrome-aware detection (distinguish a menu selector at
-   line-start-of-a-menu-block from a shell prompt glyph).
+3. **Closed in Phase 4. Validation gate 9 `❯` sensitivity.** `Analyze` now treats a
+   bare `❯` as an idle prompt and reserves MANUAL_REQUIRED for a detected menu block.
 4. **goreleaser/CI still build under the upstream `autoclaude` name** — revisit at
    packaging (BRIEF Phase 7).
 5. **PATH for Go toolchain** (`~/.local/go/bin`) still per-shell export on this host;

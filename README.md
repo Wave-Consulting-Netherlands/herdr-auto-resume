@@ -76,6 +76,7 @@ herdr-auto-resume run --pane w1:p1
 herdr-auto-resume run --pane w1:p1 --pane w2:p1 --interval 5s
 herdr-auto-resume run --pane w1:p1 --dry-run --test-pattern "<<<TEST>>>"
 herdr-auto-resume doctor
+herdr-auto-resume detect --file path/to/pane-capture.txt
 ```
 
 Use `--herdr-bin`, `--socket`, `--session`, and `--workspace` to select a Herdr
@@ -97,6 +98,10 @@ The scheduler validates the pane, foreground process, working directory, and ter
 state before sending one `Escape` → `continue` → `Enter` sequence. It persists before
 sending and verifies that the rate limit cleared or the pane evidence changed. Use
 `--dry-run` to exercise the lifecycle without writing pane input.
+
+`detect --file` is a read-only fixture diagnostic. It prints the Claude limit analysis,
+typed reset kind/timezone/confidence, UTC and local parsed times, and matched evidence;
+it never connects to Herdr or sends pane input.
 
 ### Pane Colors
 

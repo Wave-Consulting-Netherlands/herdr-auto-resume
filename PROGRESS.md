@@ -166,8 +166,36 @@ Fork remote: `https://github.com/Wave-Consulting-Netherlands/herdr-auto-resume` 
     its reset text differs. (3) Any non-RESUMED terminal job parks the pane until the
     state file is cleaned — no `clear`/`ack` command yet (see BACKLOG.md).
 
+## Phase 4 code complete — 2026-07-31
+
+- Added the stdlib-only terminal normalization leaf and explicit fake-clock detection
+  seam; legacy `CheckRateLimit`/`HasReset` wrappers and the TUI path remain intact.
+- Added typed reset parsing for local/IANA/abbreviation clocks, relative and weekly
+  date-time resets, DST gap/fold handling, horizon rejection, and additive store fields.
+- Added Claude message families, versioned positive fixtures, chrome-aware live-tail
+  detection, quote/tool-echo/stale guards, and the unheaded `⎿` live-banner exception.
+- `Analyze.Actionable` now gates scheduling and periodic/legacy sends; menus remain
+  visible but block sending at validation gate 9. Evidence hashing remains raw-content
+  SHA-256 and schema version remains 1.
+- Added the read-only `detect --file` diagnostic with UTC/local reset output. The live
+  E2E drills in PLANS.md commit 7 remain with the orchestrator.
+
+### Final code gate
+
+```text
+ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume	1.086s
+ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/arch	1.029s
+ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator	1.191s
+ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection	1.100s
+ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/jobs	1.944s
+ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime	1.018s
+ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/herdr	1.023s
+ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/tmux	1.014s
+ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store	1.053s
+ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/terminal	1.016s
+?   	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/tui	[no test files]
+```
+
 ## Next task
 
-BRIEF.md Phase 4 — Claude Code production support: expanded reset parsing (timezones,
-DST, weekly), chrome-aware live-tail detection, conservative wait/stop menu handling,
-richer notifications. PLANS.md for Phase 3 is complete and can be superseded.
+Phase 4 live E2E drills (PLANS.md commit 7), then BRIEF.md Phase 5 (Codex provider)
