@@ -36,6 +36,7 @@ func (s *stringList) Set(value string) error {
 
 type runConfig struct {
 	Runtime       string
+	Transport     string
 	Panes         []string
 	Interval      time.Duration
 	Lines         int
@@ -54,6 +55,8 @@ type runConfig struct {
 	CodexPrompt   string
 }
 
+const herdrDetectionMatchRegex = `(?i)(?:limit\s+reached|rate\s+limit|usage\s+limit|out\s+of\s+(?:extra\s+)?usage|try\s+again\s+in|you['’]ve\s+hit\s+your|out\s+of\s+credits|spend\s+cap)`
+
 func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -64,6 +67,7 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	var panes stringList
 	var cfg runConfig
 	fs.StringVar(&cfg.Runtime, "runtime", "herdr", "runtime adapter: tmux or herdr")
+	fs.StringVar(&cfg.Transport, "transport", "cli", "herdr transport: cli or socket")
 	fs.Var(&panes, "pane", "pane ID to monitor (repeatable; required)")
 	fs.DurationVar(&cfg.Interval, "interval", 3*time.Second, "poll interval")
 	fs.IntVar(&cfg.Lines, "lines", 200, "number of recent pane lines to read")
@@ -92,6 +96,24 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	}
 	if cfg.Runtime != "herdr" && cfg.Runtime != "tmux" {
 		err := fmt.Errorf("unsupported runtime %q", cfg.Runtime)
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.Transport != "cli" && cfg.Transport != "socket" {
+		err := fmt.Errorf("unsupported transport %q", cfg.Transport)
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.Transport == "socket" && cfg.Runtime != "herdr" {
+		err := errors.New("socket transport requires --runtime herdr")
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.Transport == "socket" && cfg.Session != "" {
+		err := errors.New("--session is unsupported with socket transport; use --socket")
 		fmt.Fprintln(stderr, "error:", err)
 		fs.Usage()
 		return runConfig{}, err
@@ -184,12 +206,111 @@ func runtimeForRun(cfg runConfig) (runtimeapi.Runtime, error) {
 	if cfg.Runtime == "tmux" {
 		return tmuxadapter.New()
 	}
+	if cfg.Transport == "socket" {
+		return herdradapter.NewSocket(herdradapter.SocketOptions{
+			Path: cfg.Socket, Workspace: cfg.Workspace,
+		}), nil
+	}
 	return herdradapter.New(herdradapter.Options{
 		Bin:        cfg.HerdrBin,
 		SocketPath: cfg.Socket,
 		Session:    cfg.Session,
 		Workspace:  cfg.Workspace,
 	}), nil
+}
+
+func startDetectionPump(ctx context.Context, ticker <-chan time.Time, events <-chan runtimeapi.Event) <-chan time.Time {
+	return startDetectionPumpWithInbox(ctx, ticker, events, nil)
+}
+
+func startDetectionPumpWithInbox(ctx context.Context, ticker <-chan time.Time, events <-chan runtimeapi.Event, inbox chan<- runtimeapi.Event) <-chan time.Time {
+	ticks := make(chan time.Time, 8)
+	go func() {
+		defer close(ticks)
+		var timer *time.Timer
+		var timerC <-chan time.Time
+		var pending bool
+		var lastFire time.Time
+		reset := func(delay time.Duration) {
+			if timer == nil {
+				timer = time.NewTimer(delay)
+			} else {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(delay)
+			}
+			timerC = timer.C
+		}
+		defer func() {
+			if timer != nil {
+				timer.Stop()
+			}
+		}()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case tick, ok := <-ticker:
+				if !ok {
+					ticker = nil
+					continue
+				}
+				select {
+				case ticks <- tick:
+				default:
+				}
+			case event, ok := <-events:
+				if !ok {
+					events = nil
+					continue
+				}
+				if inbox != nil {
+					select {
+					case inbox <- event:
+					default:
+					}
+				}
+				if event.Kind != runtimeapi.EventOutputMatched && event.Kind != runtimeapi.EventAgentStatus && event.Kind != runtimeapi.EventPaneMoved && event.Kind != runtimeapi.EventResync {
+					continue
+				}
+				if event.Kind == runtimeapi.EventPaneMoved || event.Kind == runtimeapi.EventResync {
+					select {
+					case ticks <- time.Now():
+					default:
+					}
+					continue
+				}
+				pending = true
+				delay := 300 * time.Millisecond
+				if !lastFire.IsZero() {
+					since := time.Since(lastFire)
+					if since < time.Second {
+						if remaining := time.Second - since; remaining > delay {
+							delay = remaining
+						}
+					}
+				}
+				reset(delay)
+			case <-timerC:
+				if !pending {
+					timerC = nil
+					continue
+				}
+				pending = false
+				lastFire = time.Now()
+				timerC = nil
+				select {
+				case ticks <- lastFire:
+				default:
+				}
+			}
+		}
+	}()
+	return ticks
 }
 
 func runCommand(args []string, _, stderr io.Writer) int {
@@ -228,9 +349,10 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	statePath := resolveStatePath(cfg)
 	fmt.Fprintf(stderr, "state path: %s\n", statePath)
 	coordOpts := make([]coordinator.Option, 0, 2)
+	var manager *jobs.Manager
 	if statePath != "off" {
 		st := store.NewJSONStore(statePath)
-		manager := jobs.New(rt, st, jobs.Config{
+		manager = jobs.New(rt, st, jobs.Config{
 			Provider:      "claude",
 			Margin:        cfg.Margin,
 			MaxHorizon:    cfg.MaxWait,
@@ -270,13 +392,69 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	defer detectionTicker.Stop()
 	statusTicker := time.NewTicker(cfg.Interval)
 	defer statusTicker.Stop()
-	coord.RunLoopWithCadence(ctx, detectionTicker.C, statusTicker.C, func() ([]runtimeapi.Pane, error) {
+	eventInbox := make(chan runtimeapi.Event, 64)
+	var eventStream <-chan runtimeapi.Event
+	if source, ok := rt.(runtimeapi.EventSource); ok {
+		started, startErr := source.StartEvents(ctx, runtimeapi.SubscribeSpec{
+			PaneIDs:    paneIDs(panes),
+			MatchRegex: herdrDetectionMatchRegex,
+			ReadSource: "detection",
+			ReadLines:  cfg.Lines,
+		})
+		if startErr != nil {
+			fmt.Fprintf(stderr, "warning: event stream unavailable; polling fallback: %v\n", startErr)
+		} else {
+			eventStream = started
+		}
+	}
+	detectionTicks := startDetectionPumpWithInbox(ctx, detectionTicker.C, eventStream, eventInbox)
+	var eventChannelOpen = true
+	coord.RunLoopWithCadence(ctx, detectionTicks, statusTicker.C, func() ([]runtimeapi.Pane, error) {
+		var snapshot []runtimeapi.Pane
+		var hasSnapshot bool
+		if eventChannelOpen {
+			for {
+				select {
+				case event, ok := <-eventInbox:
+					if !ok {
+						eventChannelOpen = false
+						continue
+					}
+					if event.Kind == runtimeapi.EventResync {
+						snapshot = append([]runtimeapi.Pane(nil), event.Snapshot...)
+						hasSnapshot = true
+					}
+				default:
+					if hasSnapshot {
+						filtered, _ := filterPanes(snapshot, cfg.Panes, selfPaneID)
+						return filtered, nil
+					}
+					goto refreshFromRuntime
+				}
+			}
+		}
+	refreshFromRuntime:
 		all, err := rt.ListPanes()
 		if err != nil {
 			return nil, err
 		}
 		filtered, _ := filterPanes(all, cfg.Panes, selfPaneID)
 		return filtered, nil
-	}, nil, stderr)
+	}, managerTick(manager), stderr)
 	return 0
+}
+
+func managerTick(manager *jobs.Manager) func(time.Time) {
+	if manager == nil {
+		return nil
+	}
+	return manager.Tick
+}
+
+func paneIDs(panes []runtimeapi.Pane) []string {
+	ids := make([]string, 0, len(panes))
+	for _, pane := range panes {
+		ids = append(ids, pane.ID)
+	}
+	return ids
 }
