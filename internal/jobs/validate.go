@@ -36,11 +36,9 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		_ = m.updateJob(index, job)
 		return
 	}
-	var pane runtime.Pane
 	found := false
 	for _, candidate := range panes {
 		if candidate.ID == job.PaneID {
-			pane = candidate
 			found = true
 			break
 		}
@@ -76,6 +74,49 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		finish(store.StateManualRequired, "terminal is not in a safe blocked or idle state", true)
 		return
 	}
-	_ = pane
-	finish(store.StateValidating, "validation passed", false)
+	job.LastValidation = "validation passed"
+	if m.updateJob(index, job) {
+		m.beginResume(index, job, now)
+	}
+}
+
+func (m *Manager) verify(index int, job store.Job, now time.Time) {
+	content, err := m.rt.ReadPane(job.PaneID, m.cfg.ReadLines)
+	if err == nil {
+		status := detection.CheckRateLimit(content)
+		if now.Before(job.VerifyDeadlineUTC) && (!status.IsLimited || hashContent(content) != job.EvidenceHash) {
+			job.State = store.StateResumed
+			job.LastValidation = "resume verified"
+			job.LastError = ""
+			if m.updateJob(index, job) {
+				m.logf("job=%s active", job.ID)
+				m.notify("auto-resume", fmt.Sprintf("job %s resumed", job.ID), false)
+			}
+			return
+		}
+		if !now.Before(job.VerifyDeadlineUTC) {
+			job.State = store.StateFailed
+			job.LastError = "resume verification deadline exceeded"
+			job.LastValidation = "resume verification failed"
+			if m.updateJob(index, job) {
+				m.logf("job=%s failed: %s", job.ID, job.LastError)
+				m.notify("auto-resume", fmt.Sprintf("job %s failed: %s", job.ID, job.LastError), true)
+			}
+			return
+		}
+		job.LastValidation = "resume verification pending"
+	} else {
+		if !now.Before(job.VerifyDeadlineUTC) {
+			job.State = store.StateFailed
+			job.LastError = "resume verification deadline exceeded"
+			job.LastValidation = "resume verification failed"
+			if m.updateJob(index, job) {
+				m.logf("job=%s failed: %s", job.ID, job.LastError)
+				m.notify("auto-resume", fmt.Sprintf("job %s failed: %s", job.ID, job.LastError), true)
+			}
+			return
+		}
+		job.LastValidation = "resume verification read failed: " + err.Error()
+	}
+	_ = m.updateJob(index, job)
 }

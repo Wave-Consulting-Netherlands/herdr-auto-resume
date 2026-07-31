@@ -128,8 +128,8 @@ func TestTickWaitsThenValidatesOnResumeTime(t *testing.T) {
 	}
 	m.Tick(reset.Add(time.Minute))
 	job := m.Snapshot()[0]
-	if job.State != store.StateValidating || job.LastValidation == "" {
-		t.Fatalf("at-resume job = %#v, want VALIDATING with validation record", job)
+	if job.State != store.StateVerifyingResume || job.LastValidation == "" {
+		t.Fatalf("at-resume job = %#v, want VERIFYING_RESUME with validation record", job)
 	}
 }
 
@@ -169,11 +169,16 @@ func TestValidationPaneGoneAndTransientRuntimeOutage(t *testing.T) {
 	rt.PanesList = []runtime.Pane{{ID: "p1"}}
 	rt.Procs = map[string]runtime.ProcessInfo{"p1": {Command: "claude", CWD: "/work"}}
 	m.Tick(testNow.Add(2 * time.Minute))
-	if got := m.Snapshot()[0].State; got != store.StateValidating {
-		t.Fatalf("recovered state = %s, want VALIDATING", got)
+	if got := m.Snapshot()[0].State; got != store.StateVerifyingResume {
+		t.Fatalf("recovered state = %s, want VERIFYING_RESUME", got)
 	}
-	rt.PanesList = nil
-	m.Tick(testNow.Add(3 * time.Minute))
+}
+
+func TestValidationPaneGone(t *testing.T) {
+	rt := &testRuntime{Fake: runtime.Fake{PanesList: nil, Content: map[string]string{"p1": limitedContent()}}}
+	m, _ := newTestManager(t, rt, Config{Margin: time.Minute}, "job-1")
+	m.HandleLimit(limitEvent(limitedContent(), testNow))
+	m.Tick(testNow.Add(time.Minute))
 	if got := m.Snapshot()[0].State; got != store.StateSessionGone {
 		t.Fatalf("gone state = %s, want SESSION_GONE", got)
 	}
@@ -205,8 +210,8 @@ func TestIdlePromptPassesValidation(t *testing.T) {
 	m, _ := newTestManager(t, rt, Config{}, "job-1")
 	m.HandleLimit(limitEvent(limitedContent(), testNow))
 	m.Tick(testNow.Add(time.Minute))
-	if got := m.Snapshot()[0].State; got != store.StateValidating {
-		t.Fatalf("state = %s, want VALIDATING", got)
+	if got := m.Snapshot()[0].State; got != store.StateVerifyingResume {
+		t.Fatalf("state = %s, want VERIFYING_RESUME", got)
 	}
 }
 
@@ -219,8 +224,8 @@ func TestProcessInfoErrorLeavesFingerprintEmptyAndRelaxesValidation(t *testing.T
 		t.Fatalf("job fingerprint = %#v, want empty", job)
 	}
 	m.Tick(testNow.Add(time.Minute))
-	if got := m.Snapshot()[0].State; got != store.StateValidating {
-		t.Fatalf("state = %s, want VALIDATING", got)
+	if got := m.Snapshot()[0].State; got != store.StateVerifyingResume {
+		t.Fatalf("state = %s, want VERIFYING_RESUME", got)
 	}
 	loaded, err := st.Load()
 	if err != nil || len(loaded.Jobs) != 1 {

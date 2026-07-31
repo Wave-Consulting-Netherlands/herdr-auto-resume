@@ -211,7 +211,43 @@ func (m *Manager) Tick(now time.Time) {
 		}
 		if job.State == store.StateValidating {
 			m.validate(i, job, now)
+		} else if job.State == store.StateVerifyingResume {
+			m.verify(i, job, now)
 		}
+	}
+}
+
+func (m *Manager) beginResume(index int, job store.Job, now time.Time) {
+	job.State = store.StateResuming
+	job.AttemptID = m.nextID()
+	job.AttemptAtUTC = now.UTC()
+	job.Attempts = 1
+	if !m.updateJob(index, job) {
+		return
+	}
+
+	if m.cfg.DryRun {
+		job.State = store.StateResumed
+		job.LastValidation = "dry-run resume recorded"
+		_ = m.updateJob(index, job)
+		m.logf("job=%s dry-run resume", job.ID)
+		return
+	}
+	if err := coordinator.SendContinueSequence(m.rt, job.PaneID, m.sleep); err != nil {
+		job.State = store.StateManualRequired
+		job.LastError = "resume send failed: " + err.Error()
+		job.LastValidation = "resume send failed"
+		if m.updateJob(index, job) {
+			m.notify("auto-resume", fmt.Sprintf("job %s requires manual intervention: %s", job.ID, job.LastError), false)
+		}
+		return
+	}
+	job.State = store.StateVerifyingResume
+	job.VerifyDeadlineUTC = now.Add(m.cfg.VerifyTimeout).UTC()
+	job.LastValidation = "resume submitted; verifying"
+	if m.updateJob(index, job) {
+		m.logf("job=%s resume submitted", job.ID)
+		m.notify("auto-resume", fmt.Sprintf("job %s submitted; verifying", job.ID), false)
 	}
 }
 
