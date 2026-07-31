@@ -1,0 +1,2 @@
+$ printf '%s\n' "You've hit your usage limit. Try again at 3:51 PM."
+You've hit your usage limit. Try again at 3:51 PM.
