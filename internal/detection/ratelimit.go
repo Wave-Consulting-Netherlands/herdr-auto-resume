@@ -2,8 +2,6 @@ package detection
 
 import (
 	"regexp"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -13,6 +11,7 @@ type RateLimitStatus struct {
 	ResetsAt  string    // Original string like "2pm" or "10:30am"
 	ResetTime time.Time // Parsed reset time
 	TimeUntil time.Duration
+	Spec      ResetSpec
 }
 
 // Rate limit patterns - multiple formats Claude Code uses
@@ -60,114 +59,44 @@ func CheckRateLimitAt(content string, now time.Time) RateLimitStatus {
 		}
 	}
 
-	// If no time-capturing pattern matched, try fallback patterns
+	limited := match != nil
+	// If no time-capturing pattern matched, try fallback patterns.
 	if match == nil {
 		for _, pattern := range rateLimitFallbackPatterns {
 			if pattern.MatchString(content) {
-				// Rate limited but couldn't parse time - return with empty ResetsAt
-				return RateLimitStatus{
-					IsLimited: true,
-					ResetsAt:  "", // Unknown reset time
-				}
+				limited = true
+				break
 			}
 		}
-		return RateLimitStatus{IsLimited: false}
+	}
+	if !limited {
+		return RateLimitStatus{Spec: ResetSpec{Kind: ResetKindUnknown, Confidence: ConfidenceLow}}
 	}
 
-	resetStr := match[1]
-	// Pattern index 2 is the minutes-remaining format (e.g., "8m" -> "8")
-	if patternIdx == 2 {
-		minutes, err := strconv.Atoi(resetStr)
-		if err != nil {
-			return RateLimitStatus{
-				IsLimited: true,
-				ResetsAt:  resetStr + "m",
-			}
-		}
-		resetTime := now.Add(time.Duration(minutes) * time.Minute)
-		return RateLimitStatus{
-			IsLimited: true,
-			ResetsAt:  resetStr + "m",
-			ResetTime: resetTime,
-			TimeUntil: time.Duration(minutes) * time.Minute,
-		}
+	spec := ParseReset(content, now)
+	resetStr := ""
+	if match != nil {
+		resetStr = match[1]
 	}
-
-	// Clock time format (e.g., "8pm", "10:30am")
-	resetTime, err := parseResetTime(resetStr, now)
-	if err != nil {
-		// Pattern matched but couldn't parse time - still rate limited
-		return RateLimitStatus{
-			IsLimited: true,
-			ResetsAt:  resetStr,
-		}
+	if spec.ParsedTime.IsZero() && resetStr != "" {
+		spec = ParseReset("resets "+resetStr, now)
 	}
-
-	timeUntil := resetTime.Sub(now)
-
-	// If the time is more than 1 hour in the past, it's likely for tomorrow.
-	// But if it's within the last hour, keep it as-is so we can detect
-	// that the reset time has passed and trigger the continue action.
-	if timeUntil < -1*time.Hour {
-		resetTime = resetTime.Add(24 * time.Hour)
-		timeUntil = resetTime.Sub(now)
-	}
-
-	return RateLimitStatus{
+	status := RateLimitStatus{
 		IsLimited: true,
 		ResetsAt:  resetStr,
-		ResetTime: resetTime,
-		TimeUntil: timeUntil,
+		Spec:      spec,
 	}
-}
-
-// parseResetTime parses a time string like "2pm" or "10:30am" into a time.Time for today
-func parseResetTime(s string, now time.Time) (time.Time, error) {
-	s = strings.ToLower(strings.TrimSpace(s))
-	loc := now.Location()
-
-	// Try parsing with minutes first: "10:30am"
-	formats := []string{
-		"3:04pm",
-		"3:04 pm",
-		"3pm",
-		"3 pm",
+	if patternIdx == 2 {
+		status.ResetsAt = resetStr + "m"
 	}
-
-	for _, format := range formats {
-		t, err := time.ParseInLocation(format, s, loc)
-		if err == nil {
-			// Combine parsed time with today's date
-			return time.Date(now.Year(), now.Month(), now.Day(),
-				t.Hour(), t.Minute(), 0, 0, loc), nil
-		}
+	if status.ResetsAt == "" && !spec.ParsedTime.IsZero() {
+		status.ResetsAt = spec.Raw
 	}
-
-	// Manual parsing as fallback
-	isPM := strings.Contains(s, "pm")
-	s = strings.ReplaceAll(s, "am", "")
-	s = strings.ReplaceAll(s, "pm", "")
-	s = strings.TrimSpace(s)
-
-	var hour, minute int
-	if strings.Contains(s, ":") {
-		parts := strings.Split(s, ":")
-		hour, _ = strconv.Atoi(parts[0])
-		minute, _ = strconv.Atoi(parts[1])
-	} else {
-		hour, _ = strconv.Atoi(s)
-		minute = 0
+	if !spec.ParsedTime.IsZero() {
+		status.ResetTime = spec.ParsedTime
+		status.TimeUntil = spec.ParsedTime.Sub(now)
 	}
-
-	// Convert to 24-hour format
-	if isPM && hour != 12 {
-		hour += 12
-	} else if !isPM && hour == 12 {
-		hour = 0
-	}
-
-	return time.Date(now.Year(), now.Month(), now.Day(),
-		hour, minute, 0, 0, loc), nil
+	return status
 }
 
 // HasReset checks if the rate limit has reset (time has passed)

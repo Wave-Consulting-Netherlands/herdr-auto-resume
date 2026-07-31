@@ -158,10 +158,6 @@ func TestCheckRateLimit_FallbackNoTime(t *testing.T) {
 			name:    "rate limited status",
 			content: "⚠ Rate limited",
 		},
-		{
-			name:    "limit reached with unparseable time format",
-			content: "Limit reached (resets in 2 hours)",
-		},
 	}
 
 	for _, tc := range cases {
@@ -177,6 +173,13 @@ func TestCheckRateLimit_FallbackNoTime(t *testing.T) {
 				t.Error("expected ResetTime to be zero for fallback")
 			}
 		})
+	}
+}
+
+func TestCheckRateLimit_RelativeReset(t *testing.T) {
+	status := CheckRateLimitAt("Limit reached (resets in 2 hours)", rateLimitTestNow)
+	if !status.IsLimited || status.ResetTime.IsZero() || status.TimeUntil != 2*time.Hour {
+		t.Fatalf("relative status = %#v, want a two-hour parsed reset", status)
 	}
 }
 
