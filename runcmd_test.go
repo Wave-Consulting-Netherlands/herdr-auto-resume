@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +33,58 @@ func TestParseRunFlagsDefaultsToCLITransport(t *testing.T) {
 	cfg, err := parseRunFlags([]string{"--pane", "w1:p1"}, &stderr)
 	if err != nil || cfg.Transport != "cli" {
 		t.Fatalf("transport = %q, err = %v; want cli default", cfg.Transport, err)
+	}
+}
+
+func TestParseRunFlagsAbsentConfigPreservesExistingDefaults(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var firstErr, secondErr bytes.Buffer
+	want, err := parseRunFlags([]string{"--pane", "w1:p1"}, &firstErr)
+	if err != nil {
+		t.Fatalf("baseline parseRunFlags: %v", err)
+	}
+	got, err := parseRunFlags([]string{"--pane", "w1:p1"}, &secondErr)
+	if err != nil {
+		t.Fatalf("default-path parity parseRunFlags: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("configless parse = %#v, baseline = %#v", got, want)
+	}
+}
+
+func TestParseRunFlagsConfigPrecedenceAndPanes(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(`version: 1
+runtime:
+  transport: socket
+monitoring:
+  panes: [configured:p1]
+  interval: 7s
+  lines: 99
+resume:
+  margin: 2m
+providers:
+  enabled: [claude]
+state:
+  file: /tmp/config-state.json
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	cfg, err := parseRunFlags([]string{"--config", configPath, "--interval", "5s", "--dry-run=false", "--lines", "10"}, &stderr)
+	if err != nil {
+		t.Fatalf("parseRunFlags: %v\nstderr=%s", err, stderr.String())
+	}
+	if cfg.Transport != "socket" || !reflect.DeepEqual(cfg.Panes, []string{"configured:p1"}) || cfg.Interval != 5*time.Second || cfg.Lines != 10 || cfg.DryRun || cfg.Margin != 2*time.Minute || cfg.Providers != "claude" || cfg.StateFile != "/tmp/config-state.json" {
+		t.Fatalf("merged config = %#v", cfg)
+	}
+}
+
+func TestParseRunFlagsExplicitMissingConfigErrors(t *testing.T) {
+	var stderr bytes.Buffer
+	_, err := parseRunFlags([]string{"--config", filepath.Join(t.TempDir(), "missing.yaml"), "--pane", "w1:p1"}, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "config") {
+		t.Fatalf("error = %v, stderr=%q; want missing config error", err, stderr.String())
 	}
 }
 
@@ -185,6 +240,37 @@ func TestResolveStatePathAutoOffAndExplicit(t *testing.T) {
 				t.Fatalf("resolveStatePath() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRunCommandFailsOnHeldRunLockBeforeRuntimeConstruction(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	lock, err := store.AcquireRunLock(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+
+	var stderr bytes.Buffer
+	if got := runCommand([]string{"--pane", "w1:p1", "--state-file", statePath, "--herdr-bin", "/missing/herdr"}, nil, &stderr); got != 1 {
+		t.Fatalf("runCommand exit = %d, want 1; stderr=%q", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "already in use") || !strings.Contains(stderr.String(), filepath.Clean(statePath)) || !strings.Contains(stderr.String(), strconv.Itoa(os.Getpid())) {
+		t.Fatalf("stderr = %q, want run-lock error", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "get own pane") {
+		t.Fatalf("runtime was constructed after lock failure: %q", stderr.String())
+	}
+}
+
+func TestRunCommandStateFileOffDoesNotCreateRunLock(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	var stderr bytes.Buffer
+	if got := runCommand([]string{"--pane", "w1:p1", "--state-file", "off", "--herdr-bin", "/missing/herdr"}, nil, &stderr); got != 1 {
+		t.Fatalf("runCommand exit = %d, want runtime failure 1; stderr=%q", got, stderr.String())
+	}
+	if _, err := os.Stat(statePath + ".run"); !os.IsNotExist(err) {
+		t.Fatalf("off state created run lock: err=%v", err)
 	}
 }
 

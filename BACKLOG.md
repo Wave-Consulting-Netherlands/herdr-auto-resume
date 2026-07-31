@@ -2,39 +2,31 @@
 
 Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked up.
 
-1. **`clear`/`ack` command for parked jobs.** A pane with any non-RESUMED terminal job
-   (MANUAL_REQUIRED, FAILED, CANCELLED, SESSION_GONE) is parked — `HandleLimit` never
-   creates a new job for it until the state file is hand-edited. Safe, but there is no
-   CLI verb to acknowledge/clear a handled job. Found during Phase 3 live E2E.
-2. **`status` RESET column shows UTC despite the `RESET(local)` header.** Cosmetic;
-   render in the local timezone or rename the header.
-3. **Closed in Phase 4. Validation gate 9 `❯` sensitivity.** `Analyze` now treats a
-   bare `❯` as an idle prompt and reserves MANUAL_REQUIRED for a detected menu block.
-4. **goreleaser/CI still build under the upstream `autoclaude` name** — revisit at
-   packaging (BRIEF Phase 7).
-5. **PATH for Go toolchain** (`~/.local/go/bin`) still per-shell export on this host;
-   belongs in the chezmoi-managed dotfiles.
-6. **Codex rollout `resets_at` epoch integration.** Codex rollout JSONL carries structured
-   `rate_limits.*.resets_at` epochs; integrate this as a future signal when rollout
-   transcript support is scheduled, without changing the terminal fallback.
+1. **clear/ack command for parked jobs.** A pane with any non-RESUMED terminal job is parked;
+   add a safe CLI verb to acknowledge or clear a handled job without hand-editing state.
+2. **Closed in Phase 7 (D-P7-6).** Status RESET(local) now renders in the caller-provided
+   local timezone; the Europe/Amsterdam regression prevents a UTC display regression.
+3. **Closed in Phase 4.** Validation gate 9 sensitivity is covered by the committed regression
+   tests and safe menu handling.
+4. **Closed in Phase 7 (BACKLOG 4).** GoReleaser, CI, release workflow, script, and binary
+   names now use herdr-auto-resume; the first release is v0.2.0.
+5. **Out of repository.** The Go toolchain PATH belongs in the chezmoi-managed dotfiles, not
+   this application repository.
+6. **Codex rollout resets_at epoch integration.** Codex rollout JSONL carries structured
+   rate_limits.resets_at epochs; integrate this as a future signal without changing the
+   terminal fallback.
 7. **Codex credits-park UX.** Workspace credits and spend-cap banners are detected and
-   notified as non-actionable parked limits; add an explicit credits/park resolution
-   command when the job acknowledgement workflow is designed.
-8. **Done — Claude review and triage of `review.md`.** All ten findings were validated,
-   ordered in PLANS.md Phase 5.5, and remediated with permanent regression coverage.
-9. **Phase 6 code complete — pending live acceptance.** The event-driven socket client,
-   reconnect/resync path, and short-cadence polling fallback now address the transient
-   Claude acquisition miss. The orchestrator must still run the repeated BACKLOG-9 live
-   drill, detach/reattach drill, pane-move drill, and soak before closing this item.
-
-10. **Default transport flip after soak.** Keep `--transport cli` as the default until
-    the explicit socket-mode soak and live drills are clean; then make the default flip
-    a small, separately reviewed change.
-10. **Poisoned-window sub-30s transients.** `pane.output_matched` never refires within a
-    subscription and re-matches stale window content at (re)subscribe; a stale banner in
-    the detection window therefore consumes the armed shot, and a NEW banner living
-    <30s degrades to the detection-ticker floor. Live-drilled 2026-07-31: clean-window
-    2s transient caught in ~1s; poisoned-window 40s banner caught via ticker; poisoned
-    <30s missed. Realistic banners live minutes (covered). Improvement: recycle
-    immediately after each trigger-poll with identical-content damping (~5s), shrinking
-    the poisoned-window floor to ~5s.
+   non-actionable; add an explicit credits/park resolution command when acknowledgement is
+   designed.
+8. **Done — Claude review and triage of review.md.** All ten findings were validated, ordered,
+   and remediated with permanent regression coverage.
+9. **Closed in Phase 6.** Socket acquisition, reconnect/resync, pane-move, negative, and soak
+   acceptance drills passed; the event-driven acquisition miss is recorded as resolved.
+10. **Default transport flip after soak.** Keep --transport cli as the default until the
+    explicit socket-mode soak and live drills are clean; then make the default flip a small,
+    separately reviewed change.
+11. **Poisoned-window sub-30s transients.** pane.output_matched does not refire within one
+    subscription, so a stale detection window can consume the armed shot. Live drilling caught
+    clean-window 2s transients and poisoned 40s banners; poisoned sub-30s windows remain a
+    documented improvement opportunity. Candidate fix: recycle immediately after each
+    trigger-poll with identical-content damping of about five seconds.

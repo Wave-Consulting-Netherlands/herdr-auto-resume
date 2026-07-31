@@ -1,204 +1,166 @@
-# PLANS — Phase 6: Herdr socket client (event-driven acquisition)
+# PLANS — Phase 7: Packaging, config, single-instance guard, TUI/plugin evaluation (FINAL)
 
-Supersedes the completed Phase 5/5.5 plan (git history / PROGRESS.md). Authoritative for
-BRIEF.md §14 Phase 6. Exit criteria: **normal monitoring uses the event-driven socket
-client and survives Herdr client detach/reattach and watcher reconnects; polling fallback
-retained.** Completes BACKLOG 9 / review.md finding 8 and BRIEF §8.3 (durable pane
-identity via terminal_id).
+Supersedes the completed Phase 6 plan. Authoritative for BRIEF.md §14 Phase 7. Exit
+criteria: **documented installation and upgrade path; no manual process management
+required for normal use.** Closes BACKLOG 2 and 4; audits BRIEF §20.
 
 Gate per commit: `go build ./... && go vet ./... && go test ./... -race -count=1`
-(Go at ~/.local/go/bin, GOCACHE=/tmp/herdr-go-cache). Branch `phase-6-socket-client`.
-Deployed-watcher safety: `--transport` defaults to **cli** this whole phase; zero flag
-removals; store schema stays version 1 with one additive field; CLI-transport behavior
-byte-identical. Never deploy mid-branch.
+(Go 1.26.5 at ~/.local/go/bin, GOCACHE=/tmp/herdr-go-cache,
+GOMODCACHE=/tmp/herdr-go-mod-cache). Branch `phase-7-packaging`. Deployed watchers
+(wD:p1 cli, wQ:p1 soak socket, separate state files) keep working all phase; no store
+schema changes; no detection/job behavior changes beyond the run lock.
 
-## Appendix A — Wire-protocol ground truth (herdr 0.7.5, protocol 17, probed live 2026-07-31)
+## Decisions
 
-- **A.1 Framing:** newline-delimited JSON, one object per line, both directions. No
-  handshake, no auth (socket file mode 600 is the boundary). Socket:
-  ~/.config/herdr/herdr.sock.
-- **A.2 CRITICAL — one request per connection (probed):** server answers the first
-  request then CLOSES the conn. Sequential reuse → EOF; pipelining → ECONNRESET.
-  Persistent multiplexed request conns are IMPOSSIBLE on 0.7.5. Transport =
-  **dial-per-request** (unix connect ~µs; still beats fork/exec+CLI parse). id echoed
-  1:1 — verify echo.
-- **A.3 Exception — events.subscribe (probed):** fresh conn, subscribe → ack
-  `{"id","result":{"type":"subscription_started"}}` → conn STAYS OPEN streaming event
-  frames. No further requests on it. Architecture: one long-lived events conn +
-  dial-per-request for everything else.
-- **A.4 Envelopes:** request `{"id","method","params"}`; success
-  `{"id","result":{"type",…}}`; error `{"id","error":{code,message}}` (existing parse.go
-  decode works; add id-echo check). Pushed events `{"event":kind,"data":{…}}` — NO id
-  (the demux rule). Two kind vocabularies: dot form (pane.output_matched,
-  pane.agent_status_changed — probed arriving dot-form) and underscore form
-  (pane_created, pane_moved, layout_updated …) — DECODE BOTH (probe P2 pins).
-- **A.5 Results:** `ping` → `{type:"pong",version:"0.7.5",protocol:17,…}` (protocol
-  negotiation source). `session.snapshot` → snapshot{workspaces,tabs,panes,agents};
-  PaneInfo has pane_id, **terminal_id**, workspace_id, tab_id, agent_status, revision,
-  optional agent, agent_session{…}, cwd, terminal_title. `pane.list {workspace_id?}` →
-  panes:[PaneInfo] (terminal_id ALSO available to the CLI adapter's decode).
-  `pane.read {pane_id,source,lines?,strip_ansi=true}` → `{type:"pane_read",
-  read:{text,revision,truncated}}` — socket wraps text in an envelope (CLI printed raw);
-  extract read.text. `pane.process_info` → same foreground_processes shape as CLI.
-  `pane.send_text {pane_id,text}` / `pane.send_keys {pane_id,keys:[...]}` → {type:"ok"}
-  (keep esc/enter names). `notification.show {title,body?}`.
-- **A.6 Subscriptions:** `pane.output_matched` REQUIRES pane_id, source,
-  match{type:"substring"|"regex",value}; optional lines, strip_ansi; event data carries
-  matched_line + FULL read (PaneReadResult). `pane.agent_status_changed` requires
-  pane_id, optional agent_status filter. Global (no pane_id): pane.created/closed/
-  updated/focused/moved/exited/agent_detected, layout.updated, workspace.*, tab.*.
-  `pane_moved` data: {previous_pane_id, previous_workspace_id, previous_tab_id,
-  pane:PaneInfo} — **pane IDs change on move; terminal_id is the durable key** (§8.3).
-- **A.7 output_matched semantics (probed):** fires immediately AT SUBSCRIBE TIME when
-  current content already matches (revision 0, ms latency); did NOT refire during 8s of
-  redraw with a persistently-matching screen. Treat as edge/at-subscribe triggered;
-  refire-on-reappearance UNVERIFIED (probe P1). Consequence: subscribe-then-poll has no
-  acquisition gap; periodic subscription recycling re-arms level-triggered.
-- **A.8 Socket path:** resolution order (docs): --session → HERDR_SOCKET_PATH →
-  HERDR_SESSION → default. Our socket client takes ONLY an explicit configured path or
-  the default — it must NOT read HERDR_* env (same inherited-session hazard the CLI
-  scrub kills). `--transport socket --session x` without `--socket` → hard flag error
-  this phase.
-- **A.9 Live probes for orchestrator (throwaway; none block commit 1):**
-  P1 refire (subscribe substring, match, clear, match again → refire without
-  resubscribe?); P2 lifecycle envelope form + data shapes (create/move/close scratch
-  pane while subscribed); P3 detach/reattach herdr client while subscribed (expect no
-  disruption); P4 send-keys names via live E2E; P5 idle-hours timeout (soak answers).
-
-## Design decisions
-
-- **D-P6-1:** internal/runtime/herdr gains socket.go (dial-per-request Runtime impl) +
-  events.go (long-lived subscription conn + reconnect). CLI adapter untouched except
-  parse.go gaining terminal_id. Core packages never import the concrete adapter (arch
-  test).
-- **D-P6-2:** `run`/`doctor` gain `--transport cli|socket`, default **cli**. Default
-  flip is post-soak, NOT this phase.
-- **D-P6-3:** events are a capability, not a Runtime change: new
-  internal/runtime/events.go defines the neutral model; socket adapter implements;
-  runcmd type-asserts. Runtime interface unchanged (tmux/CLI/fake need no stubs).
-  EventKind: output_matched, agent_status, pane_moved, pane_closed, panes_changed
-  (created/updated/layout coalesced), resync (reconnect bootstrap done, carries
-  Snapshot []Pane). EventSource{StartEvents(ctx, SubscribeSpec) (<-chan Event, error);
-  UpdateSubscribedPanes([]string)}. SubscribeSpec{PaneIDs, MatchRegex, ReadSource,
-  ReadLines}.
-- **D-P6-4 socket internals:** SocketOptions{Path ("" → default), DialTimeout 3s,
-  OpTimeout 5s (parity with CLI commandTimeout)}. call(): dial unix, SetDeadline,
-  write one line, read one line (bufio 4MB cap), close; error envelope → HerdrError;
-  id mismatch → error. Ping()/Snapshot() exposed for doctor+bootstrap. Every call
-  deadline-bounded — never blocks the coordinator.
-- **D-P6-5 threading:** events goroutine only decodes + sends on a buffered channel
-  (cap ~64) with coalescing — trigger events collapse to latest per pane; NEVER block;
-  never drop resync/pane_moved (retry-with-deadline, force-coalesce triggers first).
-  ALL consumption on the run-loop goroutine — no locks in coordinator/jobs, no
-  concurrent Tick/Reconcile.
-- **D-P6-6 reconnect:** on stream error/EOF: backoff 500ms→15s ±20% jitter; each
-  attempt = dial → ping (WARN if protocol≠17, continue) → session.snapshot →
-  resubscribe → emit EventResync{Snapshot}. Resync handling in runcmd: SetPanes,
-  manager.ReconcilePanes(snapshot), immediate action-capable poll + manager.Tick.
-  Polling fallback retained (BRIEF §8.2 step 5).
-- **D-P6-7 event-driven acquisition (the BACKLOG-9 fix):** per monitored pane subscribe
-  pane.agent_status_changed (unfiltered) + pane.output_matched with source:"detection",
-  lines:cfg.Lines, regex = conservative case-insensitive alternation over both
-  providers' banner anchors (defined in runcmd wiring, NOT providers — server-side
-  match is a trigger only; client Analyze stays authoritative; false trigger = one
-  poll). On trigger: debounced (300ms quiescence, ≤1 forced fire/s) tick into the SAME
-  detection channel the ticker feeds → Poll() → HandleLimit within ~1s of render,
-  independent of --interval. Because A.7 refire is unverified: recycle events conn
-  (full resubscribe re-runs subscribe-time matching) at most once per 60s AND only if
-  a trigger fired since last recycle; min(interval,30s) ticker stays as unconditional
-  net. Worst case = Phase 5.5 behavior.
-- **D-P6-8 pane identity (§8.3):** store.Job += TerminalID (additive, schema 1; old
-  binary rewriting the file drops it → degrade to legacy matching, acceptable).
-  runtime.Pane += TerminalID. HandleLimit stamps it. Manager (flock-transactional):
-  ReassignPane(prevPaneID, pane) on pane_moved — stored TerminalID equal → update
-  PaneID/Workspace; different → MANUAL_REQUIRED ("pane identity changed"); empty
-  legacy → update only if unique job for prev ID else MANUAL_REQUIRED.
-  ReconcilePanes(panes) on resync — job's pane absent, exactly one snapshot pane with
-  matching TerminalID → update; else leave for validate (SESSION_GONE/MANUAL as today).
-  runcmd monitored-set: resolve --pane IDs to terminal IDs at startup; refresh filter
-  accepts pane whose ID OR terminal ID matches (works for CLI transport too);
-  UpdateSubscribedPanes recycles after ReassignPane IN THE SAME event handling.
-- **D-P6-9 doctor socket mode:** connect; ping → protocol PASS(17)/WARN(other) from the
-  REAL decoded value; snapshot decodes + protocol cross-check; subscribe layout.updated
-  → subscription_started ack → close (round-trip). CLI-mode checks unchanged.
-- **D-P6-10 test harness:** real unix listener in t.TempDir (short paths) reproducing
-  ground truth: one-request-per-conn, close-after-response, RST on pipelining,
-  scripted subscribe streaming, kill/restart for reconnect. net.Pipe NOT used — the
-  real dial path is the coverage target.
+- **D-P7-1 Config file: IN, minimal read-only YAML (BRIEF §11).** internal/config.
+  Rationale: last phase — §11 must not stay unconformed; systemd units need a stable
+  ExecStart (edit config → restart, never unit edits); absent file ⇒ byte-identical
+  behavior (parity regression test mandatory). Scope: read-only; flat mapping of
+  EXISTING run flags; `version: 1` required; unknown keys rejected
+  (yaml KnownFields(true)); precedence built-in defaults < config file < explicitly-set
+  flags (flag.FlagSet.Visit tracks set flags — including a flag explicitly set to its
+  default value, which still wins). Path ~/.config/herdr-auto-resume/config.yaml,
+  `--config` override (explicit missing path = error; default missing = fine; honors
+  XDG_CONFIG_HOME). New dependency: gopkg.in/yaml.v3 (the phase's only one).
+- **D-P7-2 First release = v0.2.0, NOT v0.1.0.** Upstream autoclaude tags
+  v0.1.0–v0.1.2 exist and are pushed on origin (ancestors of HEAD). Never touch them;
+  v0.2.0 is a minor bump per §18 (config changes ⇒ minor).
+- **D-P7-3 Plugin: defer.** Live `herdr plugin --help` (0.7.5) shows install/link/
+  enable/list/config-dir/action invoke/log/plugin-owned panes — §8.4's benefits could
+  wrap the existing binary later, but no startup/event-hook contract beyond what the
+  socket API gives, no schema methods, moving 0.7.x target. §21 decision stands.
+  Record capability inventory + wrap-the-binary sketch in docs/packaging.md.
+- **D-P7-4 Herdr-native TUI: defer.** §12: daemon+CLI outrank TUI; status/inspect/
+  doctor + herdr's own views cover the display list. tmux Bubble Tea TUI stays as-is
+  (upstream parity). Record rationale.
+- **D-P7-5 Single-instance run lock (live footgun: a soak watcher defaulted into the
+  production state file).** Exclusive non-blocking flock on `<abs(statePath)>.run`
+  sidecar, acquired once at run startup after resolveStatePath, held for the whole run
+  (fd open). Second instance same state file → fail fast exit 1 with holder PID + hint
+  to use a different --state-file. `--state-file off` ⇒ no lock. Different state files
+  ⇒ different locks (wD/wQ setup untouched). Deliberately NOT the transactional store
+  .lock (short-lived, CLI commands take it) — separate .run file so status/cancel work
+  while a watcher runs. No unlink on release (unlink+flock race trap; stale empty file
+  harmless).
+- **D-P7-6 Fold-ins: BACKLOG 2 only.** writeJobStatus already calls .Local() but host
+  TZ is UTC so unproven — thread a *time.Location (default time.Local), pin with a
+  Europe/Amsterdam regression. BACKLOG 1/6/7/10 stay out (noted deliberately).
+- **D-P7-7 Two first-class run modes:** (1) inside a herdr pane by hand (today's
+  wD:p1); (2) systemd user service / launchd example. Unit: explicit --transport
+  (cli today; post-soak socket = one word), Restart=on-failure, restart-loops until
+  herdr reachable (herdr not systemd-managed here; After=herdr.service shown
+  commented), Environment=PATH=%h/.local/bin:… (user units lack ~/.local/bin),
+  NoNewPrivileges. Docs: `loginctl enable-linger` MANDATORY on headless hosts (this
+  host has Linger=no).
 
 ## Commits
 
-1. **Socket request transport (no wiring).** socket.go; parse.go (+terminal_id, socket
-   result structs pong/snapshot/pane_read); runtime.go (Pane.TerminalID); herdr.go (CLI
-   fills TerminalID; shared esc/enter key-map helper). Tests vs fake server: every
-   Runtime method with verbatim param assertions; read.text extraction; HerdrError;
-   id-mismatch error; no-response deadline (bounded, no hang); close-before-response
-   wrapped error; Ping/Snapshot decode; HERDR_SOCKET_PATH env IGNORED (set in test,
-   assert configured/default used).
-2. **Event stream client + neutral model (no wiring).** internal/runtime/events.go
-   (stdlib-only); herdr/events.go. Tests: subscribe request contents; ack + dot-form
-   events decode; underscore-form pane_moved/created/layout frames decode (both forms
-   until P2 pins); unknown kinds ignored; oversized frame (>64KB) survives; slow
-   consumer never blocks reader (coalescing observed, pane_moved retained); server
-   closes stream → backoff reconnect → re-ping+snapshot+resubscribe on second listener
-   → EventResync with panes; ctx cancel joins goroutine (race gate = leak detector);
-   UpdateSubscribedPanes recycles.
-3. **Run-loop wiring.** runcmd.go: --transport flag (+validation incl. --session
-   rejection); socket construction; event pump goroutine → debounced fires into the
-   SAME detectionTicks channel (coordinator/loop.go UNCHANGED); resync → SetPanes +
-   immediate poll + manager.Tick; recycle timer per D-P6-7. Tests: **BACKLOG-9
-   regression** (banner present, event injected, ticker never fires → exactly one job;
-   content stale after → no second job); event burst 20/100ms → ≤2 polls; status ticks
-   survive event flood; resync path; transport selection + default-cli parity;
-   --transport socket --session rejection.
-4. **Pane identity (§8.3).** store.Job.TerminalID; manager HandleLimit stamp +
-   ReassignPane + ReconcilePanes; runcmd pane_moved wiring + terminal-ID monitored-set
-   + UpdateSubscribedPanes ordering; jobscmd inspect prints terminal_id. Tests:
-   move-with-match updates under flock + survives external mtime reload; mismatch →
-   MANUAL_REQUIRED; legacy unique/ambiguous; resync absent-then-found; pre-Phase-6
-   schema-1 file loads + round-trips; moved monitored pane keeps polling; arch green.
-5. **Doctor socket mode + docs.** doctorcmd.go (+--transport, injected dialer);
-   README; docs/herdr-api.md (Appendix A wire model + probe results); PROGRESS.md;
-   BACKLOG.md (close 9 pending live drill; add default-flip-after-soak); PLANS.md
-   stays. Tests: doctor socket all-PASS vs fake; connect-refused FAIL; protocol 16 →
-   WARN; missing subscription_started → FAIL; CLI-mode output byte-identical.
-6. **(Orchestrator)** probes P1–P3, live E2E drills, soak decision, PROGRESS record.
-
-## Live E2E (orchestrator)
-
-1. doctor --transport socket all PASS. 2. Probes P1–P3 (record in docs/herdr-api.md;
-adjust recycle if P1 shows refire). 3. **BACKLOG-9 live regression ×2:** scratch cat
-pane + Claude chrome; watcher --transport socket --interval 10m --dry-run; paste banner,
-bury it ~2s later → durable WAITING job within seconds; then non-dry short-reset cycle →
-one esc/continue/enter → RESUMED attempts=1. 4. Detach/reattach herdr client
-mid-WAITING → no churn, on-schedule resume. 5. Watcher restart mid-WAITING + the
-RESUMING-at-restart drill. 6. Pane-move drill (terminal_id update; ambiguity →
-MANUAL_REQUIRED). 7. Server-restart reconnect: covered by fake-server tests (production
-server hosts live panes — do not restart it). 8. Negative: w7:p1 socket dry-run 3min →
-zero jobs. 9. **Soak:** wD:p1 stays cli; parallel scratch soak watcher on socket
-24–48h; if clean, switch wD:p1 to --transport socket explicitly (default flip is a
-later one-liner).
+1. **Release identity + version provenance (BACKLOG 4).**
+   - main.go: add `var commit = "none"`, `var date = "unknown"`; `version` prints
+     `herdr-auto-resume <version> (commit <commit>, built <date>, <go version>)`;
+     version=="dev" falls back to runtime/debug.ReadBuildInfo vcs.revision/vcs.time.
+   - doctorcmd.go: first line `INFO version: herdr-auto-resume <version> (<commit>)`
+     (both transports; §18 doctor-in-bug-reports).
+   - .goreleaser.yml: project_name herdr-auto-resume; builds[0].binary
+     herdr-auto-resume; ldflags `-s -w -X main.version={{.Version}} -X
+     main.commit={{.ShortCommit}} -X main.date={{.Date}}`; drop homebrew comment.
+   - .github/workflows/ci.yml: go-version-file go.mod; add release-dry-run job
+     (goreleaser-action ~> v2: `check` then `release --snapshot --clean
+     --skip=publish`, fetch-depth 0) — goreleaser is NOT installed locally; CI is the
+     validation.
+   - .github/workflows/release.yml: go-version-file go.mod; remove
+     HOMEBREW_TAP_GITHUB_TOKEN.
+   - scripts/release.sh: REPO=Wave-Consulting-Netherlands/herdr-auto-resume; delete
+     homebrew-tap section; keep tag-guard → tag → push → gh run watch → checksums.
+   - README.md: fix CI badge to org repo (restructure waits for commit 5).
+   Tests: version output (name, injected values, dev fallback no-panic); doctor
+   version-line-first with otherwise byte-identical output (both transports).
+2. **Single-instance run lock (D-P7-5, TDD).**
+   - internal/store/runlock.go: AcquireRunLock(statePath) (*RunLock, error) —
+     MkdirAll 0700, open `<abs>.run` O_RDWR|O_CREATE 0600, Flock LOCK_EX|LOCK_NB;
+     EWOULDBLOCK → read stored PID → error "state file %s is already in use by
+     herdr-auto-resume run (pid %s); use a different --state-file for a second
+     watcher"; success → truncate+write own PID; Release() closes fd.
+   - runcmd.go: after resolveStatePath, if statePath != "off" acquire; error → print +
+     exit 1; defer Release.
+   - doctorcmd.go: NB-probe the resolved .run lock → `INFO watcher: active (pid N) on
+     <path>` / `INFO watcher: none on <path>`; release probe immediately.
+   Tests: second acquire same path fails w/ path+pid (flock conflicts across separate
+   open descriptions in-process — no subprocess needed); different paths both succeed;
+   release-then-reacquire; PID written; runCommand exits 1 before runtime construction
+   when pre-held; `--state-file off` touches no lock; doctor INFO lines.
+3. **Minimal YAML config (D-P7-1, TDD).**
+   - go.mod/go.sum: gopkg.in/yaml.v3.
+   - internal/config/config.go + validate.go: Load(path) (Config, found bool, error).
+     Schema (all optional except version: 1):
+     runtime{type herdr, transport cli, herdr_bin, socket, workspace};
+     monitoring{panes [], interval 3s, lines 200};
+     resume{margin 60s, max_wait 192h, verify_timeout 90s};
+     providers{enabled [claude codex], claude_prompt, codex_prompt};
+     state{file auto}. Strict decode, durations via ParseDuration, ~ expansion for
+     socket/state.file. DefaultPath honors XDG_CONFIG_HOME.
+   - runcmd.go: --config flag; merge defaults → config → explicitly-set flags
+     (fs.Visit); ALL existing validation runs on the merged result (pane requirement
+     satisfiable from monitoring.panes — makes the systemd unit generic).
+   - jobscmd.go: job commands' --state-file default comes from config state.file when
+     resolvable (fixes wrong-state-file status confusion).
+   - doctorcmd.go: config check — absent default `INFO config: none`; valid `PASS
+     config: <path>`; invalid `FAIL` with the validation error.
+   Tests: full parse; unknown key rejected naming the key; version missing/wrong;
+   bad duration/transport/provider; tilde expansion; absent default = zero+not-found;
+   precedence matrix incl. flag-set-to-default-value wins; panes-from-config satisfies
+   requirement; --config missing explicit path errors; **absent config ⇒ parseRunFlags
+   deep-equals today's output (deployment parity)**. go mod tidy clean.
+4. **BACKLOG 2 + packaging assets.**
+   - jobscmd.go: writeJobStatus(out, jobs, loc *time.Location); caller passes
+     time.Local; Europe/Amsterdam regression proves local rendering. Close BACKLOG 2.
+   - packaging/systemd/herdr-auto-resume.service per D-P7-7 (Type=exec; ExecStart
+     `%h/.local/bin/herdr-auto-resume run --config %h/.config/herdr-auto-resume/
+     config.yaml --transport cli`; Environment=PATH=%h/.local/bin:/usr/local/bin:
+     /usr/bin:/bin; Restart=on-failure; RestartSec=5s; NoNewPrivileges=yes;
+     StartLimitIntervalSec=0; WantedBy=default.target; commented After/Wants
+     herdr.service).
+   - packaging/launchd/nl.wave-consulting.herdr-auto-resume.plist: ProgramArguments
+     […run --config … --transport cli], RunAtLoad, KeepAlive{SuccessfulExit=false},
+     Std*Path under ~/Library/Logs; marked example-only/untested.
+   - packaging/config.example.yaml: full commented schema.
+   Verify: gate; `systemd-analyze --user verify` non-gating; plistlib parse check.
+5. **README restructure + docs + conformance audit.**
+   - README: Install (release tarballs, go install, source), Quickstart, Running it
+     (pane mode AND systemd/launchd, linger note), Operations (status/inspect/cancel/
+     detect/doctor, multi-watcher state isolation + run lock), Configuration reference
+     (all flags + config schema + precedence), Upgrade (binary replace → restart;
+     semver policy per §18; tested herdr/CC/Codex versions per release),
+     Troubleshooting (doctor first, run-lock error meaning). Keep fork notice + tmux
+     TUI section.
+   - docs/packaging.md: plugin inventory (D-P7-3), TUI deferral (D-P7-4), release
+     flow, launchd caveat.
+   - PROGRESS.md: Phase 7 record + D-P7 decisions + **BRIEF §20 audit**: met 1,2,4-17
+     (evidence per phase records); met-with-deviation 3 (strict opt-in, no runtime
+     enable/disable verbs — disable = restart without the pane; intentional);
+     deferred: herdr TUI, plugin packaging, §12 `test` subcommand (covered by
+     --test-pattern + --dry-run), §11 logging/notifications config sections.
+   - BACKLOG.md: close 2 and 4; annotate 5 out-of-repo; 1/6/7/10 kept deliberately;
+     fix duplicate item numbering.
+6. **(Orchestrator)** L1 doctor both transports (version/config/watcher lines);
+   L2 run-lock live drill vs the running wD watcher (default state → fail-fast w/ PID;
+   /tmp state → starts); L3 config-parity restart of wD (+ optional systemd migration:
+   enable-linger, unit, verify); L4 merge + CI green incl. release-dry-run;
+   L5 release: ./scripts/release.sh 0.2.0 → tag → CI release → verify linux_arm64
+   asset checksum + `version` output → install → restart watchers; L6 PROGRESS release
+   record (tested versions: herdr 0.7.5/proto 17 + CC/Codex versions in use).
 
 ## Risks
 
-1. Never assume conn reuse — pipelining RSTs; harness encodes it so future
-   "optimizations" fail tests.
-2. Lifecycle envelope form unverified — decode both; P2 pins before commit 4 relies on
-   pane_moved.
-3. output_matched refire unknown — events are NEVER the sole path; ticker + at-subscribe
-   matching + recycle bound the window regardless.
-4. Event goroutine must not touch coordinator/jobs state — channel-only; race gate
-   enforces.
-5. Event frames embed full reads — 4MB reader cap + oversized-frame test.
-6. Old-binary rewrite drops terminal_id — degrade-to-legacy designed in; never make it
-   mandatory in validate.
-7. ReassignPane → UpdateSubscribedPanes ordering in the same handler; test it.
-8. Deploy discipline: wD:p1 keeps cli until E2E step 9.
-9. Startup ordering forgiving (at-subscribe matching); still subscribe first; episode
-   fingerprint dedupes double-trigger.
-10. --session+socket unsupported this phase (flag-parse error, documented).
-
-## Later (not this phase)
-
-Default transport flip post-soak; agent_session identity signal in validate;
-pane.wait_for_output verification acceleration; YAML config with Phase 7 packaging.
+1. Goreleaser validated only in CI (absent locally) — release-dry-run job lands on
+   master BEFORE tagging; failed tag release = delete only v0.2.0, retry.
+2. Never touch v0.0.x/v0.1.x upstream tags.
+3. Old/new binary mix during rollout takes no cross lock (old predates .run) —
+   accepted; restart both watchers promptly; documented.
+4. Config precedence regressions — absent-file parity test mandatory; deployment gets
+   no config file until L3.
+5. fs.Visit walks only SET flags — the set-to-default-value case is pinned in tests.
+6. systemd user-unit PATH restriction — unit ships Environment=PATH; docs prefer
+   absolute --herdr-bin; linger required (host has Linger=no).
+7. yaml.v3 maintenance mode — accepted (tiny strict surface).
+8. BACKLOG.md has duplicate item numbers — renumber while editing.

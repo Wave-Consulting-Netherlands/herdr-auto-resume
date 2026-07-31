@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime"
+	"runtime/debug"
 	"syscall"
 	_ "time/tzdata"
 
@@ -15,6 +17,34 @@ import (
 )
 
 var version = "dev"
+var commit = "none"
+var date = "unknown"
+
+func versionInfo() (string, string, string) {
+	currentVersion, currentCommit, currentDate := version, commit, date
+	if currentVersion == "dev" {
+		if info, ok := debug.ReadBuildInfo(); ok {
+			for _, setting := range info.Settings {
+				switch setting.Key {
+				case "vcs.revision":
+					if setting.Value != "" {
+						currentCommit = setting.Value
+					}
+				case "vcs.time":
+					if setting.Value != "" {
+						currentDate = setting.Value
+					}
+				}
+			}
+		}
+	}
+	return currentVersion, currentCommit, currentDate
+}
+
+func versionOutput() string {
+	currentVersion, currentCommit, currentDate := versionInfo()
+	return fmt.Sprintf("herdr-auto-resume %s (commit %s, built %s, %s)", currentVersion, currentCommit, currentDate, runtime.Version())
+}
 
 func main() {
 	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr))
@@ -32,7 +62,7 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 		case "status", "inspect", "cancel":
 			return jobCommand(args, stdout, stderr)
 		case "version":
-			fmt.Fprintln(stdout, version)
+			fmt.Fprintln(stdout, versionOutput())
 			return 0
 		}
 		if args[0][0] != '-' {

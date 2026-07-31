@@ -1,6 +1,6 @@
 version: 2
 
-project_name: autoclaude
+project_name: herdr-auto-resume
 
 before:
   hooks:
@@ -9,6 +9,7 @@ before:
 builds:
   - env:
       - CGO_ENABLED=0
+    binary: herdr-auto-resume
     goos:
       - linux
       - darwin
@@ -16,7 +17,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X main.version={{.Version}}
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}
 
 archives:
   - format: tar.gz
@@ -35,5 +36,3 @@ changelog:
     exclude:
       - "^docs:"
       - "^test:"
-
-# Homebrew formula is managed manually in henryaj/homebrew-tap

@@ -1,173 +1,183 @@
 # herdr-auto-resume
 
-> **Fork notice:** this is a fork of [`henryaj/autoclaude`](https://github.com/henryaj/autoclaude)
-> (MIT, Copyright (c) 2025 Henry Stanley — see [LICENSE](LICENSE), preserved unmodified).
-> The fork refactors the tmux-specific core behind a runtime abstraction and adds
-> [Herdr](https://herdr.dev) support, per [BRIEF.md](BRIEF.md). Progress and design
-> decisions are tracked in [PROGRESS.md](PROGRESS.md). The original tmux TUI behavior
-> is preserved.
+> **Fork notice:** this is a fork of [henryaj/autoclaude](https://github.com/henryaj/autoclaude)
+> (MIT, Copyright (c) 2025 Henry Stanley — see LICENSE, preserved unmodified).
+> This fork adds Herdr support behind a runtime abstraction. The original tmux TUI remains
+> available.
 
-A TUI app that monitors tmux panes running [Claude Code](https://claude.com/claude-code) and automatically sends "continue" when rate limits reset.
+![CI](https://github.com/Wave-Consulting-Netherlands/herdr-auto-resume/actions/workflows/ci.yml/badge.svg)
 
-![CI](https://github.com/henryaj/autoclaude/actions/workflows/ci.yml/badge.svg)
+herdr-auto-resume monitors explicitly selected Herdr or tmux panes for Claude Code and Codex
+usage limits, then schedules and verifies one provider-specific continuation when the limit
+resets.
 
-## The Problem
+## Install
 
-When using Claude Code heavily, you'll hit rate limits. Claude shows a message like:
+Release tarballs are published on the GitHub Releases page:
+https://github.com/Wave-Consulting-Netherlands/herdr-auto-resume/releases
 
-```
-limit reached ∙ resets 2pm
-```
+Each archive contains the herdr-auto-resume binary. Replace the installed binary in place when
+upgrading.
 
-You then have to wait and manually type "continue" when the limit resets. If you're running multiple Claude Code sessions, this becomes tedious.
+Install tagged source with Go:
 
-## The Solution
+    go install github.com/Wave-Consulting-Netherlands/herdr-auto-resume@v0.2.0
 
-**autoclaude** monitors your tmux panes and automatically sends "continue" when the rate limit resets. Just enable auto-continue on the panes you want to monitor, and autoclaude handles the rest.
+Or build from a checkout:
 
-## Installation
+    git clone https://github.com/Wave-Consulting-Netherlands/herdr-auto-resume.git
+    cd herdr-auto-resume
+    go build -o ~/.local/bin/herdr-auto-resume .
 
-### Homebrew (macOS/Linux)
+Requirements: Go 1.23 or newer when building, Herdr 0.7.5 or compatible protocol 17 for the
+Herdr runtime, and tmux only when using the tmux runtime or TUI.
 
-```bash
-brew install henryaj/tap/autoclaude
-```
+## Quickstart
 
-### From source
+Headless Herdr mode requires explicit pane selection:
 
-```bash
-go install github.com/henryaj/autoclaude@latest
-```
+    herdr-auto-resume run --pane w1:p1
+    herdr-auto-resume doctor
+    herdr-auto-resume status
 
-### Download binary
+Use a second pane or state file for an independent watcher. The default Herdr state is under
+the XDG state directory. A watcher holds <absolute-state-file>.run; a second watcher on the
+same state file fails fast. --state-file off disables persistence and the run lock.
 
-Download from [Releases](https://github.com/henryaj/autoclaude/releases).
+## Running it
 
-## Usage
+### Pane mode
 
-1. Start autoclaude in a tmux pane (it must run inside tmux):
+The bare command starts the original tmux TUI. Use tab to toggle a pane, a/n to enable or
+disable all panes, r to refresh, h/? for help, and q to quit.
 
-```bash
-autoclaude
-```
+For a headless pane watcher:
 
-2. Use arrow keys to navigate to a Claude Code pane
-3. Press `tab` to enable auto-continue for that pane
-4. Leave autoclaude running - it will send "continue" when rate limits reset
+    herdr-auto-resume run --pane w1:p1 --pane w2:p1 --interval 5s
+    herdr-auto-resume run --transport socket --socket ~/.config/herdr/herdr.sock --pane w1:p1
 
-### Keybindings
+Socket transport is opt-in; CLI transport remains the default until the post-soak live switch.
+--session is not supported with socket transport.
 
-| Key | Action |
-|-----|--------|
-| `←↑↓→` | Navigate between panes |
-| `tab` | Toggle auto-continue for selected pane |
-| `a` | Enable auto-continue for all Claude Code panes |
-| `n` | Disable auto-continue for all Claude Code panes |
-| `r` | Refresh pane layout |
-| `h` / `?` | Show help |
-| `q` | Quit |
+### systemd user service
 
-### Herdr usage
+    mkdir -p ~/.config/systemd/user
+    cp packaging/systemd/herdr-auto-resume.service ~/.config/systemd/user/
+    systemctl --user daemon-reload
+    systemctl --user enable --now herdr-auto-resume.service
 
-The headless Herdr adapter requires explicit pane selection:
+On a headless host, enable lingering first. This is mandatory so the user service survives
+logout:
 
-```bash
-herdr-auto-resume run --pane w1:p1
-herdr-auto-resume run --pane w1:p1 --pane w2:p1 --interval 5s
-herdr-auto-resume run --pane w1:p1 --dry-run --test-pattern "<<<TEST>>>"
-herdr-auto-resume doctor
-herdr-auto-resume detect --provider claude --file path/to/pane-capture.txt
-herdr-auto-resume detect --provider codex --file path/to/codex-capture.txt
-```
+    loginctl enable-linger "$USER"
 
-Use `--herdr-bin`, `--socket`, `--session`, and `--workspace` to select a Herdr
-installation or scope. The bare invocation remains the original tmux TUI; use
-`herdr-auto-resume run --runtime tmux --pane %1` for the headless tmux path.
+The unit uses explicit --transport cli, a user-service PATH, restart-on-failure, and
+NoNewPrivileges=yes. Edit YAML and restart the service; do not edit the unit for normal
+configuration changes.
 
-Headless Herdr runs persist known-reset jobs by default under the XDG state directory.
-Use `--state-file off` to disable persistence, or configure the schedule and verification
-safety margins explicitly:
+### launchd example
 
-```bash
-herdr-auto-resume run --pane w1:p1 --margin 60s --max-wait 192h --verify-timeout 90s
-herdr-auto-resume status
-herdr-auto-resume inspect <job-id-prefix>
-herdr-auto-resume cancel <job-id-prefix>
-```
+packaging/launchd/nl.wave-consulting.herdr-auto-resume.plist is example-only and untested.
+Replace your-user and the binary/config paths, then load it with the normal per-user
+launchctl bootstrap workflow. Its stdout and stderr are under ~/Library/Logs.
 
-The scheduler validates the pane, foreground process, working directory, and terminal
-state before sending a provider-specific resume action. Claude sends `Escape` →
-`continue` → `Enter`; Codex sends the configured continuation prompt → `Enter` and never
-sends Escape. Provider detection defaults to both providers and can be narrowed or
-customized with text-only flags:
+## Operations
 
-```bash
-herdr-auto-resume run --pane w1:p1 --providers claude,codex
-herdr-auto-resume run --pane w1:p1 --providers codex --codex-prompt "Continue the task"
-herdr-auto-resume run --pane w1:p1 --claude-prompt "continue"
-```
+    herdr-auto-resume status
+    herdr-auto-resume inspect <job-id-prefix>
+    herdr-auto-resume cancel <job-id-prefix>
+    herdr-auto-resume doctor
+    herdr-auto-resume doctor --transport socket --socket ~/.config/herdr/herdr.sock
+    herdr-auto-resume detect --provider claude --file path/to/pane-capture.txt
+    herdr-auto-resume detect --provider codex --file path/to/codex-capture.txt
 
-Headless Herdr runs use the CLI transport by default. The socket transport is opt-in
-and keeps polling as a fallback:
+Job commands read configured state.file when --state-file is omitted. doctor reports version,
+config, watcher-lock, Herdr, adapter, schema, and self-pane diagnostics. Run-lock errors name
+the holder PID; use another --state-file for a second watcher.
 
-```bash
-herdr-auto-resume run --transport socket --socket ~/.config/herdr/herdr.sock --pane w1:p1
-herdr-auto-resume doctor --transport socket --socket ~/.config/herdr/herdr.sock
-```
+## Configuration
 
-Socket mode accepts an explicit `--socket` path or the default socket path only; it
-does not read `HERDR_*` variables. `--session` is intentionally rejected with socket
-mode in Phase 6.
+The default file is ~/.config/herdr-auto-resume/config.yaml, or
+$XDG_CONFIG_HOME/herdr-auto-resume/config.yaml. Use --config path for another file. The file
+must contain version: 1; unknown keys are rejected.
 
-It persists before sending and verifies that the rate limit cleared or the pane evidence
-changed. Use `--dry-run` to exercise the lifecycle without writing pane input.
+Precedence is built-in defaults < config file < explicitly set flags. A flag set explicitly to
+its built-in value still wins. If the default config is absent, behavior is byte-identical to
+flag-only behavior. See packaging/config.example.yaml for the full commented schema.
 
-`detect --file` is a read-only fixture diagnostic. Select `--provider claude|codex`; it
-prints the selected provider's limit analysis, typed reset kind/timezone/confidence, UTC
-and local parsed times, and matched evidence. It never connects to Herdr or sends pane
-input.
+    version: 1
+    runtime:
+      type: herdr
+      transport: cli
+      herdr_bin: herdr
+      socket: ~/.config/herdr/herdr.sock
+      workspace: your-workspace
+    monitoring:
+      panes: [w1:p1]
+      interval: 3s
+      lines: 200
+    resume:
+      margin: 60s
+      max_wait: 192h
+      verify_timeout: 90s
+    providers:
+      enabled: [claude, codex]
+      claude_prompt: continue
+      codex_prompt: Continue the previous task from where you stopped.
+    state:
+      file: auto
 
-### Pane Colors
+Run flags: --config, --runtime, --transport, repeatable --pane, --interval, --lines,
+--dry-run, --test-pattern, --herdr-bin, --socket, --session, --workspace, --state-file,
+--margin, --max-wait, --verify-timeout, --providers, --claude-prompt, and --codex-prompt.
 
-| Color | Meaning |
-|-------|---------|
-| Orange | Claude Code pane (auto-continue off) |
-| Green | Claude Code pane (auto-continue on) |
-| Red | Rate limited (waiting for reset time) |
-| Cyan | Selected pane |
+Doctor flags: --config, --transport, --herdr-bin, --socket, --session, --workspace, and
+--state-file. Job flags: --config and --state-file. Detect flags: --file and
+--provider claude|codex.
 
-## How It Works
+## Upgrade
 
-1. autoclaude polls tmux panes every 3 seconds
-2. It detects Claude Code by looking for characteristic UI patterns
-3. When it finds "limit reached ∙ resets Xpm", it parses the reset time
-4. When the reset time passes, it sends: `Escape` → `continue` → `Enter`
-5. The pane resumes automatically
+Download the new release, replace ~/.local/bin/herdr-auto-resume, then restart the pane watcher
+or user service. State files remain schema-compatible; the .run sidecar is separate from the
+transactional .lock and is harmless when left behind.
 
-## Requirements
+Semantic versioning applies: config-schema changes are minor releases and fixes are patch
+releases. The first fork release is v0.2.0. Phase 7 validation targets Herdr 0.7.5/protocol
+17; release notes record the Claude Code and Codex versions used for each live acceptance run
+(Codex 0.144/0.146 were covered in Phase 5 validation).
 
-- tmux (autoclaude must run inside a tmux session)
-- Go 1.21+ (if building from source)
+## Troubleshooting
+
+Start with herdr-auto-resume doctor. If a run says the state file is already in use, the named
+PID owns the watcher lock. Confirm it, stop it if necessary, or choose another state file. Do
+not delete .run while a watcher may still be running. A missing default config is normal and
+is reported as INFO config: none; an explicitly requested missing or invalid config is an error.
+
+For socket problems, run doctor --transport socket --socket ... and verify Herdr protocol 17.
+For a service that restarts, inspect journalctl --user -u herdr-auto-resume.service and check
+the binary path, PATH, pane IDs, and loginctl show-user "$USER" -p Linger.
+
+## How it works
+
+The coordinator discovers only requested panes, recognizes Claude or Codex evidence, and
+persists known reset jobs before sending input. The scheduler validates provider/process/session
+identity, sends the provider-specific continuation, and verifies cleared evidence or changed
+output. State remains JSON schema 1; .lock serializes short transactions while .run prevents
+two watchers from owning one state file.
 
 ## Development
 
-```bash
-# Run tests
-go test ./...
-
-# Build
-go build
-
-# Run with test pattern (for debugging without hitting rate limits)
-./autoclaude --test-pattern "<<<TEST>>>"
-```
+    export PATH=$HOME/.local/go/bin:$PATH
+    export GOCACHE=/tmp/herdr-go-cache
+    export GOMODCACHE=/tmp/herdr-go-modcache
+    go build ./...
+    go vet ./...
+    go test ./... -race -count=1
 
 ## License
 
-MIT License - see [LICENSE](LICENSE)
+MIT License — see LICENSE. Upstream attribution is preserved unmodified.
 
 ## Credits
 
-Made by [Henry Stanley](https://henrystanley.com)
-
-Built with [Claude Code](https://claude.com/claude-code)
+Forked from Henry Stanley's autoclaude and built with Herdr, Claude Code, and Codex.

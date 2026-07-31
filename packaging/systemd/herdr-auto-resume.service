@@ -1,0 +1,16 @@
+[Unit]
+Description=Herdr automatic resume watcher
+# After=herdr.service
+# Wants=herdr.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/herdr-auto-resume run --config %h/.config/herdr-auto-resume/config.yaml --transport cli
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

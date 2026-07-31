@@ -1,0 +1,42 @@
+# Copy to ~/.config/herdr-auto-resume/config.yaml and edit as needed.
+# version is required; unknown keys are rejected.
+version: 1
+
+# Runtime adapter and Herdr connection.
+# type: herdr
+# transport: cli
+# herdr_bin: herdr
+# socket: ~/.config/herdr/herdr.sock
+# workspace: your-workspace
+runtime:
+  # type: herdr
+  # transport: cli
+  # herdr_bin: herdr
+  # socket: ~/.config/herdr/herdr.sock
+  # workspace: your-workspace
+
+# Panes are monitored explicitly. Repeat pane IDs as needed.
+monitoring:
+  # panes:
+  #   - w1:p1
+  #   - w2:p1
+  # interval: 3s
+  # lines: 200
+
+# Safety margins and wait bounds.
+resume:
+  # margin: 60s
+  # max_wait: 192h
+  # verify_timeout: 90s
+
+# Provider detection and continuation prompts.
+providers:
+  # enabled:
+  #   - claude
+  #   - codex
+  # claude_prompt: continue
+  # codex_prompt: Continue the previous task from where you stopped.
+
+# Persistent job state. Use off to disable persistence and the run lock.
+state:
+  # file: auto
