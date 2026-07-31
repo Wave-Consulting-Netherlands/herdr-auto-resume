@@ -1,0 +1,8 @@
+  ⎿ You've hit your limit · resets 8pm (Europe/London)
+  Opening your options…
+  ╭──────────────────────────────────────────────────────────────────────────────╮
+  │ What do you want to do?                                                       │
+  │ ❯ 1. Stop and wait for limit to reset                                         │
+  │   2. Switch to extra usage                                                    │
+  │   3. Upgrade your plan                                                        │
+  ╰──────────────────────────────────────────────────────────────────────────────╯

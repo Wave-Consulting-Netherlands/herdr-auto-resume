@@ -48,51 +48,17 @@ func CheckRateLimit(content string) RateLimitStatus {
 // CheckRateLimitAt checks pane content using the supplied clock and timezone.
 // The explicit clock keeps parsing deterministic for schedulers and tests.
 func CheckRateLimitAt(content string, now time.Time) RateLimitStatus {
-	// Try patterns that capture reset time first
-	var match []string
-	var patternIdx int
-	for i, pattern := range rateLimitPatterns {
-		match = pattern.FindStringSubmatch(content)
-		if match != nil {
-			patternIdx = i
-			break
-		}
-	}
-
-	limited := match != nil
-	// If no time-capturing pattern matched, try fallback patterns.
-	if match == nil {
-		for _, pattern := range rateLimitFallbackPatterns {
-			if pattern.MatchString(content) {
-				limited = true
-				break
-			}
-		}
-	}
-	if !limited {
+	if !isRateLimitSignal(content) {
 		return RateLimitStatus{Spec: ResetSpec{Kind: ResetKindUnknown, Confidence: ConfidenceLow}}
 	}
 
 	spec := ParseReset(content, now)
-	resetStr := ""
-	if match != nil {
-		resetStr = match[1]
-	}
-	if spec.ParsedTime.IsZero() && resetStr != "" {
-		spec = ParseReset("resets "+resetStr, now)
-	}
 	status := RateLimitStatus{
 		IsLimited: true,
-		ResetsAt:  resetStr,
 		Spec:      spec,
 	}
-	if patternIdx == 2 {
-		status.ResetsAt = resetStr + "m"
-	}
-	if status.ResetsAt == "" && !spec.ParsedTime.IsZero() {
-		status.ResetsAt = spec.Raw
-	}
 	if !spec.ParsedTime.IsZero() {
+		status.ResetsAt = legacyResetText(spec.Raw)
 		status.ResetTime = spec.ParsedTime
 		status.TimeUntil = spec.ParsedTime.Sub(now)
 	}

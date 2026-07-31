@@ -24,10 +24,6 @@ var (
 	// Menu selector used in question/choice UI
 	menuSelectorPattern = regexp.MustCompile(`❯`)
 
-	// Rate limit messages - definitive proof it's Claude Code
-	rateLimitMsgPattern    = regexp.MustCompile(`(?i)limit\s+reached`)
-	rateLimitMsgPatternAlt = regexp.MustCompile(`(?i)hit\s+your\s+limit`)
-
 	// Dashed separator line used in Claude Code UI
 	dashedSeparator = regexp.MustCompile(`╌{10,}`)
 )
@@ -35,7 +31,7 @@ var (
 // IsClaudeCode detects if pane content appears to be running Claude Code
 func IsClaudeCode(content string) bool {
 	// Rate limit message is definitive - if we see it, it's Claude Code
-	if rateLimitMsgPattern.MatchString(content) || rateLimitMsgPatternAlt.MatchString(content) {
+	if isRateLimitSignal(content) {
 		return true
 	}
 
