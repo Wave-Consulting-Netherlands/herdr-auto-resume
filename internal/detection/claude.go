@@ -64,6 +64,26 @@ func IsClaudeCode(content string) bool {
 	return false
 }
 
+// IsIdlePrompt reports whether the recent tail ends at Claude Code's plain input
+// prompt rather than a menu or another visible state.
+func IsIdlePrompt(content string) bool {
+	lines := GetVisibleLines(content)
+	if len(lines) > 20 {
+		lines = lines[len(lines)-20:]
+	}
+	for _, line := range lines {
+		if strings.Contains(line, "❯") {
+			return false
+		}
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.HasPrefix(lines[i], ">") {
+			return true
+		}
+	}
+	return false
+}
+
 // StripANSI removes ANSI escape codes from a string
 func StripANSI(s string) string {
 	ansiPattern := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)

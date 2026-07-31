@@ -9,6 +9,92 @@ import (
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 )
 
+type recordingJobSink struct {
+	events []LimitEvent
+	owned  bool
+}
+
+func (s *recordingJobSink) HandleLimit(event LimitEvent) bool {
+	s.events = append(s.events, event)
+	return s.owned
+}
+
+func TestJobSinkReceivesKnownResetPayloadEveryPollAndOwnsLegacySend(t *testing.T) {
+	content := "limit reached ∙ resets 2pm"
+	status := detection.CheckRateLimit(content)
+	now := status.ResetTime.Add(5 * time.Minute)
+	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1", Title: "Claude"}}, Content: map[string]string{"p1": content}}
+	sink := &recordingJobSink{owned: true}
+	c := New(fake, Config{ReadLines: 10}, WithClock(func() time.Time { return now }), WithJobSink(sink))
+	c.SetPanes(fake.PanesList)
+	c.Poll()
+	c.ToggleMode("p1")
+	c.Poll()
+	c.Poll()
+
+	if len(sink.events) != 2 {
+		t.Fatalf("sink calls = %d, want 2", len(sink.events))
+	}
+	event := sink.events[0]
+	if event.Pane != fake.PanesList[0] || event.ResetsRaw != "2pm" || event.ResetTime.IsZero() || event.Content != content || !event.ObservedAt.Equal(now) {
+		t.Fatalf("event = %#v, want pane/reset/content/clock payload", event)
+	}
+	if len(fake.SentText) != 0 || len(fake.SentKeys) != 0 {
+		t.Fatalf("legacy sends = text %#v keys %#v, want none", fake.SentText, fake.SentKeys)
+	}
+	if !c.Snapshot()[0].ContinueSent {
+		t.Fatal("ContinueSent = false, want owned episode latched")
+	}
+}
+
+func TestJobSinkFalseFailsSafeWithoutLegacySend(t *testing.T) {
+	content := "limit reached ∙ resets 2pm"
+	status := detection.CheckRateLimit(content)
+	now := status.ResetTime.Add(5 * time.Minute)
+	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
+	sink := &recordingJobSink{}
+	c := New(fake, Config{}, WithClock(func() time.Time { return now }), WithJobSink(sink), WithSleep(func(time.Duration) {}))
+	c.SetPanes(fake.PanesList)
+	c.Poll()
+	c.ToggleMode("p1")
+	c.Poll()
+	if len(sink.events) != 1 || len(fake.SentText) != 0 || len(fake.SentKeys) != 0 {
+		t.Fatalf("sink events=%d sends=%#v/%#v, want one sink call and no sends", len(sink.events), fake.SentText, fake.SentKeys)
+	}
+}
+
+func TestUnknownResetNeverCallsJobSink(t *testing.T) {
+	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "limit reached"}}
+	sink := &recordingJobSink{}
+	c := New(fake, Config{}, WithJobSink(sink), WithClock(func() time.Time { return time.Unix(0, 0) }), WithSleep(func(time.Duration) {}))
+	c.SetPanes(fake.PanesList)
+	c.Poll()
+	c.ToggleMode("p1")
+	c.Poll()
+	if len(sink.events) != 0 {
+		t.Fatalf("sink calls = %d, want 0 for unknown reset", len(sink.events))
+	}
+}
+
+func TestModeOffAndTestPatternNeverCallJobSink(t *testing.T) {
+	content := "limit reached ∙ resets 2pm\n<<<TEST>>>"
+	status := detection.CheckRateLimit(content)
+	now := status.ResetTime.Add(5 * time.Minute)
+	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
+	sink := &recordingJobSink{owned: true}
+	c := New(fake, Config{TestPattern: "<<<TEST>>>"}, WithJobSink(sink), WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
+	c.SetPanes(fake.PanesList)
+	c.Poll()
+	if len(sink.events) != 0 {
+		t.Fatal("sink called while mode is off")
+	}
+	c.ToggleMode("p1")
+	c.Poll()
+	if len(sink.events) != 1 {
+		t.Fatalf("sink calls in auto mode = %d, want one", len(sink.events))
+	}
+}
+
 func TestKnownResetSendsOnceAfterReset(t *testing.T) {
 	content := "limit reached ∙ resets 2pm"
 	status := detection.CheckRateLimit(content)

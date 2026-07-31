@@ -32,6 +32,9 @@ func (c *Coordinator) RunLoop(ctx context.Context, ticks <-chan time.Time, refre
 			}
 			c.SetPanes(panes)
 			c.Poll()
+			if c.postPoll != nil {
+				c.postPoll(c.clock())
+			}
 
 			action, ok := c.LastAction()
 			if !ok || (hadAction && action == lastAction) {

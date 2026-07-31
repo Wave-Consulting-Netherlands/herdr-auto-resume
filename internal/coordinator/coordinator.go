@@ -22,6 +22,20 @@ type ActionRecord struct {
 	DryRun bool
 }
 
+// LimitEvent is the complete known-reset evidence observed for one pane poll.
+type LimitEvent struct {
+	Pane       runtime.Pane
+	ResetsRaw  string
+	ResetTime  time.Time
+	Content    string
+	ObservedAt time.Time
+}
+
+// JobSink owns known-reset limit episodes when configured by the headless runner.
+type JobSink interface {
+	HandleLimit(LimitEvent) bool
+}
+
 type Option func(*Coordinator)
 
 func WithClock(clock func() time.Time) Option {
@@ -30,6 +44,14 @@ func WithClock(clock func() time.Time) Option {
 
 func WithSleep(sleep func(time.Duration)) Option {
 	return func(c *Coordinator) { c.sleep = sleep }
+}
+
+func WithJobSink(sink JobSink) Option {
+	return func(c *Coordinator) { c.jobSink = sink }
+}
+
+func WithPostPoll(postPoll func(now time.Time)) Option {
+	return func(c *Coordinator) { c.postPoll = postPoll }
 }
 
 type Coordinator struct {
@@ -41,6 +63,8 @@ type Coordinator struct {
 	paneOrder  []string
 	lastAction ActionRecord
 	hasAction  bool
+	jobSink    JobSink
+	postPoll   func(now time.Time)
 }
 
 func New(rt runtime.Runtime, cfg Config, opts ...Option) *Coordinator {
@@ -107,7 +131,18 @@ func (c *Coordinator) Poll() {
 			if state.IsRateLimited && state.Mode == ModeAuto {
 				now := c.clock()
 				if !state.RateLimitTime.IsZero() {
-					if !state.ContinueSent && now.After(state.RateLimitTime) {
+					if c.jobSink != nil {
+						owned := c.jobSink.HandleLimit(LimitEvent{
+							Pane:       state.Pane,
+							ResetsRaw:  status.ResetsAt,
+							ResetTime:  status.ResetTime,
+							Content:    content,
+							ObservedAt: now,
+						})
+						if owned {
+							state.ContinueSent = true
+						}
+					} else if !state.ContinueSent && now.After(state.RateLimitTime) {
 						c.sendContinue(paneID)
 						state.ContinueSent = true
 					}
@@ -206,11 +241,27 @@ func (c *Coordinator) sendContinue(paneID string) {
 		return
 	}
 
-	_ = c.rt.SendKeys(paneID, runtime.KeyEscape)
-	c.sleep(100 * time.Millisecond)
-	_ = c.rt.SendText(paneID, "continue")
-	_ = c.rt.SendKeys(paneID, runtime.KeyEnter)
+	_ = SendContinueSequence(c.rt, paneID, c.sleep)
 	c.recordAction(paneID, false)
+}
+
+// SendContinueSequence submits the one allow-listed continuation action.
+func SendContinueSequence(rt runtime.Runtime, paneID string, sleep func(time.Duration)) error {
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	var firstErr error
+	if err := rt.SendKeys(paneID, runtime.KeyEscape); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	sleep(100 * time.Millisecond)
+	if err := rt.SendText(paneID, "continue"); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if err := rt.SendKeys(paneID, runtime.KeyEnter); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 func (c *Coordinator) recordAction(paneID string, dryRun bool) {
