@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,8 +26,10 @@ type SocketOptions struct {
 }
 
 type Socket struct {
-	options SocketOptions
-	nextID  uint64
+	options  SocketOptions
+	nextID   uint64
+	eventsMu sync.Mutex
+	events   *eventSession
 }
 
 type Pong struct {
