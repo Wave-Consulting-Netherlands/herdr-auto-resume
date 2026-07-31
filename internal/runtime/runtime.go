@@ -2,7 +2,7 @@ package runtime
 
 // Pane describes a runtime pane's identity, title, geometry, and agent.
 type Pane struct {
-	ID, Title                string
+	ID, TerminalID, Title    string
 	Left, Top, Width, Height int
 	Agent                    string
 }
