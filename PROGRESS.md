@@ -196,6 +196,25 @@ ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/terminal	
 ?   	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/tui	[no test files]
 ```
 
+- 2026-07-31, Phase 4 review + live E2E drills (herdr 0.7.5, scratch workspaces wE/wF):
+  - **Review fix:** `detect` smoke against the menu fixture exposed two masking defects —
+    boxed menus (`│ ❯ 1. …│`) were invisible to menu detection (validation could have
+    sent Enter into a menu), and the menu box below a banner killed actionability (no job
+    for the most common real limit screen). Fixed in `167fa4f` (border-tolerant menu
+    matching; menu blocks are non-content for the stale guard) with regression tests.
+  - Weekly drill: banner "resets Friday 7:34am" → job kind=date-time confidence=medium,
+    resume 07:34:30Z (reset+30s margin), full cycle → RESUMED attempts=1.
+  - Timezone drill: banner "resets 9:39am (Europe/Amsterdam)" on a UTC host → resolved
+    07:39:00Z exactly (kind=absolute, tz=Europe/Amsterdam, confidence=high), full cycle
+    → RESUMED attempts=1. Confirms the printed-timezone bug fix end-to-end.
+  - Negative drill: pane cat-ing BRIEF-style prose quoting limit messages (incl.
+    unquoted "…limit · resets 3pm" prose at tail) watched 3 min → zero jobs, state file
+    never created.
+  - Detached/SSH: the production watcher (wD:p1) has run detached across SSH sessions
+    since Phase 3 deployment.
+  - Final gate after fix: 239 tests green incl -race.
+
 ## Next task
 
-Phase 4 live E2E drills (PLANS.md commit 7), then BRIEF.md Phase 5 (Codex provider)
+Upgrade the deployed watcher binary (wD:p1) to the Phase 4 build, then BRIEF.md
+Phase 5 (Codex provider: fixtures, lifecycle signals, provider-specific resume).
