@@ -221,3 +221,41 @@ Before this live gate can close:
    =false + zero-send test.
 7. TUI keeps nil-registry default; constructors stay back-compatible.
 8. Tests constructing jobs.Config{Provider:"claude"} stay green via fallback stamp.
+
+## Phase 5.5 — Review remediation (appended after review.md triage, 2026-07-31)
+
+All ten review.md findings validated against HEAD by the orchestrator (spot-checked 1/2/4/7
+in code; 8 confirmed by the live miss; 3/9/10 by the review's probes). Remediation on THIS
+branch before merge, in review.md's suggested order, telescoped into four commits:
+
+R1. **Transactional state + authoritative cancel (finding 1).** flock-based file lock
+    around every state-file transaction (CLI cancel + manager saves); before EVERY
+    transition AND immediately before sending input, re-read the job from disk and require
+    expected prior state; mismatch → treat as concurrent modification, fail closed
+    (adopt external terminal states). Promote the review's cancellation probe into a
+    permanent regression test (two store handles).
+R2. **Fail-stop input + honest non-persistent path (findings 2, 6).** SendResumeAction
+    returns on first failed op (table tests: failure at each step asserts no later
+    calls); sendResume propagates errors; ContinueSent/periodic state and notifications
+    only on full success; failures logged/notified distinctly, no retry loop (one-shot
+    stays).
+R3. **Send-time identity + verification semantics (findings 3, 4).** At validation:
+    re-resolve provider from the pane's CURRENT Agent hint + content; require match with
+    job.Provider; conflicting non-empty hint → MANUAL_REQUIRED. Verification success
+    requires the limit evidence to be non-live (provider Analyze: !IsLimited OR
+    (IsLimited && !Actionable i.e. banner stale under newer output)) — never bare
+    hash-change; episode fingerprint from normalized banner evidence line (not whole
+    screen) to stop duplicate re-arm on unrelated output changes (adjust HandleLimit
+    dedupe accordingly).
+R4. **Acquisition blind window + config coherence + smalls (findings 5, 8, 7, 9, 10).**
+    (a) Immediate action-capable poll right after EnableAll at startup. (b) Decouple
+    detection from scheduling: detection/acquisition ticks every min(interval, 30s)
+    while status logging and job advancement keep --interval cadence; verification runs
+    on the short ticker too (fixes 5 structurally); ALSO reject --verify-timeout <
+    2×interval at flag parse (fail fast). (c) doctor decodes the real protocol from
+    status/snapshot JSON; unknown → WARN not PASS. (d) --margin 0 honored (default only
+    when flag unset). (e) reject impossible calendar dates (Feb 31 → unknown; leap-year
+    tests). Regression: banner visible at startup, gone before first long tick →
+    job still created by the immediate/short-cadence poll (fake-clock).
+Gate per commit unchanged. review.md finding 8's full event-driven acquisition remains
+Phase 6 (socket events); R4's short ticker is the interim fix.
