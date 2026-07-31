@@ -143,6 +143,31 @@ Fork remote: `https://github.com/Wave-Consulting-Netherlands/herdr-auto-resume` 
   ?   	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/tui	[no test files]
   ```
 
+- 2026-07-31, Phase 3 live E2E on this host (herdr 0.7.5, scratch workspace `wC`,
+  `/bin/cat` fixture pane, banner "You've hit your limit · resets Nm"):
+  - **Detection-source fix found live:** `pane read --source recent` covers only
+    scrollback and is empty on fresh/quiet panes; adapter default switched to
+    `--source detection` (includes viewport). Commit `b9397cb`.
+  - Dry-run restart drill: watcher A created job → WAITING persisted → killed mid-wait;
+    watcher B reconciled, waited past reset+margin, exactly one dry-run resume →
+    RESUMED (attempts=1), zero input delivered.
+  - RESUMING-at-restart drill: job hand-set to RESUMING; restart → MANUAL_REQUIRED
+    ("watcher restarted during uncertain resume send"), zero sends.
+  - Live pass: restart mid-WAITING → single real esc→"continue"→enter delivered after
+    reset+margin → VERIFYING_RESUME → RESUMED (attempts=1). (Raw cat pane rendered
+    ESC+c as terminal reset — harness artifact only.)
+  - Cancel under running watcher (D8): new job cancelled from a second shell → job
+    CANCELLED (attempts=0), watcher honored it, no sends.
+  - Conservative behaviors observed and accepted: (1) a `❯` anywhere in the read tail
+    fails validation gate 9 → MANUAL_REQUIRED — protects real Claude rate-limit menus;
+    means panes with starship-style prompts in the tail window park safely instead of
+    resuming. (2) After RESUMED, identical evidence hash suppresses a new job (prevents
+    resend loops when the banner never cleared); a genuinely new limit re-arms because
+    its reset text differs. (3) Any non-RESUMED terminal job parks the pane until the
+    state file is cleaned — no `clear`/`ack` command yet (see BACKLOG.md).
+
 ## Next task
 
-Phase 3 live E2E (PLANS.md commit 7), then BRIEF.md Phase 4 (Claude production hardening)
+BRIEF.md Phase 4 — Claude Code production support: expanded reset parsing (timezones,
+DST, weekly), chrome-aware live-tail detection, conservative wait/stop menu handling,
+richer notifications. PLANS.md for Phase 3 is complete and can be superseded.
