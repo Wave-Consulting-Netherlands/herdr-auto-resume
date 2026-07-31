@@ -75,6 +75,7 @@ type pongResult struct {
 
 type snapshotResult struct {
 	Type     string `json:"type"`
+	Protocol int    `json:"protocol"`
 	Snapshot struct {
 		Panes []paneInfo `json:"panes"`
 	} `json:"snapshot"`

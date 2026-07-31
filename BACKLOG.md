@@ -22,13 +22,11 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
    command when the job acknowledgement workflow is designed.
 8. **Done — Claude review and triage of `review.md`.** All ten findings were validated,
    ordered in PLANS.md Phase 5.5, and remediated with permanent regression coverage.
-9. **Partially addressed — failed live acceptance: transient Claude limit missed at long
-   poll cadence.** On
-   2026-07-31 the live watcher targeted `wA:p1` with `--interval 10m
-   --verify-timeout 30m`, but created no durable job; once newer output followed the
-   limit banner, detection correctly failed closed as stale. Manual fail-stop submission
-   resumed Claude, isolating the failure to acquisition/scheduling. Preserve the stale
-   guard; design an immediate post-enable action poll plus event-driven or short-cadence
-   limit acquisition. Acceptance requires a repeated live drill that schedules exactly
-   one job before transient evidence disappears. Phase 5.5 adds the immediate post-enable
-   poll and short-cadence interim acquisition; event-driven acquisition remains Phase 6.
+9. **Phase 6 code complete — pending live acceptance.** The event-driven socket client,
+   reconnect/resync path, and short-cadence polling fallback now address the transient
+   Claude acquisition miss. The orchestrator must still run the repeated BACKLOG-9 live
+   drill, detach/reattach drill, pane-move drill, and soak before closing this item.
+
+10. **Default transport flip after soak.** Keep `--transport cli` as the default until
+    the explicit socket-mode soak and live drills are clean; then make the default flip
+    a small, separately reviewed change.

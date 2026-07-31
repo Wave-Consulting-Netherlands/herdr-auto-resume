@@ -120,6 +120,19 @@ func TestDetectionEventPumpForwardsTickerAndIgnoresNonTriggers(t *testing.T) {
 	}
 }
 
+func TestRecycleDueRequiresTriggerAndSixtySecondBound(t *testing.T) {
+	base := time.Unix(100, 0)
+	if recycleDue(base, time.Time{}, base.Add(2*time.Minute)) {
+		t.Fatal("recycleDue() = true without a trigger")
+	}
+	if recycleDue(base, base.Add(time.Second), base.Add(59*time.Second)) {
+		t.Fatal("recycleDue() = true before the sixty-second bound")
+	}
+	if !recycleDue(base, base.Add(time.Second), base.Add(time.Minute)) {
+		t.Fatal("recycleDue() = false after a triggered sixty-second interval")
+	}
+}
+
 func TestParseRunFlagsAcceptsRepeatedPanesAndOptions(t *testing.T) {
 	var stderr bytes.Buffer
 	cfg, err := parseRunFlags([]string{

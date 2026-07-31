@@ -269,8 +269,40 @@ All packages passed, including `internal/provider`, `internal/provider/claude`, 
     immediate post-enable poll + 30s-capped detection ticker; full event-driven
     acquisition is Phase 6.
 
-## Next task
+## Pre-Phase 6 handoff
 
 BRIEF.md Phase 6 — Herdr socket client: session.snapshot bootstrap, event
 subscriptions (pane output/agent state — completes the BACKLOG 9 fix), reconnect +
 cache reconciliation, polling fallback retained.
+
+## Phase 6 code complete — 2026-07-31
+
+- Added a dial-per-request Herdr socket Runtime with id echo checks, bounded deadlines,
+  nested pane-read decoding, ping/snapshot, environment isolation, and TerminalID pane
+  identity (CLI and socket transports share the decode model).
+- Added the neutral EventSource capability and long-lived subscription client with
+  dot/underscore decoding, trigger coalescing, retained move/resync events, reconnect
+  bootstrap, and cancellation joining. The run loop feeds the same detection channel as
+  polling; CLI remains the default and polling remains unconditional fallback.
+- Added flock-transactional TerminalID stamping, pane move reassignment, snapshot
+  reconciliation, monitored terminal filtering, and socket-mode doctor checks.
+- Decisions condensed: one request per ordinary connection; one event connection;
+  socket never reads HERDR_*; schema remains version 1 with only Job.TerminalID added;
+  `--session` is rejected with socket mode; real lifecycle/refire behavior remains live
+  probe work.
+
+### Final code gate
+
+```text
+go build ./...                              OK
+go vet ./...                                OK
+go test ./... -race -count=1                OK
+```
+
+All packages passed with Go 1.26.5, `PATH=$HOME/.local/go/bin:$PATH`, and
+`GOCACHE=/tmp/herdr-go-cache` (`GOMODCACHE=/tmp/herdr-go-mod-cache` was required by
+the sandbox's read-only default module cache).
+
+## Next task
+
+orchestrator: probes P1-P3, live drills, soak; then Phase 7 (packaging)

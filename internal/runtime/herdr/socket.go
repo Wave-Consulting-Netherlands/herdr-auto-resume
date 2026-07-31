@@ -39,7 +39,8 @@ type Pong struct {
 }
 
 type Snapshot struct {
-	Panes []runtimeapi.Pane
+	Protocol int
+	Panes    []runtimeapi.Pane
 }
 
 func NewSocket(options SocketOptions) *Socket {
@@ -156,7 +157,7 @@ func (s *Socket) Snapshot() (Snapshot, error) {
 	if panes == nil {
 		panes = result.Panes
 	}
-	return Snapshot{Panes: panesFromInfo(panes)}, nil
+	return Snapshot{Protocol: result.Protocol, Panes: panesFromInfo(panes)}, nil
 }
 
 func (s *Socket) call(method string, params any, target any) error {

@@ -424,6 +424,8 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	detectionTicks := startDetectionPumpWithInbox(ctx, detectionTicker.C, eventStream, eventInbox)
 	var eventChannelOpen = true
 	subscribedPaneIDs := paneIDs(panes)
+	lastRecycle := time.Now()
+	var lastTrigger time.Time
 	coord.RunLoopWithCadence(ctx, detectionTicks, statusTicker.C, func() ([]runtimeapi.Pane, error) {
 		var snapshot []runtimeapi.Pane
 		var hasSnapshot bool
@@ -469,10 +471,17 @@ func runCommand(args []string, _, stderr io.Writer) int {
 							}
 							if eventSource != nil {
 								eventSource.UpdateSubscribedPanes(append([]string(nil), subscribedPaneIDs...))
+								lastRecycle = time.Now()
 							}
 						}
+					} else if event.Kind == runtimeapi.EventOutputMatched || event.Kind == runtimeapi.EventAgentStatus {
+						lastTrigger = time.Now()
 					}
 				default:
+					if eventSource != nil && recycleDue(lastRecycle, lastTrigger, time.Now()) {
+						eventSource.UpdateSubscribedPanes(append([]string(nil), subscribedPaneIDs...))
+						lastRecycle = time.Now()
+					}
 					if hasSnapshot {
 						filtered, _ := filterPanesByIdentity(snapshot, cfg.Panes, monitoredTerminalIDs, selfPaneID)
 						return filtered, nil
@@ -490,6 +499,10 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		return filtered, nil
 	}, managerTick(manager), stderr)
 	return 0
+}
+
+func recycleDue(lastRecycle, lastTrigger, now time.Time) bool {
+	return !lastTrigger.IsZero() && lastTrigger.After(lastRecycle) && now.Sub(lastRecycle) >= time.Minute
 }
 
 func managerTick(manager *jobs.Manager) func(time.Time) {

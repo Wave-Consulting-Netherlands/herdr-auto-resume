@@ -88,6 +88,45 @@ func (s *Socket) UpdateSubscribedPanes(paneIDs []string) {
 	}
 }
 
+// SubscribeLayout performs the doctor-mode subscription round trip without
+// starting the long-lived event capability.
+func (s *Socket) SubscribeLayout(ctx context.Context) error {
+	dialer := net.Dialer{Timeout: s.options.DialTimeout}
+	conn, err := dialer.DialContext(ctx, "unix", s.options.Path)
+	if err != nil {
+		return fmt.Errorf("dial herdr layout subscription: %w", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(s.options.OpTimeout)); err != nil {
+		return fmt.Errorf("set herdr layout subscription deadline: %w", err)
+	}
+	id, err := s.writeRequest(conn, "events.subscribe", map[string]any{"subscriptions": []map[string]any{{"type": "layout.updated"}}})
+	if err != nil {
+		return err
+	}
+	frame, err := readSocketFrame(bufio.NewReader(conn))
+	if err != nil {
+		return fmt.Errorf("read herdr layout subscription: %w", err)
+	}
+	var envelope responseEnvelope
+	if err := json.Unmarshal(frame, &envelope); err != nil {
+		return fmt.Errorf("decode herdr layout subscription: %w", err)
+	}
+	if !responseIDMatches(envelope.ID, id) {
+		return fmt.Errorf("herdr layout subscription response id mismatch: got %s, want %d", string(envelope.ID), id)
+	}
+	if envelope.Error != nil {
+		return *envelope.Error
+	}
+	var result struct {
+		Type string `json:"type"`
+	}
+	if len(envelope.Result) == 0 || json.Unmarshal(envelope.Result, &result) != nil || result.Type != "subscription_started" {
+		return errors.New("herdr subscription response missing subscription_started")
+	}
+	return nil
+}
+
 func normalizeSubscribeSpec(spec *runtimeapi.SubscribeSpec) {
 	if spec.ReadSource == "" {
 		spec.ReadSource = "detection"
