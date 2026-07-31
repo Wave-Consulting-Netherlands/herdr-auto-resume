@@ -376,8 +376,28 @@ temporary Go caches. The systemd verifier emits the host's private-socket bind d
 while exiting 0; plistlib parses the launchd example. Live drills, merge, CI release dry run,
 and v0.2.0 release remain the orchestrator's commit-6 work.
 
+- 2026-07-31, Phase 7 orchestrator verification (L1–L4 complete):
+  - L1: `version` provenance renders; doctor (both transports) leads with version,
+    config, and watcher-lock lines; all live checks PASS.
+  - L2: run-lock drill — second instance on the same state file fails fast with holder
+    PID + hint; different state file starts. The soak-vs-production footgun is closed.
+  - L3: production config written (`~/.config/herdr-auto-resume/config.yaml`, doctor
+    PASS); wD:p1 watcher restarted on `run --config … --transport cli`; wQ:p1 soak
+    restarted on the same binary (socket, isolated state). Both healthy.
+  - L4: merged to master, pushed. **BLOCKED: GitHub Actions has never fired on this
+    repo (0 runs; repo-level enabled, workflows active) — org-level Actions policy
+    suspected; needs org-admin enablement (or `gh auth refresh -s admin:org`).**
+    Consequently L5 (v0.2.0 tag → CI release) is ON HOLD — do not tag until the
+    release-dry-run job has gone green on master.
+  - yaml.v3 integrity: `go mod verify` clean; go.sum hash matches the published
+    v3.0.1 checksum (the sandbox's GOSUMDB=off fetch is retroactively verified).
+  - Tested versions for the release record: herdr 0.7.5 (protocol 17), Claude Code
+    2.1.220, codex-cli 0.146.0, Go 1.26.5.
+
 ## Next task
 
-The orchestrator should perform PLANS.md commit 6: doctor both transports, live run-lock and
-config-parity drills, optional service migration, merge/CI validation, release v0.2.0, install
-and restart watchers, then record the tested release versions.
+Enable GitHub Actions for the repo (org admin, or scope-refresh gh), confirm CI +
+release-dry-run green on master, then `./scripts/release.sh 0.2.0` and verify the
+released linux_arm64 asset (PLANS.md L5–L6). Post-soak (24–48h clean on wQ:p1):
+switch wD:p1 to `--transport socket`. All BRIEF.md phases 0–7 are otherwise complete;
+remaining follow-ups live in BACKLOG.md.
