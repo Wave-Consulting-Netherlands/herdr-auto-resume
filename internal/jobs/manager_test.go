@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
@@ -56,7 +57,7 @@ func newTestManager(t *testing.T, rt runtime.Runtime, cfg Config, ids ...string)
 }
 
 func limitEvent(content string, reset time.Time) LimitEvent {
-	return LimitEvent{Pane: runtime.Pane{ID: "p1", Agent: "claude"}, ResetsRaw: "5m", ResetTime: reset, Content: content, ObservedAt: testNow}
+	return LimitEvent{Pane: runtime.Pane{ID: "p1", Agent: "claude"}, ResetsRaw: "5m", ResetTime: reset, Spec: detection.ResetSpec{Kind: detection.ResetKindRelative, Raw: "5m", ParsedTime: reset, Confidence: detection.ConfidenceHigh}, Content: content, ObservedAt: testNow}
 }
 
 func limitedContent() string { return "You've hit your limit · resets 5m" }
@@ -98,6 +99,69 @@ func TestHandleLimitCreatesOneJobForRepeatedPolls(t *testing.T) {
 	wantHash := sha256.Sum256([]byte(content))
 	if job.EvidenceHash != hex.EncodeToString(wantHash[:]) {
 		t.Fatalf("evidence hash = %q", job.EvidenceHash)
+	}
+}
+
+func TestHandleLimitPersistsDetectionMetadataAndLocalNotification(t *testing.T) {
+	content := limitedContent()
+	reset := testNow.Add(5 * time.Minute)
+	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "w1:p1"}}}}
+	var log strings.Builder
+	m, _ := newTestManager(t, rt, Config{Margin: time.Minute}, "job-1")
+	m.logw = &log
+	if !m.HandleLimit(limitEvent(content, reset)) {
+		t.Fatal("HandleLimit() = false")
+	}
+	job := m.Snapshot()[0]
+	if job.ResetKind != string(detection.ResetKindRelative) || job.ResetTimezone != "" || job.Confidence != string(detection.ConfidenceHigh) {
+		t.Fatalf("job metadata = %#v, want persisted detection fields", job)
+	}
+	if !strings.Contains(log.String(), "kind=relative") || !strings.Contains(log.String(), "confidence=high") {
+		t.Fatalf("log = %q, want kind and confidence", log.String())
+	}
+	if len(rt.Notes) != 1 || !strings.Contains(rt.Notes[0].Body, "p1") || !strings.Contains(rt.Notes[0].Body, "2026-07-31 12:05 UTC") {
+		t.Fatalf("notifications = %#v, want pane and local reset time", rt.Notes)
+	}
+}
+
+func TestValidationAllowsBareClaudePromptGlyph(t *testing.T) {
+	content := limitedContent()
+	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "╭────╮\n❯"}, Procs: map[string]runtime.ProcessInfo{"p1": {Command: "claude", CWD: "/work"}}}}
+	m, _ := newTestManager(t, rt, Config{Margin: time.Minute}, "job-1")
+	m.HandleLimit(limitEvent(content, testNow))
+	m.Tick(testNow.Add(time.Minute))
+	if got := m.Snapshot()[0].State; got != store.StateVerifyingResume {
+		t.Fatalf("state = %s, want VERIFYING_RESUME for bare prompt", got)
+	}
+}
+
+func TestValidationRejectsClaudeRateLimitMenu(t *testing.T) {
+	content := limitedContent()
+	menu := "⎿ You've hit your limit · resets 5m\nWhat do you want to do?\n❯ 1. Stop and wait for limit to reset\n2. Upgrade\nEnter to confirm · Esc to cancel"
+	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": menu}, Procs: map[string]runtime.ProcessInfo{"p1": {Command: "claude", CWD: "/work"}}}}
+	m, _ := newTestManager(t, rt, Config{Margin: time.Minute}, "job-1")
+	m.HandleLimit(limitEvent(content, testNow))
+	m.Tick(testNow.Add(time.Minute))
+	if got := m.Snapshot()[0].State; got != store.StateManualRequired {
+		t.Fatalf("state = %s, want MANUAL_REQUIRED for menu", got)
+	}
+}
+
+func TestValidationRejectsBoxedClaudeRateLimitMenu(t *testing.T) {
+	banner := "⎿ You've hit your limit · resets 5m"
+	menu := banner + "\nOpening your options…\n╭──────────────────────────────╮\n│ What do you want to do?       │\n│ ❯ 1. Stop and wait for limit to reset │\n│   2. Upgrade your plan        │\n│ Enter to confirm · Esc to cancel │\n╰──────────────────────────────╯"
+	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": menu}, Procs: map[string]runtime.ProcessInfo{"p1": {Command: "claude", CWD: "/work"}}}}
+	m, _ := newTestManager(t, rt, Config{Margin: time.Minute}, "job-1")
+	m.HandleLimit(limitEvent(banner, testNow))
+	m.file.Jobs[0].State = store.StateValidating
+	m.file.Jobs[0].ResumeAtUTC = testNow
+	m.Tick(testNow)
+	job := m.Snapshot()[0]
+	if job.State != store.StateManualRequired {
+		t.Fatalf("job = %#v, want MANUAL_REQUIRED from VALIDATING boxed menu", job)
+	}
+	if len(rt.SentText) != 0 || len(rt.SentKeys) != 0 {
+		t.Fatalf("runtime writes = text %#v keys %#v, want none", rt.SentText, rt.SentKeys)
 	}
 }
 
@@ -189,7 +253,7 @@ func TestValidationRejectsMenuAndNonClaude(t *testing.T) {
 		name    string
 		content string
 	}{
-		{name: "menu", content: "╭────╮\n❯ Upgrade\n> "},
+		{name: "menu", content: "╭────╮\nWhat do you want to do?\n❯ 1. Stop and wait for limit to reset\n2. Upgrade\nEnter to confirm · Esc to cancel"},
 		{name: "not Claude", content: "$ echo ready\nready"},
 	}
 	for _, tc := range cases {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	_ "time/tzdata"
 
 	tmuxadapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/tmux"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/tui"
@@ -26,6 +27,8 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 			return runCommand(args[1:], stdout, stderr)
 		case "doctor":
 			return doctorCommand(args[1:], stdout, stderr)
+		case "detect":
+			return detectCommand(args[1:], stdout, stderr)
 		case "status", "inspect", "cancel":
 			return jobCommand(args, stdout, stderr)
 		case "version":

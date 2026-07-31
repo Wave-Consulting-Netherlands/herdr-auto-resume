@@ -27,6 +27,7 @@ type LimitEvent struct {
 	Pane       runtime.Pane
 	ResetsRaw  string
 	ResetTime  time.Time
+	Spec       detection.ResetSpec
 	Content    string
 	ObservedAt time.Time
 }
@@ -114,41 +115,43 @@ func (c *Coordinator) Poll() {
 			continue
 		}
 
+		now := c.clock()
 		state.HasClaudeCode = detection.IsClaudeCode(content)
 		if state.HasClaudeCode {
-			status := detection.CheckRateLimit(content)
+			status := detection.CheckRateLimitAt(content, now)
+			analysis := detection.Analyze(content, now)
 
 			wasLimited := state.IsRateLimited
 			state.IsRateLimited = status.IsLimited
 			state.RateLimitResets = status.ResetsAt
-			state.RateLimitTime = status.ResetTime
+			state.RateLimitTime = analysis.Reset.ParsedTime
 
 			if !wasLimited && status.IsLimited {
 				state.ContinueSent = false
 				state.LastPeriodicContinue = time.Time{}
 			}
 
-			if state.IsRateLimited && state.Mode == ModeAuto {
-				now := c.clock()
-				if !state.RateLimitTime.IsZero() {
+			if state.IsRateLimited && state.Mode == ModeAuto && analysis.Actionable {
+				if !analysis.Reset.ParsedTime.IsZero() {
 					if c.jobSink != nil {
 						owned := c.jobSink.HandleLimit(LimitEvent{
 							Pane:       state.Pane,
 							ResetsRaw:  status.ResetsAt,
-							ResetTime:  status.ResetTime,
+							ResetTime:  analysis.Reset.ParsedTime,
+							Spec:       analysis.Reset,
 							Content:    content,
 							ObservedAt: now,
 						})
 						if owned {
 							state.ContinueSent = true
 						}
-					} else if !state.ContinueSent && now.After(state.RateLimitTime) {
+					} else if !analysis.MenuVisible && !state.ContinueSent && now.After(state.RateLimitTime) {
 						c.sendContinue(paneID)
 						state.ContinueSent = true
 					}
 				} else {
 					periodicInterval := 15 * time.Minute
-					if state.LastPeriodicContinue.IsZero() || now.Sub(state.LastPeriodicContinue) >= periodicInterval {
+					if !analysis.MenuVisible && (state.LastPeriodicContinue.IsZero() || now.Sub(state.LastPeriodicContinue) >= periodicInterval) {
 						c.sendContinue(paneID)
 						state.LastPeriodicContinue = now
 					}
@@ -228,7 +231,7 @@ func (c *Coordinator) checkPaneRateLimit(state *PaneState) {
 	if err != nil {
 		return
 	}
-	status := detection.CheckRateLimit(content)
+	status := detection.CheckRateLimitAt(content, c.clock())
 	state.IsRateLimited = status.IsLimited
 	state.RateLimitResets = status.ResetsAt
 	state.RateLimitTime = status.ResetTime

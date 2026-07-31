@@ -111,7 +111,7 @@ func TestReadPaneOmitsNonPositiveLines(t *testing.T) {
 	if _, err := a.ReadPane("p1", 0); err != nil {
 		t.Fatalf("ReadPane: %v", err)
 	}
-	if want := []string{"pane", "read", "p1", "--source", "recent"}; !reflect.DeepEqual(r.args[0], want) {
+	if want := []string{"pane", "read", "p1", "--source", "detection"}; !reflect.DeepEqual(r.args[0], want) {
 		t.Fatalf("argv = %#v, want %#v", r.args[0], want)
 	}
 }

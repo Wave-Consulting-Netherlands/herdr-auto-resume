@@ -68,9 +68,10 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		finish(store.StateManualRequired, "working directory changed", true)
 		return
 	}
-	status := detection.CheckRateLimit(content)
+	status := detection.CheckRateLimitAt(content, now)
+	analysis := detection.Analyze(content, now)
 	idle := detection.IsIdlePrompt(content)
-	if hasMenuInTail(content) || (!status.IsLimited && !idle) {
+	if analysis.MenuVisible || (!status.IsLimited && !idle) {
 		finish(store.StateManualRequired, "terminal is not in a safe blocked or idle state", true)
 		return
 	}
@@ -83,7 +84,7 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 func (m *Manager) verify(index int, job store.Job, now time.Time) {
 	content, err := m.rt.ReadPane(job.PaneID, m.cfg.ReadLines)
 	if err == nil {
-		status := detection.CheckRateLimit(content)
+		status := detection.CheckRateLimitAt(content, now)
 		if now.Before(job.VerifyDeadlineUTC) && (!status.IsLimited || hashContent(content) != job.EvidenceHash) {
 			job.State = store.StateResumed
 			job.LastValidation = "resume verified"

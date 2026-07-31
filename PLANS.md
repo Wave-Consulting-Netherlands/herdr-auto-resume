@@ -1,134 +1,189 @@
-# PLANS — Phase 3: Persistent scheduler and safety gates
+# PLANS — Phase 4: Claude Code production support
 
-Authoritative plan for BRIEF.md §14 Phase 3. Scope changes require updating this file.
-Exit criteria: **a watcher can be stopped while waiting, restarted, and safely resume the
-same simulated session exactly once.**
+Supersedes the completed Phase 3 plan (see git history / PROGRESS.md). Authoritative for
+BRIEF.md §14 Phase 4. Exit criteria: **all committed positive Claude fixtures detected;
+all committed negative fixtures never trigger; an end-to-end simulated reset resumes.**
 
-Out of scope: provider interface/registry, Codex support, socket client, weekly-reset
-parsing expansion, menu navigation, TUI job views, `resume-now`/`enable-all`/`disable-all`.
+Out of scope: menu navigation, Codex provider, socket client, provider-interface
+extraction, API-overload/backoff handling.
 
-Gate for every commit: `go build ./... && go vet ./... && go test ./... -race -count=1`
-(Go at `~/.local/go/bin`, not on PATH).
+Gate per commit: `go build ./... && go vet ./... && go test ./... -race -count=1`
+(Go at `~/.local/go/bin`). Branch: `phase-4-claude-production`. The deployed watcher
+(pane wD:p1, schema-1 state file) must keep working: no flag removals, additive store
+fields only, detection default changes strictly-safer.
 
 ## Design decisions
 
-- **D1 Placement:** new `internal/store` (persistence) + `internal/jobs` (lifecycle/state
-  machine). `jobs → coordinator, store, detection, runtime`; coordinator defines its own
-  small sink interface and never imports jobs/store. Arch test extended: walk
-  `../store` (commit 1) and `../jobs` (commit 3); forbid `internal/jobs`+`internal/store`
-  imports from coordinator/detection/runtime.
-- **D2 Authority split:** with a JobSink configured (headless herdr run only): known-reset
-  limits → job store authoritative, coordinator's legacy send branch made inert by setting
-  `ContinueSent=true` in the same Poll iteration ownership is taken. Unknown-reset limits →
-  coordinator's 15-min periodic path stays authoritative, NOT persisted (nothing to
-  schedule; restart re-detects losslessly). Test-pattern sends stay on the coordinator
-  path, unpersisted. TUI/tmux path: no sink → byte-for-byte upstream behavior.
-- **D3 Level-triggered idempotent sink:** `HandleLimit` called every poll while the
-  condition holds (edge-trigger would miss pre-existing limits due to runcmd's
-  Poll-then-EnableAll priming, which must NOT be reordered). Dedupe = at most one active
-  job per pane ID (never by reset-time equality — "resets Nm" re-parses each tick and
-  drifts). After RESUMED, a new limit creates a new job (stay-armed, BRIEF §21).
-- **D4 The manager sends, not the coordinator:** persist RESUMING (fsync) BEFORE input.
-  Shared `coordinator.SendContinueSequence(rt, paneID, sleep)` helper — one copy of
-  esc→"continue"→enter.
-- **D5 Terminal-state validation:** re-read tail; pass iff `IsClaudeCode` AND
-  (`CheckRateLimit(...).IsLimited` OR new `detection.IsIdlePrompt` — prompt `^>` in last
-  lines, no menu selector `❯` in tail). Else MANUAL_REQUIRED. Never use re-parsed
-  ResetTime during validation (detection uses wall-clock internally).
-- **D6 Verification:** success = `!IsLimited` OR sha256(tail) != evidence hash, before
-  `VerifyDeadlineUTC` (default 90s) else FAILED. Dry-run skips verification (RESUMING→
-  RESUMED directly, `DryRun:true`).
-- **D7 Horizon:** reset further out than MaxHorizon (default 192h) → job created directly
-  FAILED with clear error + notify; episode still owned (suppresses coordinator send).
-- **D8 External cancel:** status/inspect/cancel edit the store file; manager checks file
-  mtime each Tick and reloads; external terminal states (CANCELLED/DISABLED) win.
+- **D-P4-1:** new `internal/terminal` = standalone stdlib-only leaf (ANSI/CSI/OSC/DCS
+  stripping, line handling, bounded tail). `detection` imports `terminal`; `jobs` keeps
+  consuming `detection` predicates. Dependency direction `jobs → detection → terminal`.
+  Arch test walks `../terminal` and asserts stdlib-only.
+- **D-P4-2:** clock injection = explicit `now time.Time` parameter (carries Location →
+  injects clock AND local zone; no globals). New API `detection.Analyze(content, now)`;
+  `CheckRateLimitAt(content, now)`; `CheckRateLimit` stays as a `time.Now()` wrapper so
+  the TUI path compiles untouched.
+- **D-P4-3:** menu visibility does NOT block job creation (banner+menu is a genuine
+  limit with parseable reset — see fixture from `example`); it blocks SENDING (legacy
+  immediate-send path skips; validation gate 9 → MANUAL_REQUIRED).
+- **D-P4-4:** `Analysis.Actionable` (live-tail/stale/quoted guard) gates LimitEvent
+  emission and the 15-min periodic path; raw `IsLimited` keeps feeding TUI display.
+- **D-P4-5:** evidence hash stays sha256(raw content) — deployed dedupe keeps matching.
+- **D-P4-6:** `_ "time/tzdata"` imported in main.go (tz database fallback).
+
+## Types (sketch)
+
+```go
+// internal/terminal
+func StripANSI(s string) string  // CSI incl private-mode, OSC(+BEL/ST), DCS, APC/SOS/PM,
+                                 // C0 except \n \t; \r\n→\n, bare \r dropped; \n preserved
+func Lines(s string) []string    // strip + split, keeps empty lines positionally
+func Tail(lines []string, n int) []string
+func TailString(content string, n int) string
+
+// internal/detection resetspec.go
+type ResetKind string   // absolute | local-clock | relative | date-time | unknown
+type Confidence string  // high | medium | low
+type ResetSpec struct { Kind ResetKind; Raw, Timezone string; ParsedTime time.Time; Confidence Confidence }
+func ParseReset(text string, now time.Time) ResetSpec
+
+// internal/detection families.go / live.go
+type Family string // n-hour-limit session-limit weekly-limit usage-limit extra-usage
+                   // hit-limit limit-reached relative-retry ""
+type Analysis struct { IsLimited, Actionable, MenuVisible bool; Family Family;
+                       Reset ResetSpec; Evidence string }
+func Analyze(content string, now time.Time) Analysis
+func HasRateLimitMenu(content string) bool
+// RateLimitStatus gains additive field Spec ResetSpec
+
+// internal/store Job additive fields (schema version stays 1):
+ResetKind, ResetTimezone, Confidence string // json omitempty
+```
+
+## Parsing rules (each = test case; all fake-clock)
+
+- Clock+am/pm → local-clock in now.Location() unless tz follows.
+- Clock+`(IANA)` → LoadLocation → absolute/high. **Fixes live bug: printed tz currently
+  ignored, time parsed host-local.**
+- Clock+abbreviation: fixed map UTC/GMT/BST/CET/CEST/EST/EDT/ET/PST/PDT/PT/CST/CDT/CT/
+  MST/MDT/MT → IANA, medium confidence; unknown abbr → local-clock/low, keep raw tz.
+- 24h clock (`15:30`) unambiguous; 1–12 no am/pm → soonest-future, medium.
+- Passed clock ≤1h grace → keep today; older → NEXT occurrence via date-anchored
+  time.Date (never Add(24h) — DST trap).
+- DST deterministic late-side: spring-forward gap → Go normalizes forward (accept);
+  fall-back repeated hour → if candidate.Add(1h) renders same wall clock take the LATER
+  instant. Tests both 2026 transitions in Europe/Amsterdam + one US zone.
+- Relative: `8m`, `45m`, `in 2 hours`, `in: 3 hours`, `try again in 5 hours`,
+  `wait 30 mins`, `2h 30m`.
+- Date-time (weekly): `Oct 9, 10am`, `Oct 9 at 10am (Europe/Amsterdam)`,
+  `Thursday 3pm`/`Thu 3pm` (next occurrence, today-if-future); year rollover.
+  High confidence with explicit date, medium weekday-only.
+  (Reference parser claude-auto-retry does NOT support date-time — we deliberately do.)
+- Implausible: hour>23, minute>59, `resets 30`, >370 days out → unknown/zero time.
+- Final resume base stored UTC; Raw + Timezone retained. Margin/horizon stay in jobs.
+- Host-tz independence: parse derives location ONLY from now.Location(); test with a
+  non-host zone.
+
+## Detection mechanics (port from claude-auto-retry; see appendix patterns)
+
+- LIMIT line + RESET line paired within 6 lines; bottom-most reset wins.
+- Chrome-aware content tail: strip trailing chrome lines — blank, box rules, boxed input
+  `│ > … │`, bare `❯`/`>` prompt row, `⏵⏵` footer, `? for shortcuts`, `| vX.Y.Z`,
+  usage footer `[Opus … | Max] …`, tool tallies `✓ Bash ×10 | …`,
+  `✓ All todos complete (N/N)`, `□◼✓` todo items, `N tasks (`, `+N completed`,
+  spinner `✻ …`, `Opening your options…`, `╌╌╌`/`───` — every classifier
+  render-anchored, each with a prose-probe negative test (`Press ctrl+c to stop the dev
+  server`, `✓ Fixed the bug`, `Released v0.5.1`, psql `│ … │` table rows survive).
+- Stale-scrollback guard: non-chrome non-menu output BELOW the banner → Actionable=false.
+- Quoted protection: tool-echo mask (`⏺`/`●`/`∙` `Name(` headers + their `⎿`/`└`/indented
+  children, computed over full read then sliced), fenced code blocks, `> ` quotes.
+  **Load-bearing exception:** a `⎿` banner NOT governed by a `Name(` header is LIVE
+  (Claude renders the real banner as a `⎿` child of an interrupted tool call — pinned by
+  the `example` fixture).
+- Menu: `What do you want to do?` + option lines `^\s*❯?\s*\d+\.\s` + (`Stop and wait
+  for limit to reset` | `Enter to confirm` | `Esc to cancel`), live tail only.
+- `IsIdlePrompt` refinement (closes BACKLOG 3): bare `❯` prompt glyph no longer vetoes;
+  only menu-shaped `❯ N.` lines / menu blocks do.
 
 ## Commits
 
-1. **`internal/store`** — `store.go` (JobState consts WAITING/VALIDATING/RESUMING/
-   VERIFYING_RESUME/RESUMED/MANUAL_REQUIRED/FAILED/CANCELLED/DISABLED/SESSION_GONE +
-   `Terminal()`; `Job` struct: id, provider, pane_id, workspace, agent, proc_command,
-   working_dir, detected_at, raw_reset, reset_at_utc, resume_at_utc, margin_secs, state,
-   attempts, attempt_id, attempt_at_utc, verify_deadline_utc, last_validation, last_error,
-   evidence_hash, evidence_at_utc, dry_run; `File{Version:1, Jobs}`; `Store` interface
-   Load/Save/Path; `CorruptError{BackupPath,Err}`; `DefaultPath()` honoring
-   XDG_STATE_HOME → `~/.local/state/herdr-auto-resume/state.json`).
-   `json_store.go`: MkdirAll 0700, write `state.json.tmp.<pid>`, fsync file, rename,
-   best-effort dir fsync; missing file → empty File; corrupt → backup
-   `state.json.corrupt-<ts>` + empty + CorruptError (never crash-loop); unknown fields
-   tolerated. Tests: round-trip, missing, corrupt+backup+recover, atomicity/tmp cleanup,
-   XDG override (t.Setenv), perms 0700/0600. Arch test walks `../store`.
-2. **Coordinator seams** — `LimitEvent{Pane, ResetsRaw, ResetTime(non-zero), Content,
-   ObservedAt}`; `JobSink{HandleLimit(LimitEvent) bool}`; `WithJobSink`; `WithPostPoll(
-   func(now time.Time))` invoked by RunLoop after each successful refresh+Poll;
-   `SendContinueSequence` exported helper (sendContinue refactors onto it, dry-run stays
-   in sendContinue). Poll change ONLY in the limited+ModeAuto known-reset branch per D2/D3.
-   `detection.IsIdlePrompt` added (+tests). Tests: sink payload correctness; ownership
-   suppresses legacy send; sink=false also no send (fail-safe); unknown-reset never calls
-   sink (periodic path unaffected); ModeOff/TestPattern never call sink; no sink → all
-   existing tests unchanged; postPoll fires once per tick with injected clock time.
-3. **`internal/jobs` manager + gates** — `Config{Provider,Margin(60s),MaxHorizon(192h),
-   VerifyTimeout(90s),ReadLines,DryRun}`; `New(rt, st, cfg, opts...)`; options WithClock/
-   WithSleep/WithIDGenerator (default crypto/rand UUIDv4, no dep)/WithLogWriter.
-   `HandleLimit`: dedupe per D3; horizon per D7; else create job (ProcessInfo fingerprint —
-   errors leave fields empty which relaxes later checks; evidence sha256; ResetAtUTC;
-   ResumeAtUTC=reset+margin; WAITING; persist; notify created/scheduled, log-only in
-   dry-run). Persist failure → log + return false. `Tick(now)`: mtime merge (D8);
-   WAITING→VALIDATING when now≥ResumeAtUTC; validate same tick.
-   `validate.go` ordered gates: (1) not cancelled/disabled; (2) now≥ResumeAtUTC else wait;
-   (3) Attempts==0 else MANUAL_REQUIRED; (4) ListPanes ok else stay VALIDATING (transient);
-   (5) pane present else SESSION_GONE; (6) ReadPane ok + IsClaudeCode else MANUAL_REQUIRED;
-   (7) proc command matches recorded (skip if empty) else MANUAL_REQUIRED; (8) cwd matches
-   (skip if empty) else MANUAL_REQUIRED; (9) D5 terminal-state check else MANUAL_REQUIRED.
-   Record LastValidation always; notify on MANUAL_REQUIRED/SESSION_GONE. Tests: transition
-   table, horizon, dedupe (100 calls → 1 job), fingerprint/cwd mismatch, pane gone,
-   transient runtime outage recovery, menu → MANUAL_REQUIRED, idle-prompt pass, not-Claude,
-   zero-ResetTime contract, deterministic IDs, stay-armed second job. Arch test walks
-   `../jobs`.
-4. **Exactly-once + verification** — validation pass → persist RESUMING (AttemptID,
-   AttemptAtUTC, Attempts=1); Save failure → do NOT send, revert to VALIDATING in memory;
-   dry-run → RESUMED directly; real → SendContinueSequence; send error → MANUAL_REQUIRED;
-   then persist VERIFYING_RESUME + VerifyDeadlineUTC; per-tick verify per D6; deadline →
-   FAILED. Tests: failing-store spy proves zero sends; exactly one send across 50 ticks;
-   spy store snapshot shows RESUMING persisted before send; verify via hash change; verify
-   via !IsLimited; deadline FAILED at exact fake-clock instant; dry-run no runtime writes;
-   send error → MANUAL_REQUIRED.
-5. **Reconcile + E2E test** — `Reconcile()`: CorruptError → warn + continue; WAITING/
-   VALIDATING kept; **RESUMING → MANUAL_REQUIRED** (uncertain send, never auto-retry);
-   VERIFYING kept (expired deadline evaluated once next tick); WAITING with
-   ResumeAtUTC−now>MaxHorizon → FAILED; terminal jobs kept for status, never ticked.
-   E2E restart test through real wiring (fake runtime, "resets 5m" fixture content, temp
-   state file, tick channel): instance A stops mid-WAITING (file shows WAITING, 0 sends);
-   instance B reconciles, fake clock advanced past ResumeAtUTC **read back from the
-   store**, exactly one send, content mutation → RESUMED; total sends across A+B == 1.
-   Variant: file hand-set to RESUMING → MANUAL_REQUIRED, 0 sends.
-6. **CLI wiring** — run flags: `--state-file` (default `auto`: DefaultPath for herdr,
-   off for tmux; `off` disables; explicit path enables), `--margin` 60s, `--max-wait` 192h,
-   `--verify-timeout` 90s. Wire store+manager+Reconcile+WithJobSink+WithPostPoll; keep
-   SetPanes→Poll→EnableAll order unchanged; stderr line prints state path. New
-   `jobscmd.go`: `status` (table: JOB(8-char) PANE STATE RESET(local) RESUME(UTC) ATTEMPTS
-   ERROR), `inspect <id-prefix>` (full JSON, unique-prefix match), `cancel <id-prefix>`
-   (active → CANCELLED, terminal → error). Tests: flag parsing incl auto/off/tmux-off,
-   status golden, inspect prefix + ambiguity, cancel round-trip + rejection, dispatch.
-   README + PROGRESS.md updates.
-7. **Live E2E on this host** (run by orchestrator, not Codex): scratch workspace, `cat`
-   fixture pane (Escape harmless, text echoes — avoids zsh vi-mode artifact), simulated
-   limit "You've hit your limit · resets <T+3m>", dry-run pass with restart mid-wait +
-   status/state.json checks, RESUMING-at-restart drill (→ MANUAL_REQUIRED, 0 sends), live
-   pass (exactly one "continue" echoed; VERIFYING→RESUMED via hash change; notification),
-   cancel honored by running watcher (D8). Record in PROGRESS.md.
+1. **internal/terminal** + arch-test extension + detection.StripANSI delegates +
+   `_ "time/tzdata"` in main.go. Tests: CSI/private-mode/OSC-8/OSC-0/DCS/APC, line
+   preservation, Tail bounds; existing detection tests stay green.
+2. **Clock injection seam** (no behavior change): CheckRateLimitAt/HasResetAt; thread
+   now through parseResetTime; coordinator (`c.clock()`) + jobs (`now`) migrate;
+   characterization tests pin today's exact outputs (minutes format, −1h rollover,
+   fallback empty ResetsAt) under fixed fake now.
+3. **ResetSpec parser** (resetspec.go): full rules above; RateLimitStatus.Spec additive;
+   clock/minutes paths rebuilt on ParseReset with legacy fields mapped identically.
+   Table tests incl. Asia/Kolkata half-hour, Pacific/Auckland day-boundary, both DST
+   transitions, grace window, 12am/12pm, year rollover, implausibles.
+4. **Message families + positive corpus** (families.go + testdata/claude/positive/):
+   families per the type list; widen CheckRateLimitAt regexes (session/weekly/usage/
+   extra-usage/N-hour/try-again); every new pattern gets ≥1 negative probe. Corpus test
+   walks positive dir asserting IsLimited+Family+Kind+ParsedTime per a filename-keyed
+   table. Sanitize root example/example2 into corpus (originals stay). Fixture naming
+   versioned (cc2026-07_*, CC 2.1.220, herdr 0.7.5).
+5. **live.go: chrome/quote/stale guards + Analyze + negative corpus** + IsIdlePrompt
+   refinement + coordinator migration (Analyze, LimitEvent.Spec, Actionable gating,
+   menu-blocks-immediate-send). Negative fixtures: source_code, readme_quote,
+   user_prompt, agent_analysis (sanitized from live wA:p1 capture), command_history,
+   stale_scrollback_newer_output, test_output, non_claude_pane, code_fence_quote,
+   tool_echo_grep, starship_prompt_tail. Negative walk asserts Actionable=false AND
+   !(IsLimited && Actionable && nonzero ParsedTime). MUST land before commit 6.
+6. **Jobs integration**: gate 9 via Analyze (MenuVisible replaces blanket ❯ check;
+   delete manager.go hasMenuInTail); HandleLimit persists ResetKind/ResetTimezone/
+   Confidence; store additive fields + old-file load test; notification body includes
+   pane + human local reset time; log lines gain kind= confidence=; jobs regression
+   tests (starship-tail idle pane now passes gate 9; menu fixture still MANUAL_REQUIRED);
+   optionally fix BACKLOG 2 (status RESET column local time). inspect prints new fields.
+7. **detect subcommand** (BRIEF §12: `detect --file fixture.txt` prints
+   IsLimited/Actionable/MenuVisible/Family/Kind/Timezone/ParsedTime UTC+local/
+   Confidence/Evidence; never sends) + docs + PROGRESS/BACKLOG updates.
+   Live E2E (orchestrator, not Codex): weekly-format drill, timezone-format drill
+   (Europe/Amsterdam banner on UTC-parsed clock), negative live drill (BRIEF-quoting
+   pane → zero jobs), deployed-watcher upgrade check (schema-1 state file reconciles).
+
+## Raw material
+
+- Live captures in scratchpad `p4-fixtures/`: claude_working_chrome.txt (w1:p1),
+  claude_idle_chrome.txt (w4:p1), agent_analysis_hazard.txt (wA:p1), codex_pane.txt
+  (w6:p1). Sanitize before committing: paths → /home/user, project names →
+  example-project, task text → same-shape filler; KEEP all glyphs/box-drawing/wording/
+  indentation; grep for token|key|secret|Bearer|ssh- before commit. Versions: Claude
+  Code 2.1.220, herdr 0.7.5 proto 17.
+
+## Appendix — reference patterns (claude-auto-retry, MIT)
+
+Limit lines: `/(?:hit|exceeded|reached).*(?:your|the)\s*(?:[\w-]+\s+){0,3}limit/i`,
+`/\d+-hour limit/i`, `/limit reached/i`, `/usage limit/i`, `/out of.*usage/i`,
+`/rate limit/i`, `/try again in/i`.
+Reset lines: `/resets?\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?/i`,
+`/resets?\s+in[:\s]\s*\d/i`, `/try again in \d+\s*(?:hours?|minutes?|h|m)/i`.
+Time extraction: `/resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(([^)]+)\))?/i`;
+relative `/(?:try again|wait|resets?\s+in)[:\s]\s*(?:for\s+)?(?:in\s+)?(\d+)\s*(hours?|minutes?|mins?|h|m)\b/i`.
+Message examples to cover as fixtures: `5-hour limit reached - resets 3pm (UTC)`,
+`You've hit your limit · resets 3pm (Europe/Dublin)`, `You've hit your session limit ·
+resets 2am (Europe/Zurich)`, `You've hit your weekly limit · resets 9am (Europe/London)`,
+`You've hit your 5-hour limit · resets 3pm (UTC)`, `You've hit your weekly limit ·
+resets Oct 9, 10am`, `Claude usage limit reached. Resets at 2pm`, `You're out of extra
+usage · resets 3pm`, `Please try again in 5 hours`, `usage limit · resets in: 3 hours`,
+`resets in 2 hours`, `wait 30 mins`, `Rate limit hit. Resets at 4pm`, multi-line
+`⚠ You've hit your limit` / `· resets 3pm (UTC)`, menu block `What do you want to do?` /
+`❯ 1. Upgrade your plan` / `2. Stop and wait for limit to reset` / `Enter to confirm ·
+Esc to cancel`.
 
 ## Risks
 
-1. Latch gap: ownership must set ContinueSent=true in the SAME Poll iteration (D2).
-2. Do not reorder runcmd priming (D3 handles it).
-3. `detection` uses wall-clock internally — store parsed times once at detection; E2E
-   tests read ResumeAtUTC back from the store before advancing fake clock. No clock
-   injection into detection this phase.
-4. Dedupe never by reset-time equality ("Nm" drift).
-5. Persist-before-send lives in jobs (D4); failing-store test pins it.
-6. Corrupt store never crash-loops.
-7. Concurrent cancel needs D8 mtime reload.
-8. Notifications only on job-created/submitted/active/MANUAL_REQUIRED/FAILED; dry-run
-   suppresses.
-9. Arch-test dir additions must match package creation order (store in c1, jobs in c3).
+1. Fall-back duplicate hour: time.Date picks earlier offset silently — explicit
+   late-side check required or watcher wakes an hour early.
+2. `⎿`-child live banner vs tool-echo mask: header-governed discipline is load-bearing;
+   `example` fixture pins it.
+3. Loose chrome regexes strip real work → stale banner pulled back in; prose-probe
+   table mandatory.
+4. Commit 4 widens regexes before commit 5's liveness guard: keep negative string
+   probes in commit 4; do NOT deploy the binary to wD:p1 between commits 4 and 5.
+5. Gate-9 relaxation only in commit 6, after menu detection proven in 5.
+6. time.Local leakage: location only from now.Location(); non-host-zone test.
+7. Periodic path now gated on Actionable — intended strictly-safer change; note in
+   PROGRESS.
+8. Abbreviation ambiguity (CST): fixed map only, medium confidence, never guess beyond.

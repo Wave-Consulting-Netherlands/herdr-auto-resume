@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+var rateLimitTestNow = time.Date(2026, time.July, 31, 12, 0, 0, 0, time.UTC)
+
 func loadFixture(t *testing.T, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", name))
@@ -18,7 +20,7 @@ func loadFixture(t *testing.T, name string) string {
 
 func TestCheckRateLimit_NewFormat(t *testing.T) {
 	content := loadFixture(t, "rate_limit_new_format.txt")
-	status := CheckRateLimit(content)
+	status := CheckRateLimitAt(content, rateLimitTestNow)
 
 	if !status.IsLimited {
 		t.Error("expected IsLimited to be true")
@@ -33,7 +35,7 @@ func TestCheckRateLimit_NewFormat(t *testing.T) {
 
 func TestCheckRateLimit_OldFormat(t *testing.T) {
 	content := loadFixture(t, "rate_limit_old_format.txt")
-	status := CheckRateLimit(content)
+	status := CheckRateLimitAt(content, rateLimitTestNow)
 
 	if !status.IsLimited {
 		t.Error("expected IsLimited to be true")
@@ -48,7 +50,7 @@ func TestCheckRateLimit_OldFormat(t *testing.T) {
 
 func TestCheckRateLimit_NoMatch(t *testing.T) {
 	content := loadFixture(t, "not_claude_code.txt")
-	status := CheckRateLimit(content)
+	status := CheckRateLimitAt(content, rateLimitTestNow)
 
 	if status.IsLimited {
 		t.Error("expected IsLimited to be false")
@@ -105,7 +107,7 @@ func TestCheckRateLimit_TimeFormats(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			status := CheckRateLimit(tc.content)
+			status := CheckRateLimitAt(tc.content, rateLimitTestNow)
 			if !status.IsLimited {
 				t.Error("expected IsLimited to be true")
 			}
@@ -117,7 +119,7 @@ func TestCheckRateLimit_TimeFormats(t *testing.T) {
 }
 
 func TestCheckRateLimit_MinutesFormat(t *testing.T) {
-	status := CheckRateLimit("⚠ Limit reached (resets 30m)")
+	status := CheckRateLimitAt("⚠ Limit reached (resets 30m)", rateLimitTestNow)
 
 	if !status.IsLimited {
 		t.Error("expected IsLimited to be true")
@@ -156,15 +158,11 @@ func TestCheckRateLimit_FallbackNoTime(t *testing.T) {
 			name:    "rate limited status",
 			content: "⚠ Rate limited",
 		},
-		{
-			name:    "limit reached with unparseable time format",
-			content: "Limit reached (resets in 2 hours)",
-		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			status := CheckRateLimit(tc.content)
+			status := CheckRateLimitAt(tc.content, rateLimitTestNow)
 			if !status.IsLimited {
 				t.Error("expected IsLimited to be true")
 			}
@@ -178,6 +176,13 @@ func TestCheckRateLimit_FallbackNoTime(t *testing.T) {
 	}
 }
 
+func TestCheckRateLimit_RelativeReset(t *testing.T) {
+	status := CheckRateLimitAt("Limit reached (resets in 2 hours)", rateLimitTestNow)
+	if !status.IsLimited || status.ResetTime.IsZero() || status.TimeUntil != 2*time.Hour {
+		t.Fatalf("relative status = %#v, want a two-hour parsed reset", status)
+	}
+}
+
 func TestCheckRateLimit_NoMatchCases(t *testing.T) {
 	cases := []string{
 		"Normal output without rate limit",
@@ -187,7 +192,7 @@ func TestCheckRateLimit_NoMatchCases(t *testing.T) {
 
 	for _, content := range cases {
 		t.Run(content, func(t *testing.T) {
-			status := CheckRateLimit(content)
+			status := CheckRateLimitAt(content, rateLimitTestNow)
 			if status.IsLimited {
 				t.Errorf("expected IsLimited to be false for: %q", content)
 			}
@@ -196,7 +201,7 @@ func TestCheckRateLimit_NoMatchCases(t *testing.T) {
 }
 
 func TestHasReset(t *testing.T) {
-	now := time.Now()
+	now := rateLimitTestNow
 
 	cases := []struct {
 		name   string
@@ -233,10 +238,32 @@ func TestHasReset(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.status.HasReset()
+			got := tc.status.HasResetAt(now)
 			if got != tc.want {
 				t.Errorf("HasReset() = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCheckRateLimitAtUsesProvidedClock(t *testing.T) {
+	now := time.Date(2026, time.July, 31, 12, 0, 0, 0, time.FixedZone("TEST", 2*60*60))
+	status := CheckRateLimitAt("limit reached ∙ resets 2pm", now)
+	if !status.ResetTime.Equal(time.Date(2026, time.July, 31, 14, 0, 0, 0, now.Location())) {
+		t.Fatalf("ResetTime = %v, want fixed-clock local time", status.ResetTime)
+	}
+	if status.TimeUntil != 2*time.Hour {
+		t.Fatalf("TimeUntil = %v, want 2h", status.TimeUntil)
+	}
+}
+
+func TestHasResetAtUsesProvidedClock(t *testing.T) {
+	reset := time.Date(2026, time.July, 31, 14, 0, 0, 0, time.UTC)
+	status := RateLimitStatus{IsLimited: true, ResetTime: reset}
+	if !status.HasResetAt(reset.Add(time.Nanosecond)) {
+		t.Fatal("HasResetAt() = false, want true after reset")
+	}
+	if status.HasResetAt(reset) {
+		t.Fatal("HasResetAt() = true at exact reset, want false")
 	}
 }

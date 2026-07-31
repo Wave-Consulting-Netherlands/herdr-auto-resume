@@ -3,6 +3,8 @@ package detection
 import (
 	"regexp"
 	"strings"
+
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/terminal"
 )
 
 // Claude Code UI patterns - multiple approaches for robustness
@@ -22,10 +24,6 @@ var (
 	// Menu selector used in question/choice UI
 	menuSelectorPattern = regexp.MustCompile(`❯`)
 
-	// Rate limit messages - definitive proof it's Claude Code
-	rateLimitMsgPattern    = regexp.MustCompile(`(?i)limit\s+reached`)
-	rateLimitMsgPatternAlt = regexp.MustCompile(`(?i)hit\s+your\s+limit`)
-
 	// Dashed separator line used in Claude Code UI
 	dashedSeparator = regexp.MustCompile(`╌{10,}`)
 )
@@ -33,7 +31,7 @@ var (
 // IsClaudeCode detects if pane content appears to be running Claude Code
 func IsClaudeCode(content string) bool {
 	// Rate limit message is definitive - if we see it, it's Claude Code
-	if rateLimitMsgPattern.MatchString(content) || rateLimitMsgPatternAlt.MatchString(content) {
+	if isRateLimitSignal(content) {
 		return true
 	}
 
@@ -72,12 +70,15 @@ func IsIdlePrompt(content string) bool {
 		lines = lines[len(lines)-20:]
 	}
 	for _, line := range lines {
-		if strings.Contains(line, "❯") {
+		if regexp.MustCompile(`❯\s*\d+\.`).MatchString(line) {
 			return false
 		}
 	}
 	for i := len(lines) - 1; i >= 0; i-- {
 		if strings.HasPrefix(lines[i], ">") {
+			return true
+		}
+		if strings.TrimSpace(lines[i]) == "❯" {
 			return true
 		}
 	}
@@ -86,8 +87,7 @@ func IsIdlePrompt(content string) bool {
 
 // StripANSI removes ANSI escape codes from a string
 func StripANSI(s string) string {
-	ansiPattern := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
-	return ansiPattern.ReplaceAllString(s, "")
+	return terminal.StripANSI(s)
 }
 
 // GetVisibleLines returns non-empty lines from content

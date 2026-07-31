@@ -199,7 +199,7 @@ func TestIsIdlePrompt(t *testing.T) {
 	}{
 		{name: "prompt in tail", content: "older output\n╭────╮\n> ", want: true},
 		{name: "ansi prompt in tail", content: "older output\n\x1b[32m> \x1b[0m", want: true},
-		{name: "menu selector in tail", content: "╭────╮\n❯ Upgrade\n> ", want: false},
+		{name: "menu selector in tail", content: "╭────╮\n❯ 1. Upgrade\n> ", want: false},
 		{name: "not a prompt", content: "╭────╮\nready", want: false},
 		{name: "prompt only in old tail", content: "> old\n" + strings.Repeat("output\n", 25) + "ready", want: false},
 	}

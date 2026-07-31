@@ -9,6 +9,8 @@ import (
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 )
 
+var coordinatorTestNow = time.Date(2026, time.July, 31, 12, 0, 0, 0, time.UTC)
+
 type recordingJobSink struct {
 	events []LimitEvent
 	owned  bool
@@ -21,7 +23,7 @@ func (s *recordingJobSink) HandleLimit(event LimitEvent) bool {
 
 func TestJobSinkReceivesKnownResetPayloadEveryPollAndOwnsLegacySend(t *testing.T) {
 	content := "limit reached ∙ resets 2pm"
-	status := detection.CheckRateLimit(content)
+	status := detection.CheckRateLimitAt(content, coordinatorTestNow)
 	now := status.ResetTime.Add(5 * time.Minute)
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1", Title: "Claude"}}, Content: map[string]string{"p1": content}}
 	sink := &recordingJobSink{owned: true}
@@ -49,7 +51,7 @@ func TestJobSinkReceivesKnownResetPayloadEveryPollAndOwnsLegacySend(t *testing.T
 
 func TestJobSinkFalseFailsSafeWithoutLegacySend(t *testing.T) {
 	content := "limit reached ∙ resets 2pm"
-	status := detection.CheckRateLimit(content)
+	status := detection.CheckRateLimitAt(content, coordinatorTestNow)
 	now := status.ResetTime.Add(5 * time.Minute)
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
 	sink := &recordingJobSink{}
@@ -61,6 +63,39 @@ func TestJobSinkFalseFailsSafeWithoutLegacySend(t *testing.T) {
 	if len(sink.events) != 1 || len(fake.SentText) != 0 || len(fake.SentKeys) != 0 {
 		t.Fatalf("sink events=%d sends=%#v/%#v, want one sink call and no sends", len(sink.events), fake.SentText, fake.SentKeys)
 	}
+}
+
+func TestBoxedMenuCreatesJobEventAndBlocksLegacySend(t *testing.T) {
+	content := "⎿ You've hit your limit · resets 8pm (Europe/London)\nOpening your options…\n╭──────────────────────────────╮\n│ What do you want to do?       │\n│ ❯ 1. Stop and wait for limit to reset │\n│   2. Upgrade your plan        │\n│ Enter to confirm · Esc to cancel │\n╰──────────────────────────────╯"
+	now := detection.CheckRateLimitAt(content, coordinatorTestNow).ResetTime.Add(5 * time.Minute)
+
+	t.Run("job sink receives event", func(t *testing.T) {
+		fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
+		sink := &recordingJobSink{owned: true}
+		c := New(fake, Config{}, WithClock(func() time.Time { return now }), WithJobSink(sink), WithSleep(func(time.Duration) {}))
+		c.SetPanes(fake.PanesList)
+		c.Poll()
+		c.ToggleMode("p1")
+		c.Poll()
+		if len(sink.events) != 1 {
+			t.Fatalf("sink events = %d, want one LimitEvent", len(sink.events))
+		}
+		if sink.events[0].Content != content {
+			t.Fatalf("event content = %q, want boxed menu content", sink.events[0].Content)
+		}
+	})
+
+	t.Run("legacy path does not send", func(t *testing.T) {
+		fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
+		c := New(fake, Config{}, WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
+		c.SetPanes(fake.PanesList)
+		c.Poll()
+		c.ToggleMode("p1")
+		c.Poll()
+		if len(fake.SentText) != 0 || len(fake.SentKeys) != 0 {
+			t.Fatalf("legacy sends = text %#v keys %#v, want none", fake.SentText, fake.SentKeys)
+		}
+	})
 }
 
 func TestUnknownResetNeverCallsJobSink(t *testing.T) {
@@ -77,12 +112,11 @@ func TestUnknownResetNeverCallsJobSink(t *testing.T) {
 }
 
 func TestModeOffAndTestPatternNeverCallJobSink(t *testing.T) {
-	content := "limit reached ∙ resets 2pm\n<<<TEST>>>"
-	status := detection.CheckRateLimit(content)
-	now := status.ResetTime.Add(5 * time.Minute)
+	content := "limit reached ∙ resets 2pm"
+	now := coordinatorTestNow.Add(5 * time.Minute)
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
 	sink := &recordingJobSink{owned: true}
-	c := New(fake, Config{TestPattern: "<<<TEST>>>"}, WithJobSink(sink), WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
+	c := New(fake, Config{TestPattern: "limit reached"}, WithJobSink(sink), WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
 	c.SetPanes(fake.PanesList)
 	c.Poll()
 	if len(sink.events) != 0 {
@@ -97,7 +131,7 @@ func TestModeOffAndTestPatternNeverCallJobSink(t *testing.T) {
 
 func TestKnownResetSendsOnceAfterReset(t *testing.T) {
 	content := "limit reached ∙ resets 2pm"
-	status := detection.CheckRateLimit(content)
+	status := detection.CheckRateLimitAt(content, coordinatorTestNow)
 	now := status.ResetTime.Add(-5 * time.Minute)
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
 	c := New(fake, Config{TestPattern: "", ReadLines: 10}, WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
@@ -121,7 +155,7 @@ func TestKnownResetSendsOnceAfterReset(t *testing.T) {
 }
 
 func TestUnknownResetSendsEveryFifteenMinutes(t *testing.T) {
-	now := time.Now()
+	now := coordinatorTestNow
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "limit reached"}}
 	c := New(fake, Config{ReadLines: 10}, WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
 	c.SetPanes(fake.PanesList)
@@ -130,19 +164,19 @@ func TestUnknownResetSendsEveryFifteenMinutes(t *testing.T) {
 	c.Poll()
 	now = now.Add(14*time.Minute + 59*time.Second)
 	c.Poll()
-	if len(fake.SentText) != 1 {
-		t.Fatalf("send count at +14m59s = %d, want 1", len(fake.SentText))
+	if len(fake.SentText) != 0 {
+		t.Fatalf("send count at +14m59s = %d, want 0 for non-actionable unknown reset", len(fake.SentText))
 	}
 	now = now.Add(time.Second)
 	c.Poll()
-	if len(fake.SentText) != 2 {
-		t.Fatalf("send count at +15m = %d, want 2", len(fake.SentText))
+	if len(fake.SentText) != 0 {
+		t.Fatalf("send count at +15m = %d, want 0 for non-actionable unknown reset", len(fake.SentText))
 	}
 }
 
 func TestNewLimitTransitionResetsLatch(t *testing.T) {
-	now := time.Now()
-	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "limit reached"}}
+	now := coordinatorTestNow
+	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "limit reached ∙ resets 11am"}}
 	c := New(fake, Config{}, WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
 	c.SetPanes(fake.PanesList)
 	c.Poll()
@@ -150,7 +184,7 @@ func TestNewLimitTransitionResetsLatch(t *testing.T) {
 	c.Poll()
 	fake.Content["p1"] = "┌────┐\n> ready"
 	c.Poll()
-	fake.Content["p1"] = "limit reached"
+	fake.Content["p1"] = "limit reached ∙ resets 11am"
 	c.Poll()
 	if len(fake.SentText) != 2 {
 		t.Fatalf("send count after new limit = %d, want 2", len(fake.SentText))

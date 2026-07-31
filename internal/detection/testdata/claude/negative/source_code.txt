@@ -1,0 +1,3 @@
+func waitForLimit() string {
+    return "You've hit your limit · resets 3pm (UTC)"
+}

@@ -13,7 +13,7 @@ import (
 const modulePath = "github.com/Wave-Consulting-Netherlands/herdr-auto-resume"
 
 func TestCoreImportHygiene(t *testing.T) {
-	for _, dir := range []string{"../coordinator", "../detection", "../runtime", "../store", "../jobs"} {
+	for _, dir := range []string{"../coordinator", "../detection", "../runtime", "../store", "../jobs", "../terminal"} {
 		t.Run(dir, func(t *testing.T) {
 			root, err := filepath.Abs(dir)
 			if err != nil {
@@ -39,6 +39,9 @@ func TestCoreImportHygiene(t *testing.T) {
 					if err != nil {
 						return err
 					}
+					if dir == "../terminal" && !isStdlibImport(importPath) {
+						t.Errorf("%s imports non-stdlib %q", path, importPath)
+					}
 					if forbiddenImport(importPath) && !(dir == "../jobs" &&
 						(importPath == modulePath+"/internal/jobs" || importPath == modulePath+"/internal/store")) {
 						t.Errorf("%s imports forbidden %q", path, importPath)
@@ -51,6 +54,10 @@ func TestCoreImportHygiene(t *testing.T) {
 			}
 		})
 	}
+}
+
+func isStdlibImport(path string) bool {
+	return !strings.Contains(path, ".") && !strings.HasPrefix(path, modulePath)
 }
 
 func forbiddenImport(path string) bool {
