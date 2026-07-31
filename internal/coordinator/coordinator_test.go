@@ -9,6 +9,8 @@ import (
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 )
 
+var coordinatorTestNow = time.Date(2026, time.July, 31, 12, 0, 0, 0, time.UTC)
+
 type recordingJobSink struct {
 	events []LimitEvent
 	owned  bool
@@ -21,7 +23,7 @@ func (s *recordingJobSink) HandleLimit(event LimitEvent) bool {
 
 func TestJobSinkReceivesKnownResetPayloadEveryPollAndOwnsLegacySend(t *testing.T) {
 	content := "limit reached ∙ resets 2pm"
-	status := detection.CheckRateLimit(content)
+	status := detection.CheckRateLimitAt(content, coordinatorTestNow)
 	now := status.ResetTime.Add(5 * time.Minute)
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1", Title: "Claude"}}, Content: map[string]string{"p1": content}}
 	sink := &recordingJobSink{owned: true}
@@ -49,7 +51,7 @@ func TestJobSinkReceivesKnownResetPayloadEveryPollAndOwnsLegacySend(t *testing.T
 
 func TestJobSinkFalseFailsSafeWithoutLegacySend(t *testing.T) {
 	content := "limit reached ∙ resets 2pm"
-	status := detection.CheckRateLimit(content)
+	status := detection.CheckRateLimitAt(content, coordinatorTestNow)
 	now := status.ResetTime.Add(5 * time.Minute)
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
 	sink := &recordingJobSink{}
@@ -78,7 +80,7 @@ func TestUnknownResetNeverCallsJobSink(t *testing.T) {
 
 func TestModeOffAndTestPatternNeverCallJobSink(t *testing.T) {
 	content := "limit reached ∙ resets 2pm\n<<<TEST>>>"
-	status := detection.CheckRateLimit(content)
+	status := detection.CheckRateLimitAt(content, coordinatorTestNow)
 	now := status.ResetTime.Add(5 * time.Minute)
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
 	sink := &recordingJobSink{owned: true}
@@ -97,7 +99,7 @@ func TestModeOffAndTestPatternNeverCallJobSink(t *testing.T) {
 
 func TestKnownResetSendsOnceAfterReset(t *testing.T) {
 	content := "limit reached ∙ resets 2pm"
-	status := detection.CheckRateLimit(content)
+	status := detection.CheckRateLimitAt(content, coordinatorTestNow)
 	now := status.ResetTime.Add(-5 * time.Minute)
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
 	c := New(fake, Config{TestPattern: "", ReadLines: 10}, WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
@@ -121,7 +123,7 @@ func TestKnownResetSendsOnceAfterReset(t *testing.T) {
 }
 
 func TestUnknownResetSendsEveryFifteenMinutes(t *testing.T) {
-	now := time.Now()
+	now := coordinatorTestNow
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "limit reached"}}
 	c := New(fake, Config{ReadLines: 10}, WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
 	c.SetPanes(fake.PanesList)
@@ -141,7 +143,7 @@ func TestUnknownResetSendsEveryFifteenMinutes(t *testing.T) {
 }
 
 func TestNewLimitTransitionResetsLatch(t *testing.T) {
-	now := time.Now()
+	now := coordinatorTestNow
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "limit reached"}}
 	c := New(fake, Config{}, WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
 	c.SetPanes(fake.PanesList)

@@ -116,7 +116,8 @@ func (c *Coordinator) Poll() {
 
 		state.HasClaudeCode = detection.IsClaudeCode(content)
 		if state.HasClaudeCode {
-			status := detection.CheckRateLimit(content)
+			now := c.clock()
+			status := detection.CheckRateLimitAt(content, now)
 
 			wasLimited := state.IsRateLimited
 			state.IsRateLimited = status.IsLimited
@@ -129,7 +130,6 @@ func (c *Coordinator) Poll() {
 			}
 
 			if state.IsRateLimited && state.Mode == ModeAuto {
-				now := c.clock()
 				if !state.RateLimitTime.IsZero() {
 					if c.jobSink != nil {
 						owned := c.jobSink.HandleLimit(LimitEvent{
@@ -228,7 +228,7 @@ func (c *Coordinator) checkPaneRateLimit(state *PaneState) {
 	if err != nil {
 		return
 	}
-	status := detection.CheckRateLimit(content)
+	status := detection.CheckRateLimitAt(content, c.clock())
 	state.IsRateLimited = status.IsLimited
 	state.RateLimitResets = status.ResetsAt
 	state.RateLimitTime = status.ResetTime

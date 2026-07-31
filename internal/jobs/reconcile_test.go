@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator"
-	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
@@ -68,11 +67,7 @@ func TestReconcileFailsWaitingBeyondHorizon(t *testing.T) {
 
 func TestRestartE2EThroughCoordinatorPersistsWaitAndSendsOnce(t *testing.T) {
 	content := "You've hit your limit · resets 5m"
-	detectionNow := time.Now()
-	reset := detection.CheckRateLimit(content).ResetTime
-	if reset.IsZero() || reset.Before(detectionNow) {
-		t.Skip("wall-clock fixture reset was not in the next local occurrence")
-	}
+	detectionNow := testNow
 	path := filepath.Join(t.TempDir(), "state.json")
 	st := store.NewJSONStore(path)
 	rt := &testRuntime{Fake: runtime.Fake{

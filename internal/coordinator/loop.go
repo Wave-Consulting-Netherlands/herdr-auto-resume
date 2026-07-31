@@ -27,7 +27,7 @@ func (c *Coordinator) RunLoop(ctx context.Context, ticks <-chan time.Time, refre
 
 			panes, err := refresh()
 			if err != nil {
-				fmt.Fprintf(logw, "%s refresh failed: %v\n", time.Now().Format(time.RFC3339), err)
+				fmt.Fprintf(logw, "%s refresh failed: %v\n", c.clock().Format(time.RFC3339), err)
 				continue
 			}
 			c.SetPanes(panes)

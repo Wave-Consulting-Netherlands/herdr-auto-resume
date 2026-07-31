@@ -9,16 +9,17 @@ import (
 
 // RateLimitStatus represents the rate limit state of a pane
 type RateLimitStatus struct {
-	IsLimited  bool
-	ResetsAt   string    // Original string like "2pm" or "10:30am"
-	ResetTime  time.Time // Parsed reset time
-	TimeUntil  time.Duration
+	IsLimited bool
+	ResetsAt  string    // Original string like "2pm" or "10:30am"
+	ResetTime time.Time // Parsed reset time
+	TimeUntil time.Duration
 }
 
 // Rate limit patterns - multiple formats Claude Code uses
 // Examples: "limit reached ∙ resets 2pm", "limit reached ∙ resets 10:30am"
-//           "You've hit your limit · resets 10pm (Europe/London)"
-//           "Limit reached (resets 8m)" - minutes remaining format
+//
+//	"You've hit your limit · resets 10pm (Europe/London)"
+//	"Limit reached (resets 8m)" - minutes remaining format
 var rateLimitPatterns = []*regexp.Regexp{
 	// New format: "You've hit your limit · resets 10pm (Europe/London)"
 	regexp.MustCompile(`(?i)hit\s+your\s+limit.*resets?\s+(\d{1,2}(?::\d{2})?\s*[ap]m)`),
@@ -42,6 +43,12 @@ var rateLimitFallbackPatterns = []*regexp.Regexp{
 
 // CheckRateLimit checks pane content for rate limit messages
 func CheckRateLimit(content string) RateLimitStatus {
+	return CheckRateLimitAt(content, time.Now())
+}
+
+// CheckRateLimitAt checks pane content using the supplied clock and timezone.
+// The explicit clock keeps parsing deterministic for schedulers and tests.
+func CheckRateLimitAt(content string, now time.Time) RateLimitStatus {
 	// Try patterns that capture reset time first
 	var match []string
 	var patternIdx int
@@ -68,8 +75,6 @@ func CheckRateLimit(content string) RateLimitStatus {
 	}
 
 	resetStr := match[1]
-	now := time.Now()
-
 	// Pattern index 2 is the minutes-remaining format (e.g., "8m" -> "8")
 	if patternIdx == 2 {
 		minutes, err := strconv.Atoi(resetStr)
@@ -89,7 +94,7 @@ func CheckRateLimit(content string) RateLimitStatus {
 	}
 
 	// Clock time format (e.g., "8pm", "10:30am")
-	resetTime, err := parseResetTime(resetStr)
+	resetTime, err := parseResetTime(resetStr, now)
 	if err != nil {
 		// Pattern matched but couldn't parse time - still rate limited
 		return RateLimitStatus{
@@ -117,10 +122,8 @@ func CheckRateLimit(content string) RateLimitStatus {
 }
 
 // parseResetTime parses a time string like "2pm" or "10:30am" into a time.Time for today
-func parseResetTime(s string) (time.Time, error) {
+func parseResetTime(s string, now time.Time) (time.Time, error) {
 	s = strings.ToLower(strings.TrimSpace(s))
-
-	now := time.Now()
 	loc := now.Location()
 
 	// Try parsing with minutes first: "10:30am"
@@ -169,11 +172,16 @@ func parseResetTime(s string) (time.Time, error) {
 
 // HasReset checks if the rate limit has reset (time has passed)
 func (r RateLimitStatus) HasReset() bool {
+	return r.HasResetAt(time.Now())
+}
+
+// HasResetAt reports whether the supplied clock is strictly after the reset.
+func (r RateLimitStatus) HasResetAt(now time.Time) bool {
 	if !r.IsLimited {
 		return false
 	}
 	if r.ResetTime.IsZero() {
 		return false
 	}
-	return time.Now().After(r.ResetTime)
+	return now.After(r.ResetTime)
 }
