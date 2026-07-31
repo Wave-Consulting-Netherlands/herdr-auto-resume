@@ -136,7 +136,7 @@ func withDefaults(cfg Config) Config {
 	if cfg.Provider == "" {
 		cfg.Provider = "claude"
 	}
-	if cfg.Margin <= 0 {
+	if cfg.Margin < 0 {
 		cfg.Margin = time.Minute
 	}
 	if cfg.MaxHorizon <= 0 {

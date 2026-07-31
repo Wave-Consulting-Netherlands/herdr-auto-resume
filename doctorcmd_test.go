@@ -76,3 +76,20 @@ func TestDoctorSchemaParseFailureIsWarning(t *testing.T) {
 		t.Fatalf("report = %q, want schema warning", out.String())
 	}
 }
+
+func TestDoctorUnknownProtocolIsWarningNotPass(t *testing.T) {
+	deps := passingDoctorDeps()
+	deps.run = func(_ string, args ...string) ([]byte, error) {
+		if strings.Join(args, " ") == "status" {
+			return []byte(`{"status":"ok"}`), nil
+		}
+		return passingDoctorDeps().run("herdr", args...)
+	}
+	var out bytes.Buffer
+	if got := runDoctorCommand(nil, &out, deps); got != 0 {
+		t.Fatalf("doctor exit = %d, want warning-only success\n%s", got, out.String())
+	}
+	if !strings.Contains(out.String(), "WARN status: protocol unknown") || strings.Contains(out.String(), "PASS status: protocol 17") {
+		t.Fatalf("report = %q, want unknown protocol warning", out.String())
+	}
+}

@@ -12,8 +12,18 @@ import (
 // RunLoop refreshes and polls coordinator state once for each supplied tick.
 // It returns when the context is cancelled or the tick channel is closed.
 func (c *Coordinator) RunLoop(ctx context.Context, ticks <-chan time.Time, refresh func() ([]runtime.Pane, error), logw io.Writer) {
+	c.RunLoopWithCadence(ctx, ticks, nil, refresh, c.postPoll, logw)
+}
+
+// RunLoopWithCadence polls on detectionTicks and uses statusTicks only for
+// periodic status logging. Verification is driven by the detection cadence
+// through the supplied postPoll callback.
+func (c *Coordinator) RunLoopWithCadence(ctx context.Context, detectionTicks, statusTicks <-chan time.Time, refresh func() ([]runtime.Pane, error), postPoll func(now time.Time), logw io.Writer) {
 	if logw == nil {
 		logw = io.Discard
+	}
+	if postPoll == nil {
+		postPoll = c.postPoll
 	}
 	lastAction, hadAction := c.LastAction()
 	lastFailure, hadFailure := c.LastFailure()
@@ -21,7 +31,7 @@ func (c *Coordinator) RunLoop(ctx context.Context, ticks <-chan time.Time, refre
 		select {
 		case <-ctx.Done():
 			return
-		case _, ok := <-ticks:
+		case _, ok := <-detectionTicks:
 			if !ok {
 				return
 			}
@@ -33,8 +43,8 @@ func (c *Coordinator) RunLoop(ctx context.Context, ticks <-chan time.Time, refre
 			}
 			c.SetPanes(panes)
 			c.Poll()
-			if c.postPoll != nil {
-				c.postPoll(c.clock())
+			if postPoll != nil {
+				postPoll(c.clock())
 			}
 
 			failure, hasFailure := c.LastFailure()
@@ -59,6 +69,12 @@ func (c *Coordinator) RunLoop(ctx context.Context, ticks <-chan time.Time, refre
 			if !action.DryRun {
 				_ = c.rt.Notify("auto-resume", fmt.Sprintf("continued pane %s", action.PaneID))
 			}
+		case tick, ok := <-statusTicks:
+			if !ok {
+				statusTicks = nil
+				continue
+			}
+			fmt.Fprintf(logw, "%s status: panes=%d\n", tick.Format(time.RFC3339), len(c.paneOrder))
 		}
 	}
 }

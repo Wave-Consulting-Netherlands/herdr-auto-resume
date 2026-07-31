@@ -226,6 +226,26 @@ func TestTwoStoreHandleCancelRaceNeverSends(t *testing.T) {
 	}
 }
 
+func TestStartupBannerIsCapturedBeforeLongCadenceTick(t *testing.T) {
+	content := limitedContent()
+	rt := &testRuntime{Fake: runtime.Fake{
+		PanesList: []runtime.Pane{{ID: "p1", Agent: "claude"}},
+		Content:   map[string]string{"p1": content},
+	}}
+	m, _ := newTestManager(t, rt, Config{Margin: time.Minute}, "job-1")
+	c := coordinator.New(rt, coordinator.Config{ReadLines: 20}, coordinator.WithJobSink(m), coordinator.WithClock(func() time.Time { return testNow }))
+	c.SetPanes(rt.PanesList)
+	c.Poll()
+	c.EnableAll()
+	// This is the immediate action-capable startup poll; the long interval has
+	// not fired yet.
+	c.Poll()
+	rt.Content["p1"] = readyContent()
+	if got := len(m.Snapshot()); got != 1 {
+		t.Fatalf("jobs after startup banner disappeared = %d, want one", got)
+	}
+}
+
 func providerRegistryForTest() *provider.Registry {
 	return provider.NewRegistry(claude.New(""))
 }

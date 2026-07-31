@@ -196,3 +196,37 @@ func TestRunLoopCallsPostPollWithInjectedClockAfterEachSuccessfulPoll(t *testing
 		t.Fatalf("postPoll times = %#v, want %#v", observed, []time.Time{now, now})
 	}
 }
+
+func TestRunLoopWithCadencePollsOnShortTicksAndLogsStatusOnLongTicks(t *testing.T) {
+	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "plain shell"}}
+	c := New(fake, Config{})
+	detectionTicks := make(chan time.Time, 1)
+	statusTicks := make(chan time.Time, 1)
+	refreshed := make(chan struct{}, 1)
+	postPoll := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	log := &signalWriter{writes: make(chan struct{}, 1)}
+	done := make(chan struct{})
+	go func() {
+		c.RunLoopWithCadence(ctx, detectionTicks, statusTicks, func() ([]runtime.Pane, error) {
+			refreshed <- struct{}{}
+			return fake.PanesList, nil
+		}, func(time.Time) { postPoll <- struct{}{} }, log)
+		close(done)
+	}()
+	detectionTicks <- time.Unix(2, 0)
+	<-refreshed
+	<-postPoll
+	statusTicks <- time.Unix(1, 0)
+	select {
+	case <-log.writes:
+	case <-time.After(time.Second):
+		t.Fatal("status tick was not logged")
+	}
+	if !strings.Contains(log.String(), "status") {
+		t.Fatalf("log = %q, want status line from long tick", log.String())
+	}
+	cancel()
+	<-done
+}

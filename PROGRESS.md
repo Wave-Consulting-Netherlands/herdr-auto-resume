@@ -238,6 +238,20 @@ go test ./... -race -count=1                OK
 All packages passed, including `internal/provider`, `internal/provider/claude`, and
 `internal/provider/codex`; the gate ran with Go 1.26.5 and `GOCACHE=/tmp/herdr-go-cache`.
 
+## Phase 5.5 complete — 2026-07-31
+
+- Remediated all ten review findings in four commits: transactional sidecar flock
+  locking and authoritative cancellation; fail-stop sends with honest failure
+  propagation; current-pane provider identity and non-live-evidence verification;
+  normalized episode fingerprints; immediate startup acquisition; split short
+  detection/status cadence; timeout/config validation; protocol-aware doctor
+  warnings; explicit zero margin; and impossible-date rejection.
+- Store schema remains unchanged. syscall.Flock support is documented for the
+  Linux/macOS target platforms.
+- Semantic changes: fail-stop sends, non-live-evidence verification, episode
+  fingerprinting, and split cadence. Review regression tests are permanent and
+  the full race-enabled gate is green.
+
 ## Next task
 
-Phase 5 live drills + wD:p1 deploy (orchestrator), then BRIEF.md Phase 6 (socket client).
+orchestrator: re-run live drills, deploy, merge; then Phase 6

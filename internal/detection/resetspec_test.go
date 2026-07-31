@@ -73,6 +73,24 @@ func TestParseResetRejectsImplausibleValues(t *testing.T) {
 	}
 }
 
+func TestParseResetRejectsImpossibleCalendarDates(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	for _, text := range []string{"resets Feb 31, 2026 at 2pm", "resets Apr 31, 2026 at 2pm", "resets Feb 29, 2025 at 2pm"} {
+		spec := ParseReset(text, now)
+		if spec.Kind != ResetKindUnknown || !spec.ParsedTime.IsZero() {
+			t.Errorf("ParseReset(%q) = %#v, want unknown zero time", text, spec)
+		}
+	}
+}
+
+func TestParseResetAcceptsLeapDay(t *testing.T) {
+	now := time.Date(2028, 1, 1, 12, 0, 0, 0, time.UTC)
+	spec := ParseReset("resets Feb 29, 2028 at 2pm", now)
+	if spec.Kind != ResetKindDateTime || spec.ParsedTime.IsZero() || spec.ParsedTime.Month() != time.February || spec.ParsedTime.Day() != 29 {
+		t.Fatalf("ParseReset leap day = %#v, want valid February 29", spec)
+	}
+}
+
 func TestCheckRateLimitAtCarriesTypedResetSpec(t *testing.T) {
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	status := CheckRateLimitAt("You've hit your limit · resets 3pm (Europe/Amsterdam)", now)

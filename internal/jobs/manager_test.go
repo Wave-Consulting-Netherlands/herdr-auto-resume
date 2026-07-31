@@ -76,6 +76,17 @@ func TestHandleLimitRequiresNonZeroResetTime(t *testing.T) {
 	}
 }
 
+func TestManagerHonorsExplicitZeroMargin(t *testing.T) {
+	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}}}
+	m, _ := newTestManager(t, rt, Config{Margin: 0}, "job-1")
+	reset := testNow.Add(time.Hour)
+	m.HandleLimit(limitEvent(limitedContent(), reset))
+	job := m.Snapshot()[0]
+	if job.MarginSecs != 0 || !job.ResumeAtUTC.Equal(reset) {
+		t.Fatalf("job = %#v, want zero margin and immediate resume time", job)
+	}
+}
+
 func TestHandleLimitCreatesOneJobForRepeatedPolls(t *testing.T) {
 	content := limitedContent()
 	reset := testNow.Add(5 * time.Minute)

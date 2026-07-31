@@ -108,6 +108,12 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 		fs.Usage()
 		return runConfig{}, err
 	}
+	if cfg.VerifyTimeout < 2*cfg.Interval {
+		err := fmt.Errorf("--verify-timeout must be at least twice --interval (%s)", 2*cfg.Interval)
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
 	if _, err := buildProviderRegistry(cfg.Providers, cfg.ClaudePrompt, cfg.CodexPrompt); err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		fs.Usage()
@@ -252,18 +258,25 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	coord.SetPanes(panes)
 	coord.Poll()
 	coord.EnableAll()
+	coord.Poll()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ticker := time.NewTicker(cfg.Interval)
-	defer ticker.Stop()
-	coord.RunLoop(ctx, ticker.C, func() ([]runtimeapi.Pane, error) {
+	detectionInterval := cfg.Interval
+	if detectionInterval > 30*time.Second {
+		detectionInterval = 30 * time.Second
+	}
+	detectionTicker := time.NewTicker(detectionInterval)
+	defer detectionTicker.Stop()
+	statusTicker := time.NewTicker(cfg.Interval)
+	defer statusTicker.Stop()
+	coord.RunLoopWithCadence(ctx, detectionTicker.C, statusTicker.C, func() ([]runtimeapi.Pane, error) {
 		all, err := rt.ListPanes()
 		if err != nil {
 			return nil, err
 		}
 		filtered, _ := filterPanes(all, cfg.Panes, selfPaneID)
 		return filtered, nil
-	}, stderr)
+	}, nil, stderr)
 	return 0
 }

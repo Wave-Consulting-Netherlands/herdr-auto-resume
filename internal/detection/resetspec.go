@@ -96,6 +96,9 @@ func ParseReset(text string, now time.Time) ResetSpec {
 			year = localNow.Year()
 		}
 		candidate := dateInLocation(year, month, day, hour, minute, loc)
+		if candidate.Year() != year || candidate.Month() != month || candidate.Day() != day {
+			return spec
+		}
 		if candidate.Before(localNow) {
 			if match[3] != "" {
 				return spec
