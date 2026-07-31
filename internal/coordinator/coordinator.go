@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 )
 
@@ -250,18 +252,28 @@ func (c *Coordinator) sendContinue(paneID string) {
 
 // SendContinueSequence submits the one allow-listed continuation action.
 func SendContinueSequence(rt runtime.Runtime, paneID string, sleep func(time.Duration)) error {
+	return SendResumeAction(rt, paneID, claude.New("").ResumeAction(), sleep)
+}
+
+// SendResumeAction executes a provider's structured action. The sleep remains
+// between Claude's Escape and text exactly as it was before provider support.
+func SendResumeAction(rt runtime.Runtime, paneID string, action provider.ResumeAction, sleep func(time.Duration)) error {
 	if sleep == nil {
 		sleep = time.Sleep
 	}
 	var firstErr error
-	if err := rt.SendKeys(paneID, runtime.KeyEscape); err != nil && firstErr == nil {
+	for _, key := range action.KeysBefore {
+		if err := rt.SendKeys(paneID, key); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if len(action.KeysBefore) > 0 {
+		sleep(100 * time.Millisecond)
+	}
+	if err := rt.SendText(paneID, action.Text); err != nil && firstErr == nil {
 		firstErr = err
 	}
-	sleep(100 * time.Millisecond)
-	if err := rt.SendText(paneID, "continue"); err != nil && firstErr == nil {
-		firstErr = err
-	}
-	if err := rt.SendKeys(paneID, runtime.KeyEnter); err != nil && firstErr == nil {
+	if err := rt.SendKeys(paneID, action.SubmitKey); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	return firstErr
