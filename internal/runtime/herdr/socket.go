@@ -171,11 +171,13 @@ func (s *Socket) call(method string, params any, target any) error {
 	}
 
 	id := atomic.AddUint64(&s.nextID, 1)
+	// herdr 0.7.5 requires the request id to be a JSON string; a numeric id is
+	// rejected with invalid_request and an empty echoed id (probed live).
 	request := struct {
-		ID     uint64 `json:"id"`
+		ID     string `json:"id"`
 		Method string `json:"method"`
 		Params any    `json:"params"`
-	}{ID: id, Method: method, Params: params}
+	}{ID: fmt.Sprint(id), Method: method, Params: params}
 	payload, err := json.Marshal(request)
 	if err != nil {
 		return fmt.Errorf("encode herdr request: %w", err)
