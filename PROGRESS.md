@@ -252,6 +252,25 @@ All packages passed, including `internal/provider`, `internal/provider/claude`, 
   fingerprinting, and split cadence. Review regression tests are permanent and
   the full race-enabled gate is green.
 
+- 2026-07-31, Phase 5 + 5.5 live drills (herdr 0.7.5, scratch workspaces wG/wH/wJ):
+  - **Review fix during drills:** wrapped 80-col banner lost its reset tail →
+    continuation-line join in the codex analyzer (`5e10f17`), pinned by a live-captured
+    fixture.
+  - Codex full cycle (Pro-upgrade + model-switch banner variants): provider=codex,
+    kind=local-clock/high, restart mid-WAITING, exactly one long-prompt send with NO
+    escape, RESUMED attempts=1 — twice (pre- and post-remediation).
+  - Hint-wins negative on real codex pane w7:p1 (3 min): zero jobs. Ambiguity negative
+    (claude banner + codex chrome, no agent label): zero jobs. Deployed schema-1 state
+    reads clean with PROVIDER column.
+  - Cancel-under-running-watcher (R1 live): job stayed CANCELLED, attempts=0, zero
+    sends.
+  - review.md triage (BACKLOG 8): all ten findings validated, none false; remediated
+    as R1–R4 on this branch. The live-miss incident (BACKLOG 9) is mitigated by the
+    immediate post-enable poll + 30s-capped detection ticker; full event-driven
+    acquisition is Phase 6.
+
 ## Next task
 
-orchestrator: re-run live drills, deploy, merge; then Phase 6
+BRIEF.md Phase 6 — Herdr socket client: session.snapshot bootstrap, event
+subscriptions (pane output/agent state — completes the BACKLOG 9 fix), reconnect +
+cache reconciliation, polling fallback retained.
