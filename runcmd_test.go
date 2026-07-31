@@ -38,6 +38,22 @@ func TestParseRunFlagsAcceptsRepeatedPanesAndOptions(t *testing.T) {
 	}
 }
 
+func TestParseRunFlagsRejectsVerificationTimeoutBelowTwiceInterval(t *testing.T) {
+	var stderr bytes.Buffer
+	_, err := parseRunFlags([]string{"--pane", "w1:p1", "--interval", "10s", "--verify-timeout", "19s"}, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "at least twice") {
+		t.Fatalf("error = %v, want twice-interval rejection", err)
+	}
+}
+
+func TestParseRunFlagsPreservesExplicitZeroMargin(t *testing.T) {
+	var stderr bytes.Buffer
+	cfg, err := parseRunFlags([]string{"--pane", "w1:p1", "--margin", "0"}, &stderr)
+	if err != nil || cfg.Margin != 0 {
+		t.Fatalf("cfg=%#v err=%v, want explicit zero margin", cfg, err)
+	}
+}
+
 func TestResolveStatePathAutoOffAndExplicit(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	cases := []struct {

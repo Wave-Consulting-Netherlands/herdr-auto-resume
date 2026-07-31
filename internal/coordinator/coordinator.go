@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 )
 
@@ -22,13 +24,21 @@ type ActionRecord struct {
 	DryRun bool
 }
 
+type FailureRecord struct {
+	Time   time.Time
+	PaneID string
+	Err    error
+}
+
 // LimitEvent is the complete known-reset evidence observed for one pane poll.
 type LimitEvent struct {
 	Pane       runtime.Pane
+	Provider   string
 	ResetsRaw  string
 	ResetTime  time.Time
 	Spec       detection.ResetSpec
 	Content    string
+	Evidence   string
 	ObservedAt time.Time
 }
 
@@ -55,26 +65,46 @@ func WithPostPoll(postPoll func(now time.Time)) Option {
 	return func(c *Coordinator) { c.postPoll = postPoll }
 }
 
+func WithProviders(registry *provider.Registry) Option {
+	return func(c *Coordinator) {
+		if registry == nil {
+			c.providers = defaultRegistry()
+			return
+		}
+		c.providers = registry
+	}
+}
+
 type Coordinator struct {
-	rt         runtime.Runtime
-	cfg        Config
-	clock      func() time.Time
-	sleep      func(time.Duration)
-	states     map[string]PaneState
-	paneOrder  []string
-	lastAction ActionRecord
-	hasAction  bool
-	jobSink    JobSink
-	postPoll   func(now time.Time)
+	rt          runtime.Runtime
+	cfg         Config
+	clock       func() time.Time
+	sleep       func(time.Duration)
+	states      map[string]PaneState
+	paneOrder   []string
+	lastAction  ActionRecord
+	hasAction   bool
+	lastFailure FailureRecord
+	hasFailure  bool
+	failedPanes map[string]bool
+	jobSink     JobSink
+	postPoll    func(now time.Time)
+	providers   *provider.Registry
+}
+
+func defaultRegistry() *provider.Registry {
+	return provider.NewRegistry(claude.New(""))
 }
 
 func New(rt runtime.Runtime, cfg Config, opts ...Option) *Coordinator {
 	c := &Coordinator{
-		rt:     rt,
-		cfg:    cfg,
-		clock:  time.Now,
-		sleep:  time.Sleep,
-		states: make(map[string]PaneState),
+		rt:          rt,
+		cfg:         cfg,
+		clock:       time.Now,
+		sleep:       time.Sleep,
+		states:      make(map[string]PaneState),
+		failedPanes: make(map[string]bool),
+		providers:   defaultRegistry(),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -106,6 +136,7 @@ func (c *Coordinator) Poll() {
 		state := &stateValue
 		if paneID == c.cfg.OwnPaneID {
 			state.HasClaudeCode = false
+			state.Provider = ""
 			c.states[paneID] = *state
 			continue
 		}
@@ -116,61 +147,77 @@ func (c *Coordinator) Poll() {
 		}
 
 		now := c.clock()
-		state.HasClaudeCode = detection.IsClaudeCode(content)
-		if state.HasClaudeCode {
-			status := detection.CheckRateLimitAt(content, now)
-			analysis := detection.Analyze(content, now)
-
-			wasLimited := state.IsRateLimited
-			state.IsRateLimited = status.IsLimited
-			state.RateLimitResets = status.ResetsAt
-			state.RateLimitTime = analysis.Reset.ParsedTime
-
-			if !wasLimited && status.IsLimited {
-				state.ContinueSent = false
-				state.LastPeriodicContinue = time.Time{}
-			}
-
-			if state.IsRateLimited && state.Mode == ModeAuto && analysis.Actionable {
-				if !analysis.Reset.ParsedTime.IsZero() {
-					if c.jobSink != nil {
-						owned := c.jobSink.HandleLimit(LimitEvent{
-							Pane:       state.Pane,
-							ResetsRaw:  status.ResetsAt,
-							ResetTime:  analysis.Reset.ParsedTime,
-							Spec:       analysis.Reset,
-							Content:    content,
-							ObservedAt: now,
-						})
-						if owned {
-							state.ContinueSent = true
-						}
-					} else if !analysis.MenuVisible && !state.ContinueSent && now.After(state.RateLimitTime) {
-						c.sendContinue(paneID)
-						state.ContinueSent = true
-					}
-				} else {
-					periodicInterval := 15 * time.Minute
-					if !analysis.MenuVisible && (state.LastPeriodicContinue.IsZero() || now.Sub(state.LastPeriodicContinue) >= periodicInterval) {
-						c.sendContinue(paneID)
-						state.LastPeriodicContinue = now
-					}
-				}
-			}
-
-			if c.cfg.TestPattern != "" &&
-				strings.Contains(content, c.cfg.TestPattern) &&
-				state.Mode == ModeAuto &&
-				!state.ContinueSent {
-				c.sendContinue(paneID)
-				state.ContinueSent = true
-			}
-		} else {
+		current := c.providers.Resolve(state.Pane.Agent, content)
+		if current == nil {
+			state.Provider = ""
+			state.HasClaudeCode = false
 			state.IsRateLimited = false
 			state.RateLimitResets = ""
 			state.RateLimitTime = time.Time{}
 			state.ContinueSent = false
 			state.LastPeriodicContinue = time.Time{}
+			c.states[paneID] = *state
+			continue
+		}
+		state.Provider = current.Name()
+		state.HasClaudeCode = current.Name() == "claude"
+		analysis := current.Analyze(content, now)
+		statusLimited := analysis.IsLimited
+
+		wasLimited := state.IsRateLimited
+		state.IsRateLimited = statusLimited
+		state.RateLimitResets = resetDisplayText(analysis.Reset.Raw)
+		state.RateLimitTime = analysis.Reset.ParsedTime
+
+		if !wasLimited && statusLimited {
+			state.ContinueSent = false
+			state.LastPeriodicContinue = time.Time{}
+			delete(c.failedPanes, paneID)
+		}
+		if wasLimited && !statusLimited {
+			state.ContinueSent = false
+			state.LastPeriodicContinue = time.Time{}
+			delete(c.failedPanes, paneID)
+		}
+
+		if state.IsRateLimited && state.Mode == ModeAuto && analysis.Actionable {
+			if !analysis.Reset.ParsedTime.IsZero() {
+				if c.jobSink != nil {
+					owned := c.jobSink.HandleLimit(LimitEvent{
+						Pane:       state.Pane,
+						Provider:   current.Name(),
+						ResetsRaw:  resetDisplayText(analysis.Reset.Raw),
+						ResetTime:  analysis.Reset.ParsedTime,
+						Spec:       analysis.Reset,
+						Content:    content,
+						Evidence:   analysis.Evidence,
+						ObservedAt: now,
+					})
+					if owned {
+						state.ContinueSent = true
+					}
+				} else if !analysis.MenuVisible && !state.ContinueSent && !c.failedPanes[paneID] && now.After(state.RateLimitTime) {
+					if c.sendResume(paneID, current) == nil {
+						state.ContinueSent = true
+					}
+				}
+			} else {
+				periodicInterval := 15 * time.Minute
+				if current.AllowPeriodicNudge() && !analysis.MenuVisible && !c.failedPanes[paneID] && (state.LastPeriodicContinue.IsZero() || now.Sub(state.LastPeriodicContinue) >= periodicInterval) {
+					if c.sendResume(paneID, current) == nil {
+						state.LastPeriodicContinue = now
+					}
+				}
+			}
+		}
+
+		if c.cfg.TestPattern != "" &&
+			strings.Contains(content, c.cfg.TestPattern) &&
+			state.Mode == ModeAuto &&
+			!state.ContinueSent && !c.failedPanes[paneID] {
+			if c.sendResume(paneID, current) == nil {
+				state.ContinueSent = true
+			}
 		}
 		c.states[paneID] = *state
 	}
@@ -186,7 +233,7 @@ func (c *Coordinator) Snapshot() []PaneState {
 
 func (c *Coordinator) ToggleMode(paneID string) {
 	state, ok := c.states[paneID]
-	if !ok || !state.HasClaudeCode {
+	if !ok || !stateProviderActive(state) {
 		return
 	}
 	if state.Mode == ModeOff {
@@ -201,7 +248,7 @@ func (c *Coordinator) ToggleMode(paneID string) {
 func (c *Coordinator) EnableAll() {
 	for _, paneID := range c.paneOrder {
 		state := c.states[paneID]
-		if state.HasClaudeCode {
+		if stateProviderActive(state) {
 			state.Mode = ModeAuto
 			c.checkPaneRateLimit(&state)
 			c.states[paneID] = state
@@ -212,15 +259,23 @@ func (c *Coordinator) EnableAll() {
 func (c *Coordinator) DisableAll() {
 	for _, paneID := range c.paneOrder {
 		state := c.states[paneID]
-		if state.HasClaudeCode {
+		if stateProviderActive(state) {
 			state.Mode = ModeOff
 			c.states[paneID] = state
 		}
 	}
 }
 
+func stateProviderActive(state PaneState) bool {
+	return state.Provider != "" || state.HasClaudeCode
+}
+
 func (c *Coordinator) LastAction() (ActionRecord, bool) {
 	return c.lastAction, c.hasAction
+}
+
+func (c *Coordinator) LastFailure() (FailureRecord, bool) {
+	return c.lastFailure, c.hasFailure
 }
 
 func (c *Coordinator) checkPaneRateLimit(state *PaneState) {
@@ -231,40 +286,72 @@ func (c *Coordinator) checkPaneRateLimit(state *PaneState) {
 	if err != nil {
 		return
 	}
-	status := detection.CheckRateLimitAt(content, c.clock())
-	state.IsRateLimited = status.IsLimited
-	state.RateLimitResets = status.ResetsAt
-	state.RateLimitTime = status.ResetTime
+	current := c.providers.Resolve(state.Pane.Agent, content)
+	if current == nil {
+		state.Provider = ""
+		state.HasClaudeCode = false
+		state.IsRateLimited = false
+		state.RateLimitResets = ""
+		state.RateLimitTime = time.Time{}
+		state.ContinueSent = false
+		return
+	}
+	state.Provider = current.Name()
+	state.HasClaudeCode = current.Name() == "claude"
+	analysis := current.Analyze(content, c.clock())
+	state.IsRateLimited = analysis.IsLimited
+	state.RateLimitResets = resetDisplayText(analysis.Reset.Raw)
+	state.RateLimitTime = analysis.Reset.ParsedTime
 	state.ContinueSent = false
 }
 
-func (c *Coordinator) sendContinue(paneID string) {
+func (c *Coordinator) sendResume(paneID string, current provider.Provider) error {
 	if c.cfg.DryRun {
 		c.recordAction(paneID, true)
-		return
+		return nil
 	}
 
-	_ = SendContinueSequence(c.rt, paneID, c.sleep)
+	if err := SendResumeAction(c.rt, paneID, current.ResumeAction(), c.sleep); err != nil {
+		c.failedPanes[paneID] = true
+		c.lastFailure = FailureRecord{Time: c.clock(), PaneID: paneID, Err: err}
+		c.hasFailure = true
+		return err
+	}
 	c.recordAction(paneID, false)
+	return nil
+}
+
+func resetDisplayText(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if i := strings.LastIndex(raw, "("); i >= 0 && strings.HasSuffix(raw, ")") {
+		return strings.TrimSpace(raw[:i])
+	}
+	return raw
 }
 
 // SendContinueSequence submits the one allow-listed continuation action.
 func SendContinueSequence(rt runtime.Runtime, paneID string, sleep func(time.Duration)) error {
+	return SendResumeAction(rt, paneID, claude.New("").ResumeAction(), sleep)
+}
+
+// SendResumeAction executes a provider's structured action. The sleep remains
+// between Claude's Escape and text exactly as it was before provider support.
+func SendResumeAction(rt runtime.Runtime, paneID string, action provider.ResumeAction, sleep func(time.Duration)) error {
 	if sleep == nil {
 		sleep = time.Sleep
 	}
-	var firstErr error
-	if err := rt.SendKeys(paneID, runtime.KeyEscape); err != nil && firstErr == nil {
-		firstErr = err
+	for _, key := range action.KeysBefore {
+		if err := rt.SendKeys(paneID, key); err != nil {
+			return err
+		}
 	}
-	sleep(100 * time.Millisecond)
-	if err := rt.SendText(paneID, "continue"); err != nil && firstErr == nil {
-		firstErr = err
+	if len(action.KeysBefore) > 0 {
+		sleep(100 * time.Millisecond)
 	}
-	if err := rt.SendKeys(paneID, runtime.KeyEnter); err != nil && firstErr == nil {
-		firstErr = err
+	if err := rt.SendText(paneID, action.Text); err != nil {
+		return err
 	}
-	return firstErr
+	return rt.SendKeys(paneID, action.SubmitKey)
 }
 
 func (c *Coordinator) recordAction(paneID string, dryRun bool) {

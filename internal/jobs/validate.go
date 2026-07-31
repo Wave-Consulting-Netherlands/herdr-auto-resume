@@ -2,9 +2,9 @@ package jobs
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
-	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
@@ -36,9 +36,11 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		_ = m.updateJob(index, job)
 		return
 	}
+	var candidate runtime.Pane
 	found := false
-	for _, candidate := range panes {
-		if candidate.ID == job.PaneID {
+	for _, pane := range panes {
+		if pane.ID == job.PaneID {
+			candidate = pane
 			found = true
 			break
 		}
@@ -52,8 +54,25 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		finish(store.StateManualRequired, "pane read failed: "+err.Error(), true)
 		return
 	}
-	if !detection.IsClaudeCode(content) {
-		finish(store.StateManualRequired, "pane is not Claude Code", true)
+	current := m.providers.Resolve(candidate.Agent, content)
+	expectedProvider := job.Provider
+	if expectedProvider == "" {
+		expectedProvider = m.cfg.Provider
+	}
+	if current == nil {
+		reason := fmt.Sprintf("unknown current provider for pane")
+		if strings.TrimSpace(candidate.Agent) != "" {
+			reason = fmt.Sprintf("pane agent hint %q conflicts with job provider %q", candidate.Agent, expectedProvider)
+		}
+		finish(store.StateManualRequired, reason, true)
+		return
+	}
+	if !strings.EqualFold(current.Name(), expectedProvider) {
+		finish(store.StateManualRequired, fmt.Sprintf("provider mismatch: job %q, current pane %q", expectedProvider, current.Name()), true)
+		return
+	}
+	if !current.DetectContent(content) {
+		finish(store.StateManualRequired, "pane is not "+current.Name(), true)
 		return
 	}
 	info, err := m.rt.ProcessInfo(job.PaneID)
@@ -68,24 +87,29 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		finish(store.StateManualRequired, "working directory changed", true)
 		return
 	}
-	status := detection.CheckRateLimitAt(content, now)
-	analysis := detection.Analyze(content, now)
-	idle := detection.IsIdlePrompt(content)
-	if analysis.MenuVisible || (!status.IsLimited && !idle) {
-		finish(store.StateManualRequired, "terminal is not in a safe blocked or idle state", true)
+	if ok, reason := current.SafeToResume(content, now); !ok {
+		finish(store.StateManualRequired, reason, true)
 		return
 	}
 	job.LastValidation = "validation passed"
 	if m.updateJob(index, job) {
-		m.beginResume(index, job, now)
+		m.beginResume(index, job, now, current)
 	}
 }
 
 func (m *Manager) verify(index int, job store.Job, now time.Time) {
 	content, err := m.rt.ReadPane(job.PaneID, m.cfg.ReadLines)
 	if err == nil {
-		status := detection.CheckRateLimitAt(content, now)
-		if now.Before(job.VerifyDeadlineUTC) && (!status.IsLimited || hashContent(content) != job.EvidenceHash) {
+		current := m.providerForJob(job)
+		if current == nil {
+			job.State = store.StateManualRequired
+			job.LastError = "unknown provider: " + job.Provider
+			job.LastValidation = "unknown provider"
+			_ = m.updateJob(index, job)
+			return
+		}
+		analysis := current.Analyze(content, now)
+		if now.Before(job.VerifyDeadlineUTC) && (!analysis.IsLimited || (analysis.IsLimited && !analysis.Actionable)) {
 			job.State = store.StateResumed
 			job.LastValidation = "resume verified"
 			job.LastError = ""

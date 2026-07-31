@@ -1,15 +1,36 @@
 package jobs
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
+
+type blockingListRuntime struct {
+	runtime.Fake
+	started chan struct{}
+	resume  chan struct{}
+}
+
+func (r *blockingListRuntime) ListPanes() ([]runtime.Pane, error) {
+	select {
+	case r.started <- struct{}{}:
+	default:
+	}
+	select {
+	case <-r.resume:
+	case <-context.Background().Done():
+	}
+	return r.Fake.ListPanes()
+}
 
 func TestReconcileCorruptStoreWarnsAndContinues(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
@@ -158,4 +179,73 @@ func TestTickReloadsExternallyCancelledJobByMTime(t *testing.T) {
 	if len(rt.SentText) != 0 {
 		t.Fatal("externally cancelled job sent input")
 	}
+}
+
+func TestTwoStoreHandleCancelRaceNeverSends(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st := store.NewJSONStore(path)
+	job := store.Job{ID: "job-1", Provider: "claude", Agent: "claude", PaneID: "p1", State: store.StateWaiting, ResumeAtUTC: testNow}
+	if err := st.Save(store.File{Version: 1, Jobs: []store.Job{job}}); err != nil {
+		t.Fatal(err)
+	}
+	rt := &blockingListRuntime{
+		Fake:    runtime.Fake{PanesList: []runtime.Pane{{ID: "p1", Agent: "claude"}}, Content: map[string]string{"p1": "╭────╮\n> "}, Procs: map[string]runtime.ProcessInfo{"p1": {Command: "claude"}}},
+		started: make(chan struct{}, 1),
+		resume:  make(chan struct{}),
+	}
+	m := New(rt, st, Config{Provider: "claude", Margin: time.Minute}, WithProviders(providerRegistryForTest()), WithClock(func() time.Time { return testNow }), WithSleep(func(time.Duration) {}))
+	done := make(chan struct{})
+	go func() {
+		m.Tick(testNow)
+		close(done)
+	}()
+	<-rt.started
+
+	if err := store.WithLock(store.NewJSONStore(path), func() error {
+		fresh, err := store.NewJSONStore(path).Load()
+		if err != nil {
+			return err
+		}
+		fresh.Jobs[0].State = store.StateCancelled
+		fresh.Jobs[0].LastValidation = "cancelled by user"
+		return store.NewJSONStore(path).Save(fresh)
+	}); err != nil {
+		t.Fatalf("cancel transaction: %v", err)
+	}
+	close(rt.resume)
+	<-done
+	loaded, err := store.NewJSONStore(path).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Jobs[0].State; got != store.StateCancelled {
+		t.Fatalf("final state = %s, want CANCELLED", got)
+	}
+	if len(rt.SentText) != 0 || len(rt.SentKeys) != 0 {
+		t.Fatalf("runtime writes = text %#v keys %#v, want none", rt.SentText, rt.SentKeys)
+	}
+}
+
+func TestStartupBannerIsCapturedBeforeLongCadenceTick(t *testing.T) {
+	content := limitedContent()
+	rt := &testRuntime{Fake: runtime.Fake{
+		PanesList: []runtime.Pane{{ID: "p1", Agent: "claude"}},
+		Content:   map[string]string{"p1": content},
+	}}
+	m, _ := newTestManager(t, rt, Config{Margin: time.Minute}, "job-1")
+	c := coordinator.New(rt, coordinator.Config{ReadLines: 20}, coordinator.WithJobSink(m), coordinator.WithClock(func() time.Time { return testNow }))
+	c.SetPanes(rt.PanesList)
+	c.Poll()
+	c.EnableAll()
+	// This is the immediate action-capable startup poll; the long interval has
+	// not fired yet.
+	c.Poll()
+	rt.Content["p1"] = readyContent()
+	if got := len(m.Snapshot()); got != 1 {
+		t.Fatalf("jobs after startup banner disappeared = %d, want one", got)
+	}
+}
+
+func providerRegistryForTest() *provider.Registry {
+	return provider.NewRegistry(claude.New(""))
 }

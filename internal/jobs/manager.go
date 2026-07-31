@@ -9,12 +9,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/terminal"
 )
 
 // LimitEvent is re-exported for callers that only need the jobs boundary.
@@ -66,34 +70,54 @@ func WithLogWriter(logw io.Writer) Option {
 	}
 }
 
+func WithProviders(registry *provider.Registry) Option {
+	return func(m *Manager) {
+		if registry != nil {
+			m.providers = registry
+		}
+	}
+}
+
 type Manager struct {
-	rt      runtime.Runtime
-	store   store.Store
-	cfg     Config
-	clock   func() time.Time
-	sleep   func(time.Duration)
-	nextID  func() string
-	logw    io.Writer
-	file    store.File
-	lastMod time.Time
+	rt        runtime.Runtime
+	store     store.Store
+	cfg       Config
+	clock     func() time.Time
+	sleep     func(time.Duration)
+	nextID    func() string
+	logw      io.Writer
+	file      store.File
+	lastMod   time.Time
+	providers *provider.Registry
+}
+
+func defaultRegistry() *provider.Registry {
+	return provider.NewRegistry(claude.New(""))
 }
 
 func New(rt runtime.Runtime, st store.Store, cfg Config, opts ...Option) *Manager {
 	cfg = withDefaults(cfg)
 	m := &Manager{
-		rt:     rt,
-		store:  st,
-		cfg:    cfg,
-		clock:  time.Now,
-		sleep:  time.Sleep,
-		nextID: uuidv4,
-		logw:   io.Discard,
-		file:   store.File{Version: 1, Jobs: []store.Job{}},
+		rt:        rt,
+		store:     st,
+		cfg:       cfg,
+		clock:     time.Now,
+		sleep:     time.Sleep,
+		nextID:    uuidv4,
+		logw:      io.Discard,
+		file:      store.File{Version: 1, Jobs: []store.Job{}},
+		providers: defaultRegistry(),
 	}
 	for _, opt := range opts {
 		opt(m)
 	}
-	if loaded, err := st.Load(); err == nil || loaded.Version != 0 {
+	var loaded store.File
+	var loadErr error
+	_ = store.WithLock(st, func() error {
+		loaded, loadErr = st.Load()
+		return nil
+	})
+	if loadErr == nil || loaded.Version != 0 {
 		if loaded.Version == 0 {
 			loaded.Version = 1
 		}
@@ -102,7 +126,7 @@ func New(rt runtime.Runtime, st store.Store, cfg Config, opts ...Option) *Manage
 		}
 		m.file = loaded
 	} else {
-		m.logf("load state: %v", err)
+		m.logf("load state: %v", loadErr)
 	}
 	m.noteModTime()
 	return m
@@ -112,7 +136,7 @@ func withDefaults(cfg Config) Config {
 	if cfg.Provider == "" {
 		cfg.Provider = "claude"
 	}
-	if cfg.Margin <= 0 {
+	if cfg.Margin < 0 {
 		cfg.Margin = time.Minute
 	}
 	if cfg.MaxHorizon <= 0 {
@@ -137,7 +161,19 @@ func (m *Manager) Snapshot() []store.Job {
 // HandleLimit implements coordinator.JobSink. It is level-triggered and owns a
 // known-reset episode even when persistence fails only after the attempt to save.
 func (m *Manager) HandleLimit(event LimitEvent) bool {
-	m.reloadIfChanged()
+	owned := false
+	if err := store.WithLock(m.store, func() error {
+		m.reloadLocked()
+		owned = m.handleLimitLocked(event)
+		return nil
+	}); err != nil {
+		m.logf("state transaction: %v", err)
+		return false
+	}
+	return owned
+}
+
+func (m *Manager) handleLimitLocked(event LimitEvent) bool {
 	if event.ResetTime.IsZero() {
 		return false
 	}
@@ -145,7 +181,17 @@ func (m *Manager) HandleLimit(event LimitEvent) bool {
 	if now.IsZero() {
 		now = m.clock()
 	}
-	evidenceHash := hashContent(event.Content)
+	providerName := event.Provider
+	if providerName == "" {
+		providerName = m.cfg.Provider
+	}
+	evidence := event.Evidence
+	if evidence == "" {
+		if current := m.providers.Resolve(event.Pane.Agent, event.Content); current != nil {
+			evidence = current.Analyze(event.Content, now).Evidence
+		}
+	}
+	evidenceHash := hashEvidence(evidence)
 	for _, job := range m.file.Jobs {
 		if job.PaneID != event.Pane.ID {
 			continue
@@ -159,7 +205,7 @@ func (m *Manager) HandleLimit(event LimitEvent) bool {
 	resumeAt := resetAt.Add(m.cfg.Margin)
 	job := store.Job{
 		ID:            m.nextID(),
-		Provider:      m.cfg.Provider,
+		Provider:      providerName,
 		PaneID:        event.Pane.ID,
 		Agent:         event.Pane.Agent,
 		DetectedAt:    now.UTC(),
@@ -192,10 +238,10 @@ func (m *Manager) HandleLimit(event LimitEvent) bool {
 	m.file = store.File{Version: 1, Jobs: next}
 	m.noteModTime()
 	if job.State == store.StateFailed {
-		m.logf("job=%s failed: %s", job.ID, job.LastError)
+		m.logf("job=%s provider=%s failed: %s", job.ID, job.Provider, job.LastError)
 		m.notify("auto-resume", fmt.Sprintf("job %s failed: %s", job.ID, job.LastError), true)
 	} else {
-		m.logf("job=%s scheduled pane=%s resume=%s kind=%s confidence=%s", job.ID, job.PaneID, job.ResumeAtUTC.Format(time.RFC3339), job.ResetKind, job.Confidence)
+		m.logf("job=%s provider=%s scheduled pane=%s resume=%s kind=%s confidence=%s", job.ID, job.Provider, job.PaneID, job.ResumeAtUTC.Format(time.RFC3339), job.ResetKind, job.Confidence)
 		localReset := event.ResetTime.In(now.Location()).Format("2006-01-02 15:04 MST")
 		m.notify("auto-resume", fmt.Sprintf("job %s scheduled for pane %s; reset at %s", job.ID, job.PaneID, localReset), false)
 	}
@@ -230,17 +276,16 @@ func (m *Manager) Tick(now time.Time) {
 // Reconcile reloads durable state and makes an interrupted send explicitly
 // manual-required. It never retries an uncertain RESUMING job.
 func (m *Manager) Reconcile() error {
+	return store.WithLock(m.store, m.reconcileLocked)
+}
+
+func (m *Manager) reconcileLocked() error {
 	loaded, err := m.store.Load()
 	var corrupt store.CorruptError
 	if err != nil && !errors.As(err, &corrupt) {
 		return err
 	}
-	if loaded.Version == 0 {
-		loaded.Version = 1
-	}
-	if loaded.Jobs == nil {
-		loaded.Jobs = []store.Job{}
-	}
+	normalizeFile(&loaded)
 	m.file = loaded
 	m.noteModTime()
 	if err != nil {
@@ -290,6 +335,13 @@ func (m *Manager) noteModTime() {
 }
 
 func (m *Manager) reloadIfChanged() {
+	_ = store.WithLock(m.store, func() error {
+		m.reloadLocked()
+		return nil
+	})
+}
+
+func (m *Manager) reloadLocked() {
 	path := m.store.Path()
 	if path == "" {
 		return
@@ -312,7 +364,7 @@ func (m *Manager) reloadIfChanged() {
 	m.noteModTime()
 }
 
-func (m *Manager) beginResume(index int, job store.Job, now time.Time) {
+func (m *Manager) beginResume(index int, job store.Job, now time.Time, current provider.Provider) {
 	job.State = store.StateResuming
 	job.AttemptID = m.nextID()
 	job.AttemptAtUTC = now.UTC()
@@ -328,7 +380,10 @@ func (m *Manager) beginResume(index int, job store.Job, now time.Time) {
 		m.logf("job=%s dry-run resume", job.ID)
 		return
 	}
-	if err := coordinator.SendContinueSequence(m.rt, job.PaneID, m.sleep); err != nil {
+	if err := m.sendResumeIfCurrent(index, job, current); err != nil {
+		if errors.Is(err, errConcurrentState) {
+			return
+		}
 		job.State = store.StateManualRequired
 		job.LastError = "resume send failed: " + err.Error()
 		job.LastValidation = "resume send failed"
@@ -346,16 +401,114 @@ func (m *Manager) beginResume(index int, job store.Job, now time.Time) {
 	}
 }
 
+var errConcurrentState = errors.New("job state changed concurrently")
+
+func (m *Manager) sendResumeIfCurrent(index int, job store.Job, current provider.Provider) error {
+	if index < 0 || index >= len(m.file.Jobs) {
+		return errConcurrentState
+	}
+	expectedID := m.file.Jobs[index].ID
+	var sendErr error
+	err := store.WithLock(m.store, func() error {
+		loaded, err := m.store.Load()
+		if err != nil {
+			return err
+		}
+		normalizeFile(&loaded)
+		loaded.Jobs = append([]store.Job(nil), loaded.Jobs...)
+		found := -1
+		for i := range loaded.Jobs {
+			if loaded.Jobs[i].ID == expectedID {
+				found = i
+				break
+			}
+		}
+		if found < 0 || loaded.Jobs[found].State != store.StateResuming {
+			m.file = loaded
+			m.noteModTime()
+			return errConcurrentState
+		}
+		m.file = loaded
+		m.noteModTime()
+		sendErr = coordinator.SendResumeAction(m.rt, loaded.Jobs[found].PaneID, current.ResumeAction(), m.sleep)
+		if sendErr == nil {
+			return nil
+		}
+		failed := loaded.Jobs[found]
+		failed.State = store.StateManualRequired
+		failed.LastError = "resume send failed: " + sendErr.Error()
+		failed.LastValidation = "resume send failed"
+		loaded.Jobs[found] = failed
+		if err := m.store.Save(loaded); err != nil {
+			return fmt.Errorf("record resume send failure: %w", err)
+		}
+		m.file = loaded
+		m.noteModTime()
+		return sendErr
+	})
+	if err != nil {
+		return err
+	}
+	return sendErr
+}
+
+func (m *Manager) providerForJob(job store.Job) provider.Provider {
+	name := job.Provider
+	if name == "" {
+		name = m.cfg.Provider
+	}
+	return m.providers.Resolve(name, "")
+}
+
 func (m *Manager) updateJob(index int, job store.Job) bool {
-	next := append([]store.Job(nil), m.file.Jobs...)
-	next[index] = job
-	if err := m.store.Save(store.File{Version: 1, Jobs: next}); err != nil {
+	if index < 0 || index >= len(m.file.Jobs) {
+		return false
+	}
+	expectedID := m.file.Jobs[index].ID
+	expectedState := m.file.Jobs[index].State
+	updated := false
+	err := store.WithLock(m.store, func() error {
+		loaded, err := m.store.Load()
+		if err != nil {
+			return err
+		}
+		normalizeFile(&loaded)
+		loaded.Jobs = append([]store.Job(nil), loaded.Jobs...)
+		found := -1
+		for i := range loaded.Jobs {
+			if loaded.Jobs[i].ID == expectedID {
+				found = i
+				break
+			}
+		}
+		if found < 0 || loaded.Jobs[found].State != expectedState {
+			m.file = loaded
+			m.noteModTime()
+			return errConcurrentState
+		}
+		loaded.Jobs[found] = job
+		if err := m.store.Save(loaded); err != nil {
+			return err
+		}
+		m.file = loaded
+		m.noteModTime()
+		updated = true
+		return nil
+	})
+	if err != nil {
 		m.logf("save job %s: %v", job.ID, err)
 		return false
 	}
-	m.file = store.File{Version: 1, Jobs: next}
-	m.noteModTime()
-	return true
+	return updated
+}
+
+func normalizeFile(file *store.File) {
+	if file.Version == 0 {
+		file.Version = 1
+	}
+	if file.Jobs == nil {
+		file.Jobs = []store.Job{}
+	}
 }
 
 func (m *Manager) notify(title, body string, failed bool) {
@@ -371,8 +524,16 @@ func (m *Manager) logf(format string, args ...any) {
 	fmt.Fprintf(m.logw, format+"\n", args...)
 }
 
-func hashContent(content string) string {
-	hash := sha256.Sum256([]byte(content))
+func hashEvidence(evidence string) string {
+	lines := strings.Split(terminal.StripANSI(evidence), "\n")
+	normalized := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.Join(strings.Fields(line), " ")
+		if line != "" {
+			normalized = append(normalized, line)
+		}
+	}
+	hash := sha256.Sum256([]byte(strings.Join(normalized, "\n")))
 	return hex.EncodeToString(hash[:])
 }
 

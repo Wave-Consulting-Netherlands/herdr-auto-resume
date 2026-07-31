@@ -1,0 +1,9 @@
+❯ /bin/cat
+■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again
+ at 3:34 PM.
+■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again
+ at 3:34 PM.
+› Implement {feature}
+› Implement {feature}
+gpt-5.6-sol xhigh · ~/dev/example · example · main · Custom permissions · Context 90% left · weekly 93% left
+gpt-5.6-sol xhigh · ~/dev/example · example · main · Custom permissions · Context 90% left · weekly 93% left

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,8 +87,54 @@ func parseHerdrVersion(output []byte) (string, bool) {
 	return strings.Join(fields, " "), true
 }
 
-func protocolDetail(_ []byte) string {
-	return "protocol 17 (known-good reference)"
+func protocolDetail(output []byte) (string, bool) {
+	var payload any
+	decoder := json.NewDecoder(strings.NewReader(string(output)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
+		return "", false
+	}
+	if protocol, ok := findProtocol(payload); ok {
+		return fmt.Sprintf("protocol %d", protocol), true
+	}
+	return "", false
+}
+
+func findProtocol(value any) (int64, bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			if strings.EqualFold(key, "protocol") || strings.EqualFold(key, "protocol_version") {
+				if number, ok := protocolNumber(nested); ok {
+					return number, true
+				}
+			}
+			if number, ok := findProtocol(nested); ok {
+				return number, true
+			}
+		}
+	case []any:
+		for _, nested := range typed {
+			if number, ok := findProtocol(nested); ok {
+				return number, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func protocolNumber(value any) (int64, bool) {
+	var text string
+	switch typed := value.(type) {
+	case json.Number:
+		text = typed.String()
+	case string:
+		text = strings.TrimSpace(typed)
+	default:
+		return 0, false
+	}
+	number, err := strconv.ParseInt(text, 10, 64)
+	return number, err == nil && number > 0
 }
 
 func runDoctorCommand(args []string, out io.Writer, deps doctorDeps) int {
@@ -142,7 +189,11 @@ func runDoctorCommand(args []string, out io.Writer, deps doctorDeps) int {
 		doctorLine(out, "FAIL", "status", fmt.Sprintf("status and api snapshot failed: %v", statusErr))
 		failed = true
 	} else {
-		doctorLine(out, "PASS", "status", protocolDetail(statusOutput))
+		if detail, ok := protocolDetail(statusOutput); ok {
+			doctorLine(out, "PASS", "status", detail)
+		} else {
+			doctorLine(out, "WARN", "status", "protocol unknown")
+		}
 	}
 
 	adapter := deps.newAdapter(herdradapter.Options{

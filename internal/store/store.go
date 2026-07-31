@@ -71,6 +71,16 @@ type Store interface {
 	Path() string
 }
 
+// WithLock runs one complete state-file transaction under the sidecar lock.
+// File-backed stores use syscall flock on Linux and macOS; in-memory test
+// stores execute the callback directly.
+func WithLock(st Store, fn func() error) error {
+	if locker, ok := st.(interface{ WithLock(func() error) error }); ok {
+		return locker.WithLock(fn)
+	}
+	return fn()
+}
+
 // CorruptError reports that the previous state was invalid but has been backed up
 // and replaced with an empty usable state file.
 type CorruptError struct {

@@ -13,7 +13,7 @@ import (
 const modulePath = "github.com/Wave-Consulting-Netherlands/herdr-auto-resume"
 
 func TestCoreImportHygiene(t *testing.T) {
-	for _, dir := range []string{"../coordinator", "../detection", "../runtime", "../store", "../jobs", "../terminal"} {
+	for _, dir := range []string{"../coordinator", "../detection", "../runtime", "../store", "../jobs", "../terminal", "../provider"} {
 		t.Run(dir, func(t *testing.T) {
 			root, err := filepath.Abs(dir)
 			if err != nil {

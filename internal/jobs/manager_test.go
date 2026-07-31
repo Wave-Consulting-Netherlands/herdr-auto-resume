@@ -1,8 +1,6 @@
 package jobs
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"io"
 	"path/filepath"
@@ -11,6 +9,9 @@ import (
 	"time"
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/codex"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
@@ -75,6 +76,17 @@ func TestHandleLimitRequiresNonZeroResetTime(t *testing.T) {
 	}
 }
 
+func TestManagerHonorsExplicitZeroMargin(t *testing.T) {
+	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}}}
+	m, _ := newTestManager(t, rt, Config{Margin: 0}, "job-1")
+	reset := testNow.Add(time.Hour)
+	m.HandleLimit(limitEvent(limitedContent(), reset))
+	job := m.Snapshot()[0]
+	if job.MarginSecs != 0 || !job.ResumeAtUTC.Equal(reset) {
+		t.Fatalf("job = %#v, want zero margin and immediate resume time", job)
+	}
+}
+
 func TestHandleLimitCreatesOneJobForRepeatedPolls(t *testing.T) {
 	content := limitedContent()
 	reset := testNow.Add(5 * time.Minute)
@@ -96,8 +108,8 @@ func TestHandleLimitCreatesOneJobForRepeatedPolls(t *testing.T) {
 	if !job.ResetAtUTC.Equal(reset) || !job.ResumeAtUTC.Equal(reset.Add(time.Minute)) || job.MarginSecs != 60 {
 		t.Fatalf("schedule = reset %v resume %v margin %d", job.ResetAtUTC, job.ResumeAtUTC, job.MarginSecs)
 	}
-	wantHash := sha256.Sum256([]byte(content))
-	if job.EvidenceHash != hex.EncodeToString(wantHash[:]) {
+	wantHash := hashEvidence(detection.Analyze(content, testNow).Evidence)
+	if job.EvidenceHash != wantHash {
 		t.Fatalf("evidence hash = %q", job.EvidenceHash)
 	}
 }
@@ -121,6 +133,26 @@ func TestHandleLimitPersistsDetectionMetadataAndLocalNotification(t *testing.T) 
 	}
 	if len(rt.Notes) != 1 || !strings.Contains(rt.Notes[0].Body, "p1") || !strings.Contains(rt.Notes[0].Body, "2026-07-31 12:05 UTC") {
 		t.Fatalf("notifications = %#v, want pane and local reset time", rt.Notes)
+	}
+}
+
+func TestHandleLimitDoesNotRearmForUnrelatedOutputChange(t *testing.T) {
+	content := limitedContent()
+	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}}}
+	m, st := newTestManager(t, rt, Config{Margin: time.Minute}, "job-1", "job-2")
+	if !m.HandleLimit(limitEvent(content, testNow.Add(time.Hour))) {
+		t.Fatal("initial HandleLimit() = false")
+	}
+	file := m.Snapshot()
+	file[0].State = store.StateResumed
+	if err := st.Save(store.File{Version: 1, Jobs: file}); err != nil {
+		t.Fatal(err)
+	}
+	if !m.HandleLimit(limitEvent(content+"\n❯", testNow.Add(2*time.Hour))) {
+		t.Fatal("repeated HandleLimit() = false")
+	}
+	if got := len(m.Snapshot()); got != 1 {
+		t.Fatalf("jobs = %d, want one episode job", got)
 	}
 }
 
@@ -151,10 +183,13 @@ func TestValidationRejectsBoxedClaudeRateLimitMenu(t *testing.T) {
 	banner := "⎿ You've hit your limit · resets 5m"
 	menu := banner + "\nOpening your options…\n╭──────────────────────────────╮\n│ What do you want to do?       │\n│ ❯ 1. Stop and wait for limit to reset │\n│   2. Upgrade your plan        │\n│ Enter to confirm · Esc to cancel │\n╰──────────────────────────────╯"
 	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": menu}, Procs: map[string]runtime.ProcessInfo{"p1": {Command: "claude", CWD: "/work"}}}}
-	m, _ := newTestManager(t, rt, Config{Margin: time.Minute}, "job-1")
+	m, st := newTestManager(t, rt, Config{Margin: time.Minute}, "job-1")
 	m.HandleLimit(limitEvent(banner, testNow))
 	m.file.Jobs[0].State = store.StateValidating
 	m.file.Jobs[0].ResumeAtUTC = testNow
+	if err := st.Save(m.file); err != nil {
+		t.Fatal(err)
+	}
 	m.Tick(testNow)
 	job := m.Snapshot()[0]
 	if job.State != store.StateManualRequired {
@@ -217,6 +252,27 @@ func TestValidationFingerprintAndCWDMismatchRequireManual(t *testing.T) {
 				t.Fatalf("state = %s, want MANUAL_REQUIRED", got)
 			}
 		})
+	}
+}
+
+func TestValidationProviderFlipRequiresManualAndNeverSends(t *testing.T) {
+	content := limitedContent()
+	rt := &testRuntime{Fake: runtime.Fake{
+		PanesList: []runtime.Pane{{ID: "p1", Agent: "codex"}},
+		Content:   map[string]string{"p1": "■ You've hit your usage limit. Try again at 3:51 PM.\n› "},
+		Procs:     map[string]runtime.ProcessInfo{"p1": {Command: "codex", CWD: "/work"}},
+	}}
+	registry := provider.NewRegistry(claude.New(""), codex.New(""))
+	m, _ := newTestManager(t, rt, Config{Provider: "claude", Margin: time.Minute}, "job-1")
+	m.providers = registry
+	m.HandleLimit(limitEvent(content, testNow))
+	m.Tick(testNow.Add(time.Minute))
+	job := m.Snapshot()[0]
+	if job.State != store.StateManualRequired || !strings.Contains(job.LastValidation, "provider") {
+		t.Fatalf("job = %#v, want provider mismatch MANUAL_REQUIRED", job)
+	}
+	if len(rt.SentText) != 0 || len(rt.SentKeys) != 0 {
+		t.Fatalf("runtime writes = text %#v keys %#v, want none", rt.SentText, rt.SentKeys)
 	}
 }
 
@@ -308,7 +364,8 @@ func TestDeterministicIDsAndStayArmedSecondJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	m2 := New(rt, st, Config{}, WithClock(func() time.Time { return testNow }), WithSleep(func(time.Duration) {}), WithIDGenerator(func() string { return "second" }), WithLogWriter(io.Discard))
-	if !m2.HandleLimit(limitEvent(content+"\nnew limit", testNow.Add(time.Hour))) {
+	secondContent := "You've hit your limit · resets 6m"
+	if !m2.HandleLimit(limitEvent(secondContent, testNow.Add(time.Hour))) {
 		t.Fatal("second limit was not owned")
 	}
 	jobs := m2.Snapshot()

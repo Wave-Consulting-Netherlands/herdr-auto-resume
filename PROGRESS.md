@@ -214,7 +214,63 @@ ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/terminal	
     since Phase 3 deployment.
   - Final gate after fix: 239 tests green incl -race.
 
+## Phase 5 code complete — 2026-07-31
+
+- Added a provider interface and registry with authoritative `Pane.Agent` hint-wins
+  resolution; empty hints require exactly one content match, and ambiguity fails closed.
+- Preserved Claude detection, gate-9 safety behavior, and Escape → `continue` → Enter
+  sequencing with the injected 100 ms sleep; nil registries retain Claude-only defaults.
+- Added evidence-based Codex 0.146/0.144 banner families, reset-tail normalization, live
+  chrome/quote/stale/busy guards, no-menu semantics, Codex prompt → Enter resume, and no
+  periodic nudge.
+- Made coordinator polling and persistent jobs provider-aware without changing the store
+  schema. Unknown provider state becomes MANUAL_REQUIRED; schema-1 empty-provider state
+  falls back to Claude compatibility.
+
+### Final code gate
+
+```text
+go build ./...                              OK
+go vet ./...                                OK
+go test ./... -race -count=1                OK
+```
+
+All packages passed, including `internal/provider`, `internal/provider/claude`, and
+`internal/provider/codex`; the gate ran with Go 1.26.5 and `GOCACHE=/tmp/herdr-go-cache`.
+
+## Phase 5.5 complete — 2026-07-31
+
+- Remediated all ten review findings in four commits: transactional sidecar flock
+  locking and authoritative cancellation; fail-stop sends with honest failure
+  propagation; current-pane provider identity and non-live-evidence verification;
+  normalized episode fingerprints; immediate startup acquisition; split short
+  detection/status cadence; timeout/config validation; protocol-aware doctor
+  warnings; explicit zero margin; and impossible-date rejection.
+- Store schema remains unchanged. syscall.Flock support is documented for the
+  Linux/macOS target platforms.
+- Semantic changes: fail-stop sends, non-live-evidence verification, episode
+  fingerprinting, and split cadence. Review regression tests are permanent and
+  the full race-enabled gate is green.
+
+- 2026-07-31, Phase 5 + 5.5 live drills (herdr 0.7.5, scratch workspaces wG/wH/wJ):
+  - **Review fix during drills:** wrapped 80-col banner lost its reset tail →
+    continuation-line join in the codex analyzer (`5e10f17`), pinned by a live-captured
+    fixture.
+  - Codex full cycle (Pro-upgrade + model-switch banner variants): provider=codex,
+    kind=local-clock/high, restart mid-WAITING, exactly one long-prompt send with NO
+    escape, RESUMED attempts=1 — twice (pre- and post-remediation).
+  - Hint-wins negative on real codex pane w7:p1 (3 min): zero jobs. Ambiguity negative
+    (claude banner + codex chrome, no agent label): zero jobs. Deployed schema-1 state
+    reads clean with PROVIDER column.
+  - Cancel-under-running-watcher (R1 live): job stayed CANCELLED, attempts=0, zero
+    sends.
+  - review.md triage (BACKLOG 8): all ten findings validated, none false; remediated
+    as R1–R4 on this branch. The live-miss incident (BACKLOG 9) is mitigated by the
+    immediate post-enable poll + 30s-capped detection ticker; full event-driven
+    acquisition is Phase 6.
+
 ## Next task
 
-Upgrade the deployed watcher binary (wD:p1) to the Phase 4 build, then BRIEF.md
-Phase 5 (Codex provider: fixtures, lifecycle signals, provider-specific resume).
+BRIEF.md Phase 6 — Herdr socket client: session.snapshot bootstrap, event
+subscriptions (pane output/agent state — completes the BACKLOG 9 fix), reconnect +
+cache reconciliation, polling fallback retained.

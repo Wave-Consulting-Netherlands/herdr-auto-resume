@@ -1,0 +1,2 @@
+⚠ stream error: exceeded retry limit, last status: 429 Too Many Requests; retrying 4/5 in 1.471s
+› Ask Codex to do anything

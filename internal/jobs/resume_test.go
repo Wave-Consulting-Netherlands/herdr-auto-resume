@@ -92,16 +92,16 @@ func TestResumeSendsExactlyOnceAcrossManyTicks(t *testing.T) {
 	}
 }
 
-func TestVerificationSucceedsWhenEvidenceHashChanges(t *testing.T) {
+func TestVerificationDoesNotSucceedWhenStillLimitedAndOnlyChromeChanges(t *testing.T) {
 	content := limitedContent()
 	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}, Procs: map[string]runtime.ProcessInfo{"p1": {Command: "claude", CWD: "/work"}}}}
 	m, _ := newTestManager(t, rt, Config{Margin: time.Minute, VerifyTimeout: time.Minute}, "job-1")
 	m.HandleLimit(limitEvent(content, testNow))
 	m.Tick(testNow.Add(time.Minute))
-	rt.Content["p1"] = content + "\nnew output"
+	rt.Content["p1"] = content + "\n❯"
 	m.Tick(testNow.Add(30 * time.Second))
-	if got := m.Snapshot()[0].State; got != store.StateResumed {
-		t.Fatalf("state = %s, want RESUMED", got)
+	if got := m.Snapshot()[0].State; got != store.StateVerifyingResume {
+		t.Fatalf("state = %s, want VERIFYING_RESUME", got)
 	}
 }
 
