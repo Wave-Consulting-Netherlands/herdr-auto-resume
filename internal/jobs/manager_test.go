@@ -147,6 +147,24 @@ func TestValidationRejectsClaudeRateLimitMenu(t *testing.T) {
 	}
 }
 
+func TestValidationRejectsBoxedClaudeRateLimitMenu(t *testing.T) {
+	banner := "⎿ You've hit your limit · resets 5m"
+	menu := banner + "\nOpening your options…\n╭──────────────────────────────╮\n│ What do you want to do?       │\n│ ❯ 1. Stop and wait for limit to reset │\n│   2. Upgrade your plan        │\n│ Enter to confirm · Esc to cancel │\n╰──────────────────────────────╯"
+	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": menu}, Procs: map[string]runtime.ProcessInfo{"p1": {Command: "claude", CWD: "/work"}}}}
+	m, _ := newTestManager(t, rt, Config{Margin: time.Minute}, "job-1")
+	m.HandleLimit(limitEvent(banner, testNow))
+	m.file.Jobs[0].State = store.StateValidating
+	m.file.Jobs[0].ResumeAtUTC = testNow
+	m.Tick(testNow)
+	job := m.Snapshot()[0]
+	if job.State != store.StateManualRequired {
+		t.Fatalf("job = %#v, want MANUAL_REQUIRED from VALIDATING boxed menu", job)
+	}
+	if len(rt.SentText) != 0 || len(rt.SentKeys) != 0 {
+		t.Fatalf("runtime writes = text %#v keys %#v, want none", rt.SentText, rt.SentKeys)
+	}
+}
+
 func TestHandleLimitBeyondHorizonCreatesFailedOwnedJob(t *testing.T) {
 	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}}}
 	m, _ := newTestManager(t, rt, Config{MaxHorizon: time.Hour}, "job-1")

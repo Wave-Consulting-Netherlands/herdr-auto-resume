@@ -65,6 +65,39 @@ func TestJobSinkFalseFailsSafeWithoutLegacySend(t *testing.T) {
 	}
 }
 
+func TestBoxedMenuCreatesJobEventAndBlocksLegacySend(t *testing.T) {
+	content := "⎿ You've hit your limit · resets 8pm (Europe/London)\nOpening your options…\n╭──────────────────────────────╮\n│ What do you want to do?       │\n│ ❯ 1. Stop and wait for limit to reset │\n│   2. Upgrade your plan        │\n│ Enter to confirm · Esc to cancel │\n╰──────────────────────────────╯"
+	now := detection.CheckRateLimitAt(content, coordinatorTestNow).ResetTime.Add(5 * time.Minute)
+
+	t.Run("job sink receives event", func(t *testing.T) {
+		fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
+		sink := &recordingJobSink{owned: true}
+		c := New(fake, Config{}, WithClock(func() time.Time { return now }), WithJobSink(sink), WithSleep(func(time.Duration) {}))
+		c.SetPanes(fake.PanesList)
+		c.Poll()
+		c.ToggleMode("p1")
+		c.Poll()
+		if len(sink.events) != 1 {
+			t.Fatalf("sink events = %d, want one LimitEvent", len(sink.events))
+		}
+		if sink.events[0].Content != content {
+			t.Fatalf("event content = %q, want boxed menu content", sink.events[0].Content)
+		}
+	})
+
+	t.Run("legacy path does not send", func(t *testing.T) {
+		fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
+		c := New(fake, Config{}, WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
+		c.SetPanes(fake.PanesList)
+		c.Poll()
+		c.ToggleMode("p1")
+		c.Poll()
+		if len(fake.SentText) != 0 || len(fake.SentKeys) != 0 {
+			t.Fatalf("legacy sends = text %#v keys %#v, want none", fake.SentText, fake.SentKeys)
+		}
+	})
+}
+
 func TestUnknownResetNeverCallsJobSink(t *testing.T) {
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "limit reached"}}
 	sink := &recordingJobSink{}

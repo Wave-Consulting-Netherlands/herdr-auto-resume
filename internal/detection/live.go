@@ -18,7 +18,7 @@ type Analysis struct {
 }
 
 var (
-	boxRuleLine     = regexp.MustCompile(`^[─│┌┐└┘├┤┬┴┼╭╮╯╰╌]+$`)
+	boxRuleLine     = regexp.MustCompile(`^[─│┃┌┐└┘├┤┬┴┼╭╮╯╰╌]+$`)
 	menuOptionLine  = regexp.MustCompile(`^❯?\s*\d+\.\s+`)
 	resetMarkerLine = regexp.MustCompile(`(?i)\b(?:resets?|try\s+again\s+in|wait)\b`)
 )
@@ -141,7 +141,7 @@ func isToolChild(line string) bool {
 func hasMenuLines(lines []string) bool {
 	hasTitle, hasOption, hasWaitOrCancel := false, false, false
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
+		trimmed := normalizeMenuLine(line)
 		if strings.Contains(trimmed, "What do you want to do?") {
 			hasTitle = true
 		}
@@ -153,6 +153,28 @@ func hasMenuLines(lines []string) bool {
 		}
 	}
 	return hasTitle && hasOption && hasWaitOrCancel
+}
+
+func normalizeMenuLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	for _, border := range []string{"│", "┃"} {
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, border))
+		trimmed = strings.TrimSpace(strings.TrimSuffix(trimmed, border))
+	}
+	return trimmed
+}
+
+func isMenuContentLine(line string) bool {
+	trimmed := normalizeMenuLine(line)
+	return strings.Contains(trimmed, "What do you want to do?") ||
+		menuOptionLine.MatchString(trimmed) ||
+		strings.Contains(trimmed, "Enter to confirm") ||
+		strings.Contains(trimmed, "Esc to cancel") ||
+		strings.Contains(trimmed, "Stop and wait for limit to reset")
+}
+
+func isMenuBlockLine(line string) bool {
+	return isChromeLine(line) || isChromeLine(normalizeMenuLine(line)) || isMenuContentLine(line)
 }
 
 func pairedEvidence(lines []string) (int, int, bool) {
@@ -182,7 +204,7 @@ func hasNonChromeBelow(lines []string, resetAt int, menu bool) bool {
 		if isChromeLine(line) || strings.TrimSpace(line) == "" {
 			continue
 		}
-		if menu && (strings.Contains(line, "What do you want to do?") || menuOptionLine.MatchString(strings.TrimSpace(line)) || strings.Contains(line, "Enter to confirm") || strings.Contains(line, "Esc to cancel") || strings.Contains(line, "Stop and wait")) {
+		if menu && isMenuBlockLine(line) {
 			continue
 		}
 		return true

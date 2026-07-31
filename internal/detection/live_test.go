@@ -41,10 +41,41 @@ func TestAnalyzeLiveAndSafetyGuards(t *testing.T) {
 }
 
 func TestHasRateLimitMenuAndIdlePrompt(t *testing.T) {
-	menu := "What do you want to do?\n❯ 1. Stop and wait for limit to reset\n2. Upgrade\nEnter to confirm · Esc to cancel"
-	if !HasRateLimitMenu(menu) {
-		t.Fatal("HasRateLimitMenu() = false, want true")
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "unboxed menu",
+			content: "What do you want to do?\n❯ 1. Stop and wait for limit to reset\n2. Upgrade\nEnter to confirm · Esc to cancel",
+			want:    true,
+		},
+		{
+			name:    "boxed menu",
+			content: "╭──────────────╮\n│ What do you want to do? │\n│ ❯ 1. Stop and wait for limit to reset │\n│   2. Upgrade your plan │\n│ Enter to confirm · Esc to cancel │\n╰──────────────╯",
+			want:    true,
+		},
+		{
+			name:    "heavy boxed menu",
+			content: "╭──────────────╮\n┃ What do you want to do? ┃\n┃ ❯ 1. Stop and wait for limit to reset ┃\n┃ Enter to confirm · Esc to cancel ┃\n╰──────────────╯",
+			want:    true,
+		},
+		{
+			name:    "bordered psql row",
+			content: "│ id │ name │",
+			want:    false,
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasRateLimitMenu(tt.content); got != tt.want {
+				t.Fatalf("HasRateLimitMenu() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	menu := tests[0].content
 	if HasRateLimitMenu("What do you want to do?\n1. A normal numbered list\nPress Enter later") {
 		t.Fatal("HasRateLimitMenu() = true for prose probe")
 	}

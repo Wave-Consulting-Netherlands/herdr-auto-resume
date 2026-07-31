@@ -38,15 +38,18 @@ func TestClassifyFamilyPositiveAndProseNegative(t *testing.T) {
 func TestPositiveClaudeCorpus(t *testing.T) {
 	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
 	want := map[string]struct {
-		family Family
-		kind   ResetKind
+		family     Family
+		kind       ResetKind
+		timezone   string
+		actionable bool
+		menu       bool
 	}{
-		"cc2026-07_5h-iana.txt":        {FamilyNHourLimit, ResetKindAbsolute},
-		"cc2026-07_session.txt":        {FamilySessionLimit, ResetKindAbsolute},
-		"cc2026-07_weekly-date.txt":    {FamilyWeeklyLimit, ResetKindDateTime},
-		"cc2026-07_extra-relative.txt": {FamilyExtraUsage, ResetKindRelative},
-		"cc2026-07_menu-example.txt":   {FamilyHitLimit, ResetKindAbsolute},
-		"cc2026-07_example2.txt":       {FamilyLimitReached, ResetKindRelative},
+		"cc2026-07_5h-iana.txt":        {family: FamilyNHourLimit, kind: ResetKindAbsolute},
+		"cc2026-07_session.txt":        {family: FamilySessionLimit, kind: ResetKindAbsolute},
+		"cc2026-07_weekly-date.txt":    {family: FamilyWeeklyLimit, kind: ResetKindDateTime},
+		"cc2026-07_extra-relative.txt": {family: FamilyExtraUsage, kind: ResetKindRelative},
+		"cc2026-07_menu-example.txt":   {family: FamilyHitLimit, kind: ResetKindAbsolute, timezone: "Europe/London", actionable: true, menu: true},
+		"cc2026-07_example2.txt":       {family: FamilyLimitReached, kind: ResetKindRelative},
 	}
 	for name, expected := range want {
 		data, err := os.ReadFile(filepath.Join("testdata", "claude", "positive", name))
@@ -59,6 +62,10 @@ func TestPositiveClaudeCorpus(t *testing.T) {
 		}
 		if got := ClassifyFamily(string(data)); got != expected.family {
 			t.Errorf("%s family = %q, want %q", name, got, expected.family)
+		}
+		analysis := Analyze(string(data), now)
+		if name == "cc2026-07_menu-example.txt" && (analysis.Actionable != expected.actionable || analysis.MenuVisible != expected.menu || analysis.Reset.Timezone != expected.timezone) {
+			t.Errorf("%s analysis = %#v, want actionable=%v menu=%v timezone=%q", name, analysis, expected.actionable, expected.menu, expected.timezone)
 		}
 	}
 }
