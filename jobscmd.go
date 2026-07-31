@@ -35,7 +35,16 @@ func jobCommand(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	st := store.NewJSONStore(*statePath)
-	file, err := st.Load()
+	var file store.File
+	var err error
+	lockErr := store.WithLock(st, func() error {
+		file, err = st.Load()
+		return nil
+	})
+	if lockErr != nil {
+		fmt.Fprintf(stderr, "error: lock state: %v\n", lockErr)
+		return 1
+	}
 	var corrupt store.CorruptError
 	if err != nil && !errors.As(err, &corrupt) {
 		fmt.Fprintf(stderr, "error: load state: %v\n", err)
@@ -131,25 +140,35 @@ func inspectJob(prefix string, jobs []store.Job, stdout, stderr io.Writer) int {
 }
 
 func cancelJob(prefix string, file store.File, st store.Store, stdout, stderr io.Writer) int {
-	job, err := findJob(prefix, file.Jobs)
-	if err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return 1
-	}
-	if job.State.Terminal() {
-		fmt.Fprintf(stderr, "error: job %s is terminal (%s)\n", job.ID, job.State)
-		return 1
-	}
-	for i := range file.Jobs {
-		if file.Jobs[i].ID == job.ID {
-			file.Jobs[i].State = store.StateCancelled
-			file.Jobs[i].LastValidation = "cancelled by user"
+	var cancelledID string
+	err := store.WithLock(st, func() error {
+		fresh, err := st.Load()
+		if err != nil {
+			return err
 		}
-	}
-	if err := st.Save(file); err != nil {
+		job, err := findJob(prefix, fresh.Jobs)
+		if err != nil {
+			return err
+		}
+		if job.State.Terminal() {
+			return fmt.Errorf("job %s is terminal (%s)", job.ID, job.State)
+		}
+		for i := range fresh.Jobs {
+			if fresh.Jobs[i].ID == job.ID {
+				fresh.Jobs[i].State = store.StateCancelled
+				fresh.Jobs[i].LastValidation = "cancelled by user"
+			}
+		}
+		if err := st.Save(fresh); err != nil {
+			return err
+		}
+		cancelledID = job.ID
+		return nil
+	})
+	if err != nil {
 		fmt.Fprintln(stderr, "error: save state:", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "cancelled %s\n", job.ID)
+	fmt.Fprintf(stdout, "cancelled %s\n", cancelledID)
 	return 0
 }

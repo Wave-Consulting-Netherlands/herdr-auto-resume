@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 )
 
@@ -20,6 +21,26 @@ func NewJSONStore(path string) *JSONStore {
 }
 
 func (s *JSONStore) Path() string { return s.path }
+
+// WithLock serializes transactions across watcher and CLI processes using a
+// sidecar lock file next to state.json. syscall.Flock is supported on the
+// Linux and macOS target platforms.
+func (s *JSONStore) WithLock(fn func() error) error {
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(s.path+".lock", os.O_RDWR|os.O_CREATE, 0600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	return fn()
+}
 
 // DefaultPath returns the per-user state path, honoring XDG_STATE_HOME.
 func DefaultPath() string {

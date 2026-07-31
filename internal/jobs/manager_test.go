@@ -151,10 +151,13 @@ func TestValidationRejectsBoxedClaudeRateLimitMenu(t *testing.T) {
 	banner := "⎿ You've hit your limit · resets 5m"
 	menu := banner + "\nOpening your options…\n╭──────────────────────────────╮\n│ What do you want to do?       │\n│ ❯ 1. Stop and wait for limit to reset │\n│   2. Upgrade your plan        │\n│ Enter to confirm · Esc to cancel │\n╰──────────────────────────────╯"
 	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": menu}, Procs: map[string]runtime.ProcessInfo{"p1": {Command: "claude", CWD: "/work"}}}}
-	m, _ := newTestManager(t, rt, Config{Margin: time.Minute}, "job-1")
+	m, st := newTestManager(t, rt, Config{Margin: time.Minute}, "job-1")
 	m.HandleLimit(limitEvent(banner, testNow))
 	m.file.Jobs[0].State = store.StateValidating
 	m.file.Jobs[0].ResumeAtUTC = testNow
+	if err := st.Save(m.file); err != nil {
+		t.Fatal(err)
+	}
 	m.Tick(testNow)
 	job := m.Snapshot()[0]
 	if job.State != store.StateManualRequired {
