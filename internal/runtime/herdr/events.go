@@ -383,5 +383,5 @@ func flushEvents(out chan runtimeapi.Event, pending map[string]runtimeapi.Event,
 var _ runtimeapi.EventSource = (*Socket)(nil)
 
 func paneFromInfo(info paneInfo) runtimeapi.Pane {
-	return runtimeapi.Pane{ID: info.PaneID, TerminalID: info.TerminalID, Title: info.TerminalTitle, Agent: info.Agent}
+	return runtimeapi.Pane{ID: info.PaneID, TerminalID: info.TerminalID, WorkspaceID: info.WorkspaceID, Title: info.TerminalTitle, Agent: info.Agent}
 }

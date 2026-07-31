@@ -15,7 +15,7 @@ func writeCommandState(t *testing.T) string {
 	path := t.TempDir() + "/state.json"
 	st := store.NewJSONStore(path)
 	if err := st.Save(store.File{Version: 1, Jobs: []store.Job{
-		{ID: "abcdefgh-1", PaneID: "w1:p1", State: store.StateWaiting, ResetAtUTC: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC), ResumeAtUTC: time.Date(2026, 7, 31, 12, 1, 0, 0, time.UTC), Attempts: 0},
+		{ID: "abcdefgh-1", PaneID: "w1:p1", TerminalID: "term-1", State: store.StateWaiting, ResetAtUTC: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC), ResumeAtUTC: time.Date(2026, 7, 31, 12, 1, 0, 0, time.UTC), Attempts: 0},
 		{ID: "ijklmnop-2", PaneID: "w1:p2", State: store.StateResumed, ResetAtUTC: time.Date(2026, 7, 31, 11, 0, 0, 0, time.UTC), ResumeAtUTC: time.Date(2026, 7, 31, 11, 1, 0, 0, time.UTC), Attempts: 1},
 	}}); err != nil {
 		t.Fatal(err)
@@ -47,6 +47,9 @@ func TestInspectUniquePrefixAndAmbiguity(t *testing.T) {
 	}
 	if decoded.ID != "abcdefgh-1" {
 		t.Fatalf("inspected job = %#v", decoded)
+	}
+	if decoded.TerminalID != "term-1" || !strings.Contains(out.String(), `"terminal_id": "term-1"`) {
+		t.Fatalf("inspect output = %q, decoded = %#v", out.String(), decoded)
 	}
 	ambiguous := t.TempDir() + "/ambiguous.json"
 	if err := store.NewJSONStore(ambiguous).Save(store.File{Version: 1, Jobs: []store.Job{{ID: "same-a"}, {ID: "same-b"}}}); err != nil {

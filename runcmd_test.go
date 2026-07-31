@@ -186,3 +186,11 @@ func TestFilterPanesIsStrictAndExcludesSelf(t *testing.T) {
 		t.Fatalf("filtered panes = %#v, want %#v", got, want)
 	}
 }
+
+func TestFilterPanesByIdentityKeepsMovedMonitoredTerminal(t *testing.T) {
+	panes := []runtime.Pane{{ID: "w2:p9", TerminalID: "term-1"}, {ID: "w3:p1", TerminalID: "other"}}
+	got, excluded := filterPanesByIdentity(panes, []string{"w1:p1"}, map[string]struct{}{"term-1": {}}, "")
+	if excluded || !reflect.DeepEqual(got, []runtime.Pane{{ID: "w2:p9", TerminalID: "term-1"}}) {
+		t.Fatalf("filtered moved panes = %#v, excluded=%v", got, excluded)
+	}
+}

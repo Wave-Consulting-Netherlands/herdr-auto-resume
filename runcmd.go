@@ -183,6 +183,10 @@ func resolveStatePath(cfg runConfig) string {
 }
 
 func filterPanes(panes []runtimeapi.Pane, requested []string, ownPaneID string) ([]runtimeapi.Pane, bool) {
+	return filterPanesByIdentity(panes, requested, nil, ownPaneID)
+}
+
+func filterPanesByIdentity(panes []runtimeapi.Pane, requested []string, terminalIDs map[string]struct{}, ownPaneID string) ([]runtimeapi.Pane, bool) {
 	wanted := make(map[string]struct{}, len(requested))
 	for _, id := range requested {
 		wanted[id] = struct{}{}
@@ -190,7 +194,9 @@ func filterPanes(panes []runtimeapi.Pane, requested []string, ownPaneID string) 
 	filtered := make([]runtimeapi.Pane, 0, len(panes))
 	excludedOwn := false
 	for _, pane := range panes {
-		if _, ok := wanted[pane.ID]; !ok {
+		_, idWanted := wanted[pane.ID]
+		_, terminalWanted := terminalIDs[pane.TerminalID]
+		if !idWanted && !terminalWanted {
 			continue
 		}
 		if ownPaneID != "" && pane.ID == ownPaneID {
@@ -346,6 +352,12 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Error: none of the requested panes were found")
 		return 1
 	}
+	monitoredTerminalIDs := make(map[string]struct{})
+	for _, pane := range panes {
+		if pane.TerminalID != "" {
+			monitoredTerminalIDs[pane.TerminalID] = struct{}{}
+		}
+	}
 	statePath := resolveStatePath(cfg)
 	fmt.Fprintf(stderr, "state path: %s\n", statePath)
 	coordOpts := make([]coordinator.Option, 0, 2)
@@ -394,7 +406,9 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	defer statusTicker.Stop()
 	eventInbox := make(chan runtimeapi.Event, 64)
 	var eventStream <-chan runtimeapi.Event
+	var eventSource runtimeapi.EventSource
 	if source, ok := rt.(runtimeapi.EventSource); ok {
+		eventSource = source
 		started, startErr := source.StartEvents(ctx, runtimeapi.SubscribeSpec{
 			PaneIDs:    paneIDs(panes),
 			MatchRegex: herdrDetectionMatchRegex,
@@ -409,6 +423,7 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	}
 	detectionTicks := startDetectionPumpWithInbox(ctx, detectionTicker.C, eventStream, eventInbox)
 	var eventChannelOpen = true
+	subscribedPaneIDs := paneIDs(panes)
 	coord.RunLoopWithCadence(ctx, detectionTicks, statusTicker.C, func() ([]runtimeapi.Pane, error) {
 		var snapshot []runtimeapi.Pane
 		var hasSnapshot bool
@@ -423,10 +438,43 @@ func runCommand(args []string, _, stderr io.Writer) int {
 					if event.Kind == runtimeapi.EventResync {
 						snapshot = append([]runtimeapi.Pane(nil), event.Snapshot...)
 						hasSnapshot = true
+						if manager != nil {
+							if err := manager.ReconcilePanes(event.Snapshot); err != nil {
+								fmt.Fprintf(stderr, "warning: reconcile pane identities: %v\n", err)
+							}
+						}
+					} else if event.Kind == runtimeapi.EventPaneMoved && event.Pane.ID != "" {
+						_, monitored := monitoredTerminalIDs[event.Pane.TerminalID]
+						if !monitored {
+							for _, requested := range cfg.Panes {
+								if requested == event.PreviousPaneID {
+									monitored = true
+									break
+								}
+							}
+						}
+						if monitored {
+							if manager != nil {
+								if err := manager.ReassignPane(event.PreviousPaneID, event.Pane); err != nil {
+									fmt.Fprintf(stderr, "warning: reassign pane identity: %v\n", err)
+								}
+							}
+							for i, subscribed := range subscribedPaneIDs {
+								if subscribed == event.PreviousPaneID {
+									subscribedPaneIDs[i] = event.Pane.ID
+								}
+							}
+							if event.Pane.TerminalID != "" {
+								monitoredTerminalIDs[event.Pane.TerminalID] = struct{}{}
+							}
+							if eventSource != nil {
+								eventSource.UpdateSubscribedPanes(append([]string(nil), subscribedPaneIDs...))
+							}
+						}
 					}
 				default:
 					if hasSnapshot {
-						filtered, _ := filterPanes(snapshot, cfg.Panes, selfPaneID)
+						filtered, _ := filterPanesByIdentity(snapshot, cfg.Panes, monitoredTerminalIDs, selfPaneID)
 						return filtered, nil
 					}
 					goto refreshFromRuntime
@@ -438,7 +486,7 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		if err != nil {
 			return nil, err
 		}
-		filtered, _ := filterPanes(all, cfg.Panes, selfPaneID)
+		filtered, _ := filterPanesByIdentity(all, cfg.Panes, monitoredTerminalIDs, selfPaneID)
 		return filtered, nil
 	}, managerTick(manager), stderr)
 	return 0

@@ -34,6 +34,7 @@ type Job struct {
 	ID                string    `json:"id"`
 	Provider          string    `json:"provider"`
 	PaneID            string    `json:"pane_id"`
+	TerminalID        string    `json:"terminal_id,omitempty"`
 	Workspace         string    `json:"workspace"`
 	Agent             string    `json:"agent"`
 	ProcCommand       string    `json:"proc_command"`
