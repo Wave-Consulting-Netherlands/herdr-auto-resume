@@ -323,8 +323,61 @@ the sandbox's read-only default module cache).
   - Soak: scratch socket-transport watcher started post-merge; wD:p1 stays on cli
     transport until the soak is clean.
 
+## Phase 7 code complete — 2026-07-31
+
+- Commits 1–5 implement release provenance, the single-instance run lock, strict YAML
+  configuration, packaging assets, and the final documentation/conformance audit.
+- D-P7-1: minimal read-only YAML, version 1, strict unknown-key rejection, config precedence
+  built-in < file < explicitly set flags, and absent-default parity.
+- D-P7-2: first release is v0.2.0; no prior upstream tags were changed.
+- D-P7-3: Herdr plugin packaging is deferred; the capability inventory and wrapper sketch are
+  in docs/packaging.md.
+- D-P7-4: a Herdr-native TUI is deferred; the daemon/CLI and existing tmux TUI remain.
+- D-P7-5: a non-blocking flock on the absolute state-file .run sidecar is held for the watcher
+  lifetime; off disables it, and the transactional .lock remains separate.
+- D-P7-6: status reset rendering now receives time.Local; Europe/Amsterdam regression coverage
+  closes BACKLOG 2 without changing the store schema.
+- D-P7-7: systemd user service and launchd example provide the two first-class run modes;
+  linger is mandatory on headless hosts.
+
+### BRIEF §20 conformance audit
+
+1. Met — runs against Ubuntu with Herdr, Claude Code, and Codex integration points.
+2. Met — Herdr runtime discovers recognized agents in selected panes.
+3. Met with deviation — monitoring is strict opt-in; there are no runtime enable/disable verbs.
+   Disable means restarting without the pane, intentionally preserving the safe headless model.
+4. Met — committed positive Claude and Codex fixtures are covered.
+5. Met — committed negative fixtures are covered.
+6. Met — reset times persist in UTC and display through the caller-provided local timezone.
+7. Met — waiting jobs persist across watcher restarts with schema 1.
+8. Met — CLI and socket transports handle disconnect/reconnect paths.
+9. Met — provider/process/session validation gates input injection.
+10. Met — upgrade, permission, authentication, and ambiguous menus fail closed.
+11. Met — persistence, fingerprints, and coordinator deduplication prevent duplicate actions.
+12. Met — resume verification requires cleared evidence or changed output.
+13. Met — status, inspect, cancel, doctor, and dry-run commands exist.
+14. Met — logs are useful and do not store full terminal transcripts by default.
+15. Met — unit and integration tests cover parsing, state, persistence, and duplicates.
+16. Met — automated Herdr simulation tests require no real quota exhaustion.
+17. Met — upstream MIT attribution remains in the unmodified LICENSE and fork notice.
+
+Deferred by decision: a Herdr-native TUI; plugin packaging; a BRIEF §12 test subcommand
+(the existing test-pattern and dry-run paths cover the need); and BRIEF §11 logging/notification
+configuration sections.
+
+### Final code gate
+
+    go build ./...
+    go vet ./...
+    go test ./... -race -count=1
+
+All five implementation commits pass the gate with Go 1.26.5, the requested PATH, and the
+temporary Go caches. The systemd verifier emits the host's private-socket bind diagnostic
+while exiting 0; plistlib parses the launchd example. Live drills, merge, CI release dry run,
+and v0.2.0 release remain the orchestrator's commit-6 work.
+
 ## Next task
 
-BRIEF.md Phase 7 — packaging: release binaries under the herdr-auto-resume name
-(goreleaser rename, BACKLOG 4), systemd user service + launchd examples, Herdr-oriented
-TUI rework decision, plugin evaluation. Post-soak: switch wD:p1 to --transport socket.
+The orchestrator should perform PLANS.md commit 6: doctor both transports, live run-lock and
+config-parity drills, optional service migration, merge/CI validation, release v0.2.0, install
+and restart watchers, then record the tested release versions.
