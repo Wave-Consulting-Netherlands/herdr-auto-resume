@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/terminal"
 )
 
 // LimitEvent is re-exported for callers that only need the jobs boundary.
@@ -179,11 +181,17 @@ func (m *Manager) handleLimitLocked(event LimitEvent) bool {
 	if now.IsZero() {
 		now = m.clock()
 	}
-	evidenceHash := hashContent(event.Content)
 	providerName := event.Provider
 	if providerName == "" {
 		providerName = m.cfg.Provider
 	}
+	evidence := event.Evidence
+	if evidence == "" {
+		if current := m.providers.Resolve(event.Pane.Agent, event.Content); current != nil {
+			evidence = current.Analyze(event.Content, now).Evidence
+		}
+	}
+	evidenceHash := hashEvidence(evidence)
 	for _, job := range m.file.Jobs {
 		if job.PaneID != event.Pane.ID {
 			continue
@@ -516,8 +524,16 @@ func (m *Manager) logf(format string, args ...any) {
 	fmt.Fprintf(m.logw, format+"\n", args...)
 }
 
-func hashContent(content string) string {
-	hash := sha256.Sum256([]byte(content))
+func hashEvidence(evidence string) string {
+	lines := strings.Split(terminal.StripANSI(evidence), "\n")
+	normalized := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.Join(strings.Fields(line), " ")
+		if line != "" {
+			normalized = append(normalized, line)
+		}
+	}
+	hash := sha256.Sum256([]byte(strings.Join(normalized, "\n")))
 	return hex.EncodeToString(hash[:])
 }
 

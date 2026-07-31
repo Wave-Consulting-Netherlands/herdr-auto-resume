@@ -38,6 +38,7 @@ type LimitEvent struct {
 	ResetTime  time.Time
 	Spec       detection.ResetSpec
 	Content    string
+	Evidence   string
 	ObservedAt time.Time
 }
 
@@ -189,6 +190,7 @@ func (c *Coordinator) Poll() {
 						ResetTime:  analysis.Reset.ParsedTime,
 						Spec:       analysis.Reset,
 						Content:    content,
+						Evidence:   analysis.Evidence,
 						ObservedAt: now,
 					})
 					if owned {

@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
@@ -29,20 +30,17 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		finish(store.StateManualRequired, "attempt already recorded", true)
 		return
 	}
-	current := m.providerForJob(job)
-	if current == nil {
-		finish(store.StateManualRequired, "unknown provider: "+job.Provider, true)
-		return
-	}
 	panes, err := m.rt.ListPanes()
 	if err != nil {
 		job.LastValidation = "runtime unavailable: " + err.Error()
 		_ = m.updateJob(index, job)
 		return
 	}
+	var candidate runtime.Pane
 	found := false
-	for _, candidate := range panes {
-		if candidate.ID == job.PaneID {
+	for _, pane := range panes {
+		if pane.ID == job.PaneID {
+			candidate = pane
 			found = true
 			break
 		}
@@ -54,6 +52,23 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 	content, err := m.rt.ReadPane(job.PaneID, m.cfg.ReadLines)
 	if err != nil {
 		finish(store.StateManualRequired, "pane read failed: "+err.Error(), true)
+		return
+	}
+	current := m.providers.Resolve(candidate.Agent, content)
+	expectedProvider := job.Provider
+	if expectedProvider == "" {
+		expectedProvider = m.cfg.Provider
+	}
+	if current == nil {
+		reason := fmt.Sprintf("unknown current provider for pane")
+		if strings.TrimSpace(candidate.Agent) != "" {
+			reason = fmt.Sprintf("pane agent hint %q conflicts with job provider %q", candidate.Agent, expectedProvider)
+		}
+		finish(store.StateManualRequired, reason, true)
+		return
+	}
+	if !strings.EqualFold(current.Name(), expectedProvider) {
+		finish(store.StateManualRequired, fmt.Sprintf("provider mismatch: job %q, current pane %q", expectedProvider, current.Name()), true)
 		return
 	}
 	if !current.DetectContent(content) {
@@ -94,7 +109,7 @@ func (m *Manager) verify(index int, job store.Job, now time.Time) {
 			return
 		}
 		analysis := current.Analyze(content, now)
-		if now.Before(job.VerifyDeadlineUTC) && (!analysis.IsLimited || hashContent(content) != job.EvidenceHash) {
+		if now.Before(job.VerifyDeadlineUTC) && (!analysis.IsLimited || (analysis.IsLimited && !analysis.Actionable)) {
 			job.State = store.StateResumed
 			job.LastValidation = "resume verified"
 			job.LastError = ""
