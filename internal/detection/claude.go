@@ -3,6 +3,8 @@ package detection
 import (
 	"regexp"
 	"strings"
+
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/terminal"
 )
 
 // Claude Code UI patterns - multiple approaches for robustness
@@ -86,8 +88,7 @@ func IsIdlePrompt(content string) bool {
 
 // StripANSI removes ANSI escape codes from a string
 func StripANSI(s string) string {
-	ansiPattern := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
-	return ansiPattern.ReplaceAllString(s, "")
+	return terminal.StripANSI(s)
 }
 
 // GetVisibleLines returns non-empty lines from content
