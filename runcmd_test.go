@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
+	herdradapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/herdr"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
 
@@ -19,6 +22,114 @@ func TestParseRunFlagsRequiresExplicitPane(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Usage:") {
 		t.Fatalf("usage output = %q", stderr.String())
+	}
+}
+
+func TestParseRunFlagsDefaultsToCLITransport(t *testing.T) {
+	var stderr bytes.Buffer
+	cfg, err := parseRunFlags([]string{"--pane", "w1:p1"}, &stderr)
+	if err != nil || cfg.Transport != "cli" {
+		t.Fatalf("transport = %q, err = %v; want cli default", cfg.Transport, err)
+	}
+}
+
+func TestParseRunFlagsValidatesSocketTransportSessionAndRuntime(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "unknown transport", args: []string{"--pane", "p1", "--transport", "bogus"}, want: "unsupported transport"},
+		{name: "socket session", args: []string{"--pane", "p1", "--transport", "socket", "--session", "s1"}, want: "--session is unsupported"},
+		{name: "socket tmux", args: []string{"--runtime", "tmux", "--pane", "p1", "--transport", "socket"}, want: "requires --runtime herdr"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			_, err := parseRunFlags(tc.args, &stderr)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, stderr = %q; want %q", err, stderr.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestRuntimeForRunSelectsCLIByDefaultAndSocketExplicitly(t *testing.T) {
+	cli, err := runtimeForRun(runConfig{Runtime: "herdr", Transport: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cli.(*herdradapter.Adapter); !ok {
+		t.Fatalf("default runtime = %T, want CLI adapter", cli)
+	}
+	socket, err := runtimeForRun(runConfig{Runtime: "herdr", Transport: "socket", Socket: "/tmp/fake-herdr.sock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := socket.(*herdradapter.Socket); !ok {
+		t.Fatalf("socket runtime = %T, want socket adapter", socket)
+	}
+}
+
+func TestHerdrDetectionMatchRegexCoversBothProviderAnchors(t *testing.T) {
+	for _, sample := range []string{"limit reached", "You've hit your usage limit", "out of credits", "try again in 5 minutes"} {
+		matched, err := regexp.MatchString(herdrDetectionMatchRegex, sample)
+		if err != nil || !matched {
+			t.Fatalf("regex did not match %q: matched=%v err=%v", sample, matched, err)
+		}
+	}
+}
+
+func TestDetectionEventPumpCoalescesBurstWithoutTicker(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ticker := make(chan time.Time)
+	events := make(chan runtime.Event, 32)
+	ticks := startDetectionPump(ctx, ticker, events)
+	for i := 0; i < 20; i++ {
+		events <- runtime.Event{Kind: runtime.EventOutputMatched, PaneID: "p1"}
+	}
+	select {
+	case <-ticks:
+	case <-time.After(time.Second):
+		t.Fatal("event burst did not produce a detection tick")
+	}
+	select {
+	case <-ticks:
+		t.Fatal("event burst produced more than one immediate detection tick")
+	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+func TestDetectionEventPumpForwardsTickerAndIgnoresNonTriggers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ticker := make(chan time.Time, 1)
+	events := make(chan runtime.Event, 1)
+	ticks := startDetectionPump(ctx, ticker, events)
+	events <- runtime.Event{Kind: runtime.EventPanesChanged}
+	want := time.Unix(9, 0)
+	ticker <- want
+	select {
+	case got := <-ticks:
+		if !got.Equal(want) {
+			t.Fatalf("tick = %v, want %v", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ticker tick was not forwarded")
+	}
+}
+
+func TestRecycleDueRequiresTriggerAndSixtySecondBound(t *testing.T) {
+	base := time.Unix(100, 0)
+	if recycleDue(base, time.Time{}, base.Add(2*time.Minute)) {
+		t.Fatal("recycleDue() = true without a trigger")
+	}
+	if recycleDue(base, base.Add(time.Second), base.Add(59*time.Second)) {
+		t.Fatal("recycleDue() = true before the sixty-second bound")
+	}
+	if !recycleDue(base, base.Add(time.Second), base.Add(time.Minute)) {
+		t.Fatal("recycleDue() = false after a triggered sixty-second interval")
 	}
 }
 
@@ -86,5 +197,13 @@ func TestFilterPanesIsStrictAndExcludesSelf(t *testing.T) {
 	want := []runtime.Pane{{ID: "w3:p1"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("filtered panes = %#v, want %#v", got, want)
+	}
+}
+
+func TestFilterPanesByIdentityKeepsMovedMonitoredTerminal(t *testing.T) {
+	panes := []runtime.Pane{{ID: "w2:p9", TerminalID: "term-1"}, {ID: "w3:p1", TerminalID: "other"}}
+	got, excluded := filterPanesByIdentity(panes, []string{"w1:p1"}, map[string]struct{}{"term-1": {}}, "")
+	if excluded || !reflect.DeepEqual(got, []runtime.Pane{{ID: "w2:p9", TerminalID: "term-1"}}) {
+		t.Fatalf("filtered moved panes = %#v, excluded=%v", got, excluded)
 	}
 }

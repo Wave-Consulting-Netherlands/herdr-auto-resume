@@ -107,6 +107,18 @@ herdr-auto-resume run --pane w1:p1 --providers codex --codex-prompt "Continue th
 herdr-auto-resume run --pane w1:p1 --claude-prompt "continue"
 ```
 
+Headless Herdr runs use the CLI transport by default. The socket transport is opt-in
+and keeps polling as a fallback:
+
+```bash
+herdr-auto-resume run --transport socket --socket ~/.config/herdr/herdr.sock --pane w1:p1
+herdr-auto-resume doctor --transport socket --socket ~/.config/herdr/herdr.sock
+```
+
+Socket mode accepts an explicit `--socket` path or the default socket path only; it
+does not read `HERDR_*` variables. `--session` is intentionally rejected with socket
+mode in Phase 6.
+
 It persists before sending and verifies that the rate limit cleared or the pane evidence
 changed. Use `--dry-run` to exercise the lifecycle without writing pane input.
 

@@ -164,8 +164,15 @@ func TestJSONStoreLoadsSchemaOneFileWithoutPhaseFourFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if got.Version != 1 || len(got.Jobs) != 1 || got.Jobs[0].ResetKind != "" || got.Jobs[0].ResetTimezone != "" || got.Jobs[0].Confidence != "" {
+	if got.Version != 1 || len(got.Jobs) != 1 || got.Jobs[0].TerminalID != "" || got.Jobs[0].ResetKind != "" || got.Jobs[0].ResetTimezone != "" || got.Jobs[0].Confidence != "" {
 		t.Fatalf("old file loaded as %#v, want schema-1 job with empty additive fields", got)
+	}
+	if err := NewJSONStore(path).Save(got); err != nil {
+		t.Fatal(err)
+	}
+	roundTrip, err := NewJSONStore(path).Load()
+	if err != nil || roundTrip.Version != 1 || roundTrip.Jobs[0].TerminalID != "" {
+		t.Fatalf("old file round trip = %#v, err=%v", roundTrip, err)
 	}
 }
 

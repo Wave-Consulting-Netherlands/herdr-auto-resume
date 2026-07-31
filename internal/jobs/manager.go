@@ -207,6 +207,8 @@ func (m *Manager) handleLimitLocked(event LimitEvent) bool {
 		ID:            m.nextID(),
 		Provider:      providerName,
 		PaneID:        event.Pane.ID,
+		TerminalID:    event.Pane.TerminalID,
+		Workspace:     event.Pane.WorkspaceID,
 		Agent:         event.Pane.Agent,
 		DetectedAt:    now.UTC(),
 		RawReset:      event.ResetsRaw,
@@ -277,6 +279,111 @@ func (m *Manager) Tick(now time.Time) {
 // manual-required. It never retries an uncertain RESUMING job.
 func (m *Manager) Reconcile() error {
 	return store.WithLock(m.store, m.reconcileLocked)
+}
+
+// ReassignPane applies a pane-moved event as one complete state transaction.
+// Durable terminal identity wins over the ephemeral public pane id; legacy jobs
+// are updated only when the old pane id identifies exactly one active job.
+func (m *Manager) ReassignPane(previousPaneID string, pane runtime.Pane) error {
+	return store.WithLock(m.store, func() error {
+		loaded, err := m.store.Load()
+		if err != nil {
+			return err
+		}
+		normalizeFile(&loaded)
+		matches := 0
+		for _, job := range loaded.Jobs {
+			if job.PaneID == previousPaneID && !job.State.Terminal() {
+				matches++
+			}
+		}
+		changed := false
+		for i, job := range loaded.Jobs {
+			if job.PaneID != previousPaneID || job.State.Terminal() {
+				continue
+			}
+			if job.TerminalID == "" && matches != 1 {
+				job.State = store.StateManualRequired
+				job.LastError = "pane identity ambiguous after move"
+				job.LastValidation = "pane identity ambiguous"
+				loaded.Jobs[i] = job
+				changed = true
+				continue
+			}
+			if job.TerminalID != "" && job.TerminalID != pane.TerminalID {
+				job.State = store.StateManualRequired
+				job.LastError = "pane identity changed"
+				job.LastValidation = "pane identity changed"
+				loaded.Jobs[i] = job
+				changed = true
+				continue
+			}
+			job.PaneID = pane.ID
+			if pane.WorkspaceID != "" {
+				job.Workspace = pane.WorkspaceID
+			}
+			loaded.Jobs[i] = job
+			changed = true
+		}
+		m.file = loaded
+		m.noteModTime()
+		if !changed {
+			return nil
+		}
+		if err := m.store.Save(loaded); err != nil {
+			return err
+		}
+		m.noteModTime()
+		return nil
+	})
+}
+
+// ReconcilePanes repairs missing public ids when a snapshot contains exactly
+// one pane with a job's durable terminal identity. Ambiguous and legacy cases
+// remain untouched for the normal validation path to classify safely.
+func (m *Manager) ReconcilePanes(panes []runtime.Pane) error {
+	return store.WithLock(m.store, func() error {
+		loaded, err := m.store.Load()
+		if err != nil {
+			return err
+		}
+		normalizeFile(&loaded)
+		changed := false
+		for i, job := range loaded.Jobs {
+			if job.State.Terminal() || job.TerminalID == "" {
+				continue
+			}
+			present := false
+			matches := make([]runtime.Pane, 0, 1)
+			for _, pane := range panes {
+				if pane.ID == job.PaneID {
+					present = true
+				}
+				if pane.TerminalID == job.TerminalID {
+					matches = append(matches, pane)
+				}
+			}
+			if present || len(matches) != 1 {
+				continue
+			}
+			job.PaneID = matches[0].ID
+			if matches[0].WorkspaceID != "" {
+				job.Workspace = matches[0].WorkspaceID
+			}
+			loaded.Jobs[i] = job
+			changed = true
+		}
+		m.file = loaded
+		m.noteModTime()
+		if !changed {
+			return nil
+		}
+		if err := m.store.Save(loaded); err != nil {
+			return err
+		}
+		m.noteModTime()
+		return nil
+	})
 }
 
 func (m *Manager) reconcileLocked() error {

@@ -18,6 +18,7 @@ import (
 )
 
 type doctorConfig struct {
+	Transport string
 	Bin       string
 	Socket    string
 	Session   string
@@ -30,6 +31,7 @@ type doctorDeps struct {
 	socket     func(string) error
 	home       func() (string, error)
 	newAdapter func(herdradapter.Options, herdradapter.ExecFunc) runtime.Runtime
+	newSocket  func(herdradapter.SocketOptions) *herdradapter.Socket
 }
 
 func defaultDoctorDeps() doctorDeps {
@@ -53,6 +55,9 @@ func defaultDoctorDeps() doctorDeps {
 		newAdapter: func(o herdradapter.Options, run herdradapter.ExecFunc) runtime.Runtime {
 			return herdradapter.NewWithExec(o, run)
 		},
+		newSocket: func(o herdradapter.SocketOptions) *herdradapter.Socket {
+			return herdradapter.NewSocket(o)
+		},
 	}
 }
 
@@ -64,11 +69,24 @@ func parseDoctorFlags(args []string, stderr io.Writer) (doctorConfig, error) {
 		fs.PrintDefaults()
 	}
 	var cfg doctorConfig
+	fs.StringVar(&cfg.Transport, "transport", "cli", "herdr transport: cli or socket")
 	fs.StringVar(&cfg.Bin, "herdr-bin", "herdr", "herdr binary path")
 	fs.StringVar(&cfg.Socket, "socket", "", "herdr socket path")
 	fs.StringVar(&cfg.Session, "session", "", "herdr session")
 	fs.StringVar(&cfg.Workspace, "workspace", "", "herdr workspace")
 	if err := fs.Parse(args); err != nil {
+		fs.Usage()
+		return doctorConfig{}, err
+	}
+	if cfg.Transport != "cli" && cfg.Transport != "socket" {
+		err := fmt.Errorf("unsupported transport %q", cfg.Transport)
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return doctorConfig{}, err
+	}
+	if cfg.Transport == "socket" && cfg.Session != "" {
+		err := errors.New("--session is unsupported with socket transport; use --socket")
+		fmt.Fprintln(stderr, "error:", err)
 		fs.Usage()
 		return doctorConfig{}, err
 	}
@@ -141,6 +159,9 @@ func runDoctorCommand(args []string, out io.Writer, deps doctorDeps) int {
 	cfg, err := parseDoctorFlags(args, out)
 	if err != nil {
 		return 2
+	}
+	if cfg.Transport == "socket" {
+		return runSocketDoctor(cfg, out, deps)
 	}
 	failed := false
 	resolvedBin, err := deps.resolve(cfg.Bin)
@@ -231,6 +252,55 @@ func runDoctorCommand(args []string, out io.Writer, deps doctorDeps) int {
 	if failed {
 		return 1
 	}
+	return 0
+}
+
+func runSocketDoctor(cfg doctorConfig, out io.Writer, deps doctorDeps) int {
+	socketPath := cfg.Socket
+	if socketPath == "" {
+		home, err := deps.home()
+		if err != nil {
+			doctorLine(out, "FAIL", "socket", fmt.Sprintf("find home directory: %v", err))
+			return 1
+		}
+		socketPath = home + "/.config/herdr/herdr.sock"
+	}
+	newSocket := deps.newSocket
+	if newSocket == nil {
+		newSocket = func(o herdradapter.SocketOptions) *herdradapter.Socket { return herdradapter.NewSocket(o) }
+	}
+	client := newSocket(herdradapter.SocketOptions{Path: socketPath})
+	pong, err := client.Ping()
+	if err != nil {
+		doctorLine(out, "FAIL", "ping", err.Error())
+		return 1
+	}
+	if pong.Protocol == 17 {
+		doctorLine(out, "PASS", "ping", fmt.Sprintf("protocol %d", pong.Protocol))
+	} else {
+		doctorLine(out, "WARN", "ping", fmt.Sprintf("protocol %d (expected 17)", pong.Protocol))
+	}
+
+	snapshot, err := client.Snapshot()
+	if err != nil {
+		doctorLine(out, "FAIL", "snapshot", err.Error())
+		return 1
+	}
+	if snapshot.Protocol != 0 && pong.Protocol != 0 && snapshot.Protocol != pong.Protocol {
+		doctorLine(out, "FAIL", "snapshot", fmt.Sprintf("protocol %d disagrees with ping protocol %d", snapshot.Protocol, pong.Protocol))
+		return 1
+	}
+	detail := fmt.Sprintf("decoded %d panes", len(snapshot.Panes))
+	if snapshot.Protocol != 0 {
+		detail += fmt.Sprintf("; protocol %d", snapshot.Protocol)
+	}
+	doctorLine(out, "PASS", "snapshot", detail)
+	if err := client.SubscribeLayout(context.Background()); err != nil {
+		doctorLine(out, "FAIL", "events", err.Error())
+		return 1
+	}
+	doctorLine(out, "PASS", "events", "layout.updated subscription_started")
+	doctorLine(out, "PASS", "socket", socketPath)
 	return 0
 }
 

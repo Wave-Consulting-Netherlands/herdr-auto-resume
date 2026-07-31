@@ -51,7 +51,7 @@ func TestListPanesDecodesEnvelopeAndBuildsArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPanes: %v", err)
 	}
-	if len(panes) != 6 || panes[0] != (runtimeapi.Pane{ID: "w1:p1", Title: "project shell", Agent: "claude"}) {
+	if len(panes) != 6 || panes[0] != (runtimeapi.Pane{ID: "w1:p1", TerminalID: "term_000000000000000", WorkspaceID: "w1", Title: "project shell", Agent: "claude"}) {
 		t.Fatalf("panes = %#v", panes)
 	}
 	if want := []string{"pane", "list", "--workspace", "workspace-1", "--session", "session-1"}; !reflect.DeepEqual(r.args[0], want) {

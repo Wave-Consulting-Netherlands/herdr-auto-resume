@@ -119,7 +119,7 @@ func (a *Adapter) ListPanes() ([]runtimeapi.Pane, error) {
 	}
 	panes := make([]runtimeapi.Pane, 0, len(result.Panes))
 	for _, pane := range result.Panes {
-		panes = append(panes, runtimeapi.Pane{ID: pane.PaneID, Title: pane.TerminalTitle, Agent: pane.Agent})
+		panes = append(panes, runtimeapi.Pane{ID: pane.PaneID, TerminalID: pane.TerminalID, WorkspaceID: pane.WorkspaceID, Title: pane.TerminalTitle, Agent: pane.Agent})
 	}
 	return panes, nil
 }
@@ -161,14 +161,7 @@ func (a *Adapter) SendText(paneID, text string) error {
 func (a *Adapter) SendKeys(paneID string, keys ...string) error {
 	args := []string{"pane", "send-keys", paneID}
 	for _, key := range keys {
-		switch key {
-		case runtimeapi.KeyEscape:
-			args = append(args, "esc")
-		case runtimeapi.KeyEnter:
-			args = append(args, "enter")
-		default:
-			args = append(args, key)
-		}
+		args = append(args, herdrKey(key))
 	}
 	_, err := a.execute(args...)
 	return err

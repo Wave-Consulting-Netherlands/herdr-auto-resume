@@ -269,8 +269,62 @@ All packages passed, including `internal/provider`, `internal/provider/claude`, 
     immediate post-enable poll + 30s-capped detection ticker; full event-driven
     acquisition is Phase 6.
 
-## Next task
+## Pre-Phase 6 handoff
 
 BRIEF.md Phase 6 — Herdr socket client: session.snapshot bootstrap, event
 subscriptions (pane output/agent state — completes the BACKLOG 9 fix), reconnect +
 cache reconciliation, polling fallback retained.
+
+## Phase 6 code complete — 2026-07-31
+
+- Added a dial-per-request Herdr socket Runtime with id echo checks, bounded deadlines,
+  nested pane-read decoding, ping/snapshot, environment isolation, and TerminalID pane
+  identity (CLI and socket transports share the decode model).
+- Added the neutral EventSource capability and long-lived subscription client with
+  dot/underscore decoding, trigger coalescing, retained move/resync events, reconnect
+  bootstrap, and cancellation joining. The run loop feeds the same detection channel as
+  polling; CLI remains the default and polling remains unconditional fallback.
+- Added flock-transactional TerminalID stamping, pane move reassignment, snapshot
+  reconciliation, monitored terminal filtering, and socket-mode doctor checks.
+- Decisions condensed: one request per ordinary connection; one event connection;
+  socket never reads HERDR_*; schema remains version 1 with only Job.TerminalID added;
+  `--session` is rejected with socket mode; real lifecycle/refire behavior remains live
+  probe work.
+
+### Final code gate
+
+```text
+go build ./...                              OK
+go vet ./...                                OK
+go test ./... -race -count=1                OK
+```
+
+All packages passed with Go 1.26.5, `PATH=$HOME/.local/go/bin:$PATH`, and
+`GOCACHE=/tmp/herdr-go-cache` (`GOMODCACHE=/tmp/herdr-go-mod-cache` was required by
+the sandbox's read-only default module cache).
+
+- 2026-07-31, Phase 6 probes + live drills (herdr 0.7.5, socket transport):
+  - **Review fixes during drills:** request ids must be JSON strings (numeric →
+    invalid_request; doctor caught it live) — fixed in socket.go + events.go.
+  - Probes: no output_matched refire within a subscription; new subscription re-matches
+    current content (recycle = primary re-arm, design validated); envelope
+    `{"event":dot-kind,"data"}` confirmed; subscribe replays historical lifecycle
+    events (refresh-triggers only). Recorded in docs/herdr-api.md.
+  - doctor --transport socket: all PASS (ping/protocol 17, snapshot 7 panes,
+    subscription round-trip).
+  - **BACKLOG-9 live acceptance:** clean-window 2s transient banner at --interval 10m →
+    durable WAITING job within ~1s via events (×1); poisoned-window 40s banner → caught
+    via the 30s ticker floor. Poisoned-window <30s transients degrade to the ticker —
+    documented as BACKLOG 10 with a damped-recycle improvement sketch. BACKLOG 9 closed.
+  - Pane-move drill: WAITING job followed wK:p1 → wP:p2 via terminal_id (source
+    workspace closed entirely).
+  - Negative: real codex pane w7:p1, socket transport, 2.5 min → zero jobs.
+  - Live cycle under socket: banner → WAITING → exactly one resume → RESUMED attempts=1.
+  - Soak: scratch socket-transport watcher started post-merge; wD:p1 stays on cli
+    transport until the soak is clean.
+
+## Next task
+
+BRIEF.md Phase 7 — packaging: release binaries under the herdr-auto-resume name
+(goreleaser rename, BACKLOG 4), systemd user service + launchd examples, Herdr-oriented
+TUI rework decision, plugin evaluation. Post-soak: switch wD:p1 to --transport socket.
