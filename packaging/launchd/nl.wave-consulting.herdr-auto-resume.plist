@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Example only; untested. Replace your-user with the launchd user's name. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>nl.wave-consulting.herdr-auto-resume</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/your-user/.local/bin/herdr-auto-resume</string>
+		<string>run</string>
+		<string>--config</string>
+		<string>/Users/your-user/.config/herdr-auto-resume/config.yaml</string>
+		<string>--transport</string>
+		<string>cli</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/Users/your-user/Library/Logs/herdr-auto-resume.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/your-user/Library/Logs/herdr-auto-resume.error.log</string>
+</dict>
+</plist>

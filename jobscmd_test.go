@@ -37,6 +37,22 @@ func TestStatusCommandGoldenShape(t *testing.T) {
 	}
 }
 
+func TestWriteJobStatusUsesProvidedLocationForReset(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Amsterdam")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	writeJobStatus(&out, []store.Job{{
+		ID: "job-1", PaneID: "w1:p1", State: store.StateWaiting,
+		ResetAtUTC:  time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC),
+		ResumeAtUTC: time.Date(2026, 1, 15, 12, 1, 0, 0, time.UTC),
+	}}, loc)
+	if !strings.Contains(out.String(), "2026-01-15T13:00:00+01:00") {
+		t.Fatalf("status = %q, want Europe/Amsterdam reset rendering", out.String())
+	}
+}
+
 func TestInspectUniquePrefixAndAmbiguity(t *testing.T) {
 	path := writeCommandState(t)
 	var out, errOut bytes.Buffer

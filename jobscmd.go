@@ -85,7 +85,7 @@ func jobCommand(args []string, stdout, stderr io.Writer) int {
 
 	switch subcommand {
 	case "status":
-		writeJobStatus(stdout, file.Jobs)
+		writeJobStatus(stdout, file.Jobs, time.Local)
 		return 0
 	case "inspect":
 		return inspectJob(positionals[0], file.Jobs, stdout, stderr)
@@ -113,11 +113,14 @@ func splitJobArgs(args []string) (positionals, flags []string) {
 	return positionals, flags
 }
 
-func writeJobStatus(out io.Writer, jobs []store.Job) {
+func writeJobStatus(out io.Writer, jobs []store.Job, loc *time.Location) {
+	if loc == nil {
+		loc = time.Local
+	}
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "JOB\tPANE\tSTATE\tRESET(local)\tRESUME(UTC)\tATTEMPTS\tERROR\tPROVIDER")
 	for _, job := range jobs {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", shortJobID(job.ID), job.PaneID, job.State, displayTime(job.ResetAtUTC.Local()), displayTime(job.ResumeAtUTC.UTC()), job.Attempts, job.LastError, job.Provider)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", shortJobID(job.ID), job.PaneID, job.State, displayTime(job.ResetAtUTC.In(loc)), displayTime(job.ResumeAtUTC.UTC()), job.Attempts, job.LastError, job.Provider)
 	}
 	_ = w.Flush()
 }
