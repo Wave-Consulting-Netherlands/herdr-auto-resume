@@ -1,0 +1,4 @@
+```text
+■ You've hit your usage limit. Try again at 3:51 PM.
+› Ask Codex to do anything
+```

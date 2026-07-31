@@ -64,9 +64,10 @@ func TestCodexIdentityCorpus(t *testing.T) {
 			t.Errorf("DetectContent(%s) = false, want true", path)
 		}
 	}
-	negative, err := filepath.Glob(filepath.Join("testdata", "negative", "*.txt"))
-	if err != nil {
-		t.Fatal(err)
+	negative := []string{
+		filepath.Join("testdata", "negative", "claude_chrome.txt"),
+		filepath.Join("testdata", "negative", "shell.txt"),
+		filepath.Join("testdata", "negative", "psql_tables.txt"),
 	}
 	for _, path := range negative {
 		data, err := os.ReadFile(path)

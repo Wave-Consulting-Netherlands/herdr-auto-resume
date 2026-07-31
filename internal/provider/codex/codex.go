@@ -47,7 +47,8 @@ func (c *Codex) Name() string { return "codex" }
 // red transcript banner. All chrome checks are line-anchored to avoid prose
 // mentioning the glyphs from becoming provider identity.
 func IsCodex(content string) bool {
-	normalized := terminal.StripANSI(content)
+	lines := liveIdentityLines(content)
+	normalized := strings.Join(lines, "\n")
 	if findBanner(normalized) != "" {
 		return true
 	}
@@ -58,7 +59,7 @@ func IsCodex(content string) bool {
 func (c *Codex) DetectContent(content string) bool { return IsCodex(content) }
 
 func (c *Codex) Analyze(content string, now time.Time) detection.Analysis {
-	return analyzeCore(content, now)
+	return analyzeLive(content, now)
 }
 
 func analyzeCore(content string, now time.Time) detection.Analysis {
@@ -107,6 +108,9 @@ func classifyBanner(line string) detection.Family {
 func (c *Codex) SafeToResume(content string, now time.Time) (bool, string) {
 	if !IsCodex(content) {
 		return false, "pane is not Codex"
+	}
+	if hasBusyLiveTail(content) {
+		return false, "terminal is not in a safe blocked or idle state"
 	}
 	analysis := c.Analyze(content, now)
 	idle := codexComposer.MatchString(terminal.StripANSI(content))
