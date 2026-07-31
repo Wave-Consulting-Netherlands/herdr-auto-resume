@@ -5,8 +5,10 @@ import (
 	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -66,14 +68,15 @@ func WithLogWriter(logw io.Writer) Option {
 }
 
 type Manager struct {
-	rt     runtime.Runtime
-	store  store.Store
-	cfg    Config
-	clock  func() time.Time
-	sleep  func(time.Duration)
-	nextID func() string
-	logw   io.Writer
-	file   store.File
+	rt      runtime.Runtime
+	store   store.Store
+	cfg     Config
+	clock   func() time.Time
+	sleep   func(time.Duration)
+	nextID  func() string
+	logw    io.Writer
+	file    store.File
+	lastMod time.Time
 }
 
 func New(rt runtime.Runtime, st store.Store, cfg Config, opts ...Option) *Manager {
@@ -102,6 +105,7 @@ func New(rt runtime.Runtime, st store.Store, cfg Config, opts ...Option) *Manage
 	} else {
 		m.logf("load state: %v", err)
 	}
+	m.noteModTime()
 	return m
 }
 
@@ -134,6 +138,7 @@ func (m *Manager) Snapshot() []store.Job {
 // HandleLimit implements coordinator.JobSink. It is level-triggered and owns a
 // known-reset episode even when persistence fails only after the attempt to save.
 func (m *Manager) HandleLimit(event LimitEvent) bool {
+	m.reloadIfChanged()
 	if event.ResetTime.IsZero() {
 		return false
 	}
@@ -183,6 +188,7 @@ func (m *Manager) HandleLimit(event LimitEvent) bool {
 		return false
 	}
 	m.file = store.File{Version: 1, Jobs: next}
+	m.noteModTime()
 	if job.State == store.StateFailed {
 		m.logf("job=%s failed: %s", job.ID, job.LastError)
 		m.notify("auto-resume", fmt.Sprintf("job %s failed: %s", job.ID, job.LastError), true)
@@ -195,6 +201,7 @@ func (m *Manager) HandleLimit(event LimitEvent) bool {
 
 // Tick advances waiting jobs and performs validation when their scheduled time arrives.
 func (m *Manager) Tick(now time.Time) {
+	m.reloadIfChanged()
 	for i := range m.file.Jobs {
 		job := m.file.Jobs[i]
 		if job.State.Terminal() {
@@ -215,6 +222,91 @@ func (m *Manager) Tick(now time.Time) {
 			m.verify(i, job, now)
 		}
 	}
+}
+
+// Reconcile reloads durable state and makes an interrupted send explicitly
+// manual-required. It never retries an uncertain RESUMING job.
+func (m *Manager) Reconcile() error {
+	loaded, err := m.store.Load()
+	var corrupt store.CorruptError
+	if err != nil && !errors.As(err, &corrupt) {
+		return err
+	}
+	if loaded.Version == 0 {
+		loaded.Version = 1
+	}
+	if loaded.Jobs == nil {
+		loaded.Jobs = []store.Job{}
+	}
+	m.file = loaded
+	m.noteModTime()
+	if err != nil {
+		m.logf("state recovery warning: %v", err)
+		return nil
+	}
+
+	now := m.clock()
+	changed := false
+	for i := range m.file.Jobs {
+		job := m.file.Jobs[i]
+		switch {
+		case job.State == store.StateResuming:
+			job.State = store.StateManualRequired
+			job.LastError = "watcher restarted during uncertain resume send"
+			job.LastValidation = "reconciled as manual-required"
+			m.file.Jobs[i] = job
+			changed = true
+			m.notify("auto-resume", fmt.Sprintf("job %s requires manual intervention after restart", job.ID), false)
+		case job.State == store.StateWaiting && job.ResumeAtUTC.Sub(now) > m.cfg.MaxHorizon:
+			job.State = store.StateFailed
+			job.LastError = fmt.Sprintf("resume time exceeds maximum horizon of %s", m.cfg.MaxHorizon)
+			m.file.Jobs[i] = job
+			changed = true
+			m.notify("auto-resume", fmt.Sprintf("job %s failed: %s", job.ID, job.LastError), true)
+		}
+	}
+	if changed {
+		if err := m.store.Save(m.file); err != nil {
+			return err
+		}
+		m.noteModTime()
+	}
+	return nil
+}
+
+func (m *Manager) noteModTime() {
+	path := m.store.Path()
+	if path == "" {
+		m.lastMod = time.Time{}
+		return
+	}
+	info, err := os.Stat(path)
+	if err == nil {
+		m.lastMod = info.ModTime()
+	}
+}
+
+func (m *Manager) reloadIfChanged() {
+	path := m.store.Path()
+	if path == "" {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || (!m.lastMod.IsZero() && info.ModTime().Equal(m.lastMod)) {
+		return
+	}
+	loaded, loadErr := m.store.Load()
+	if loaded.Version == 0 {
+		loaded.Version = 1
+	}
+	if loaded.Jobs == nil {
+		loaded.Jobs = []store.Job{}
+	}
+	if loadErr != nil {
+		m.logf("reload state: %v", loadErr)
+	}
+	m.file = loaded
+	m.noteModTime()
 }
 
 func (m *Manager) beginResume(index int, job store.Job, now time.Time) {
@@ -259,6 +351,7 @@ func (m *Manager) updateJob(index int, job store.Job) bool {
 		return false
 	}
 	m.file = store.File{Version: 1, Jobs: next}
+	m.noteModTime()
 	return true
 }
 
