@@ -1,189 +1,197 @@
-# PLANS — Phase 4: Claude Code production support
+# PLANS — Phase 5: Codex provider support
 
-Supersedes the completed Phase 3 plan (see git history / PROGRESS.md). Authoritative for
-BRIEF.md §14 Phase 4. Exit criteria: **all committed positive Claude fixtures detected;
-all committed negative fixtures never trigger; an end-to-end simulated reset resumes.**
+Supersedes the completed Phase 4 plan (git history / PROGRESS.md). Authoritative for
+BRIEF.md §14 Phase 5. Exit criteria: **Codex limit detection and safe resume work
+independently of Claude logic; Claude behavior byte-identical when provider=claude.**
 
-Out of scope: menu navigation, Codex provider, socket client, provider-interface
-extraction, API-overload/backoff handling.
+Out of scope: transient-overload backoff (Codex `stream error … retrying N/M` recognized
+only to REFUSE action), socket client, menu navigation, config file (D-P5-7), rollout-file
+transcript integration (BACKLOG).
 
 Gate per commit: `go build ./... && go vet ./... && go test ./... -race -count=1`
-(Go at `~/.local/go/bin`). Branch: `phase-4-claude-production`. The deployed watcher
-(pane wD:p1, schema-1 state file) must keep working: no flag removals, additive store
-fields only, detection default changes strictly-safer.
+(Go at ~/.local/go/bin). Branch `phase-5-codex-provider`. Deployed watcher (wD:p1,
+schema-1 state, claude jobs): no flag removals, ZERO store schema change, claude-path
+behavior byte-identical. Do not deploy between commits; deploy only after commit 6 +
+live drills.
+
+## Appendix A — Codex limit surface inventory (evidence, 2026-07-31, this host)
+
+Versions: codex-cli 0.146.0 (native binary under ~/.local/lib/node_modules/@openai/codex/
+…/bin/codex), herdr 0.7.5. Evidence sources, cross-confirmed: (1) upstream
+codex-rs/protocol/src/error.rs — banner strings byte-identical in installed binary via
+`strings`; (2) ~/dev/unsnooze (user's prior auto-resume project: src/agents/codex.js,
+src/watchers/codex.js, test/codex.test.js — fixtures captured from a REAL limit on 0.144);
+(3) live captures of w6:p1/w7:p1 + 165MB rollout JSONL.
+
+**A.1 Limit banner:** TUI does NOT exit. One red transcript line `■ {message}`, composer
+stays live. Verbatim bodies:
+- `You've hit your usage limit.` + tail variants
+- `You've hit your usage limit for {limit_name}. Switch to another model now, or try again at {t}.`
+- `You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at {t}.`
+- `You've hit your usage limit. Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus), or try again at {t}.`
+- `You've hit your usage limit. To get more access now, send a request to your admin or try again at {t}.`
+- `You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at {t}.`
+- No-reset variants: `Your workspace is out of credits. Add credits to continue.` /
+  `You hit your spend cap set in your workspace. Increase your spend cap to continue.` (+ owner variants)
+
+**A.2 Reset tails:** same-day ` Try again at 3:51 PM.` (chrono %-I:%M %p, PROCESS-LOCAL
+time, no tz printed, uppercase AM/PM, trailing period); cross-day (weekly)
+` Try again at Feb 23rd, 2026 9:01 PM.` (English ordinal); ` Try again later.`;
+older 0.144 form `Try again in 4 days 20 hours 9 minutes.` (keep for compat).
+
+**A.3 Renders inline in transcript** (`■ ` red line). No footer banner. **No menu.**
+
+**A.4 Chrome (0.146, live):** idle composer `› ` (U+203A ghost text, distinct from
+Claude `>`/`❯`); footer `gpt-5.6-sol xhigh · ~/dev/x · x · main · … · Context 90% left ·
+weekly 93% left` (middle-dot separated, may truncate); turn rule `─ Worked for 15m 04s ──…`;
+working `• Working (12s • esc to interrupt)`; `• ` cells with `└` children;
+`… +9 lines (ctrl + t to view transcript)`.
+
+**A.5 Must-NOT-trigger:** heads-up warning `Heads up, you have less than {N}% of your
+{5h|weekly|monthly} limit left. Run /status for a breakdown.`; overload `⚠ stream error:
+exceeded retry limit, last status: 429 …; retrying 4/5 in 1.471s`; auth/upgrade prompts.
+
+**A.6 Hooks:** none fire on usage limit (confirmed in unsnooze). Structured signal exists
+only in rollout jsonl `token_count … rate_limits.{primary,secondary}.{used_percent,
+window_minutes,resets_at}` — BACKLOG, not this phase. No positive rollout sample on this
+host (never hit 100%); positive fixtures synthesized from verbatim strings + unsnooze's
+live 0.144 captures, version-stamped.
+
+**A.7 (BRIEF §21 Q1):** banner does not name the window; weekly manifests as the
+cross-day date tail. Families keyed on body (usage-limit/model/credits/spend-cap).
+
+**A.8 (BRIEF §21 Q2):** composer live after limit → typing + Enter resumes in-session.
+**Esc must NOT be sent** (empty-composer Esc primes backtrack; second Esc edits previous
+message). Codex ResumeAction = {KeysBefore: nil, Text: prompt, SubmitKey: enter}. Default
+prompt = BRIEF §9.5 long prompt. `codex resume` CLI targets a new process — out of scope.
 
 ## Design decisions
 
-- **D-P4-1:** new `internal/terminal` = standalone stdlib-only leaf (ANSI/CSI/OSC/DCS
-  stripping, line handling, bounded tail). `detection` imports `terminal`; `jobs` keeps
-  consuming `detection` predicates. Dependency direction `jobs → detection → terminal`.
-  Arch test walks `../terminal` and asserts stdlib-only.
-- **D-P4-2:** clock injection = explicit `now time.Time` parameter (carries Location →
-  injects clock AND local zone; no globals). New API `detection.Analyze(content, now)`;
-  `CheckRateLimitAt(content, now)`; `CheckRateLimit` stays as a `time.Now()` wrapper so
-  the TUI path compiles untouched.
-- **D-P4-3:** menu visibility does NOT block job creation (banner+menu is a genuine
-  limit with parseable reset — see fixture from `example`); it blocks SENDING (legacy
-  immediate-send path skips; validation gate 9 → MANUAL_REQUIRED).
-- **D-P4-4:** `Analysis.Actionable` (live-tail/stale/quoted guard) gates LimitEvent
-  emission and the 15-min periodic path; raw `IsLimited` keeps feeding TUI display.
-- **D-P4-5:** evidence hash stays sha256(raw content) — deployed dedupe keeps matching.
-- **D-P4-6:** `_ "time/tzdata"` imported in main.go (tz database fallback).
-
-## Types (sketch)
-
-```go
-// internal/terminal
-func StripANSI(s string) string  // CSI incl private-mode, OSC(+BEL/ST), DCS, APC/SOS/PM,
-                                 // C0 except \n \t; \r\n→\n, bare \r dropped; \n preserved
-func Lines(s string) []string    // strip + split, keeps empty lines positionally
-func Tail(lines []string, n int) []string
-func TailString(content string, n int) string
-
-// internal/detection resetspec.go
-type ResetKind string   // absolute | local-clock | relative | date-time | unknown
-type Confidence string  // high | medium | low
-type ResetSpec struct { Kind ResetKind; Raw, Timezone string; ParsedTime time.Time; Confidence Confidence }
-func ParseReset(text string, now time.Time) ResetSpec
-
-// internal/detection families.go / live.go
-type Family string // n-hour-limit session-limit weekly-limit usage-limit extra-usage
-                   // hit-limit limit-reached relative-retry ""
-type Analysis struct { IsLimited, Actionable, MenuVisible bool; Family Family;
-                       Reset ResetSpec; Evidence string }
-func Analyze(content string, now time.Time) Analysis
-func HasRateLimitMenu(content string) bool
-// RateLimitStatus gains additive field Spec ResetSpec
-
-// internal/store Job additive fields (schema version stays 1):
-ResetKind, ResetTimezone, Confidence string // json omitempty
-```
-
-## Parsing rules (each = test case; all fake-clock)
-
-- Clock+am/pm → local-clock in now.Location() unless tz follows.
-- Clock+`(IANA)` → LoadLocation → absolute/high. **Fixes live bug: printed tz currently
-  ignored, time parsed host-local.**
-- Clock+abbreviation: fixed map UTC/GMT/BST/CET/CEST/EST/EDT/ET/PST/PDT/PT/CST/CDT/CT/
-  MST/MDT/MT → IANA, medium confidence; unknown abbr → local-clock/low, keep raw tz.
-- 24h clock (`15:30`) unambiguous; 1–12 no am/pm → soonest-future, medium.
-- Passed clock ≤1h grace → keep today; older → NEXT occurrence via date-anchored
-  time.Date (never Add(24h) — DST trap).
-- DST deterministic late-side: spring-forward gap → Go normalizes forward (accept);
-  fall-back repeated hour → if candidate.Add(1h) renders same wall clock take the LATER
-  instant. Tests both 2026 transitions in Europe/Amsterdam + one US zone.
-- Relative: `8m`, `45m`, `in 2 hours`, `in: 3 hours`, `try again in 5 hours`,
-  `wait 30 mins`, `2h 30m`.
-- Date-time (weekly): `Oct 9, 10am`, `Oct 9 at 10am (Europe/Amsterdam)`,
-  `Thursday 3pm`/`Thu 3pm` (next occurrence, today-if-future); year rollover.
-  High confidence with explicit date, medium weekday-only.
-  (Reference parser claude-auto-retry does NOT support date-time — we deliberately do.)
-- Implausible: hour>23, minute>59, `resets 30`, >370 days out → unknown/zero time.
-- Final resume base stored UTC; Raw + Timezone retained. Margin/horizon stay in jobs.
-- Host-tz independence: parse derives location ONLY from now.Location(); test with a
-  non-host zone.
-
-## Detection mechanics (port from claude-auto-retry; see appendix patterns)
-
-- LIMIT line + RESET line paired within 6 lines; bottom-most reset wins.
-- Chrome-aware content tail: strip trailing chrome lines — blank, box rules, boxed input
-  `│ > … │`, bare `❯`/`>` prompt row, `⏵⏵` footer, `? for shortcuts`, `| vX.Y.Z`,
-  usage footer `[Opus … | Max] …`, tool tallies `✓ Bash ×10 | …`,
-  `✓ All todos complete (N/N)`, `□◼✓` todo items, `N tasks (`, `+N completed`,
-  spinner `✻ …`, `Opening your options…`, `╌╌╌`/`───` — every classifier
-  render-anchored, each with a prose-probe negative test (`Press ctrl+c to stop the dev
-  server`, `✓ Fixed the bug`, `Released v0.5.1`, psql `│ … │` table rows survive).
-- Stale-scrollback guard: non-chrome non-menu output BELOW the banner → Actionable=false.
-- Quoted protection: tool-echo mask (`⏺`/`●`/`∙` `Name(` headers + their `⎿`/`└`/indented
-  children, computed over full read then sliced), fenced code blocks, `> ` quotes.
-  **Load-bearing exception:** a `⎿` banner NOT governed by a `Name(` header is LIVE
-  (Claude renders the real banner as a `⎿` child of an interrupted tool call — pinned by
-  the `example` fixture).
-- Menu: `What do you want to do?` + option lines `^\s*❯?\s*\d+\.\s` + (`Stop and wait
-  for limit to reset` | `Enter to confirm` | `Esc to cancel`), live tail only.
-- `IsIdlePrompt` refinement (closes BACKLOG 3): bare `❯` prompt glyph no longer vetoes;
-  only menu-shaped `❯ N.` lines / menu blocks do.
+- **D-P5-1:** new `internal/provider` (interface+registry), `internal/provider/claude`
+  (thin delegation to detection — NOTHING moves out of internal/detection),
+  `internal/provider/codex` (new analyzer; reuses internal/terminal +
+  detection.ParseReset/ResetSpec/Analysis). Deps: jobs → provider → detection → terminal;
+  coordinator → provider. Codex fills Analysis with MenuVisible=false always.
+- **D-P5-2 interface:**
+  ```go
+  type ResumeAction struct { KeysBefore []string; Text string; SubmitKey string }
+  type Provider interface {
+      Name() string
+      DetectContent(content string) bool                        // gate 6
+      Analyze(content string, now time.Time) detection.Analysis
+      SafeToResume(content string, now time.Time) (bool, string) // gate 9 + reason
+      ResumeAction() ResumeAction
+      AllowPeriodicNudge() bool // claude true; codex false
+  }
+  ```
+  (BRIEF §7.1's DetectProcess/BuildResumeAction(ctx) simplified: identity checks are
+  provider-neutral in validate.go; action is static per provider.)
+- **D-P5-3 registry, AGENT-HINT WINS:** Pane.Agent set → that provider only, NO content
+  fallback (herdr classification authoritative). Hint empty → content detection over
+  enabled providers, bind only on exactly ONE match; two matches → none (log once).
+  Safety: w7:p1 (codex pane developing unsnooze) prints Claude banners daily — content-
+  wins would send Esc+continue into Codex's backtrack. Failure mode must be "no action".
+- **D-P5-4:** codex.Analyze self-contained: own quote-mask (fences, `> `), codex chrome
+  trim (A.4), bottom-most banner, stale guard, busy/overload guard (`esc to interrupt`,
+  `retrying \d+/\d+`, `stream error` in live tail → Actionable=false). Banner is one line
+  → no line-pairing engine. Reuses terminal.Lines/Tail + detection.ParseReset only.
+- **D-P5-5 reset normalization → ParseReset:** extract tail after `(?i)(?:or )?try again`;
+  `at`-form → strip `at `, trailing `.`, ordinals (`23rd`→`23`) → ParseReset (local-clock /
+  date-time paths); `in`-form → pass whole multi-unit duration line; `later`/credits/
+  spend-cap → IsLimited=true, Actionable=false (park + notify; NO periodic nudge).
+- **D-P5-6 jobs:** Job.Provider stamped from LimitEvent.Provider (cfg.Provider only as
+  fallback for deployed compat). Gate 6 → prov.DetectContent; gate 9 → prov.SafeToResume;
+  beginResume → coordinator.SendResumeAction(rt, paneID, action, sleep);
+  SendContinueSequence stays exported as the claude wrapper (byte-identical esc→text→enter,
+  same 100ms sleep). Unknown provider in state → MANUAL_REQUIRED, never act. NO schema
+  change.
+- **D-P5-7 config = CLI flags only:** `--providers claude,codex` (default both),
+  `--claude-prompt`, `--codex-prompt`. YAML config deferred to Phase 6/7. Prompts are
+  text-only fields — no shell risk.
+- **D-P5-8 codex SafeToResume:** IsCodex && (banner visible || idle composer `› `) &&
+  no busy/overload marker.
+- **D-P5-9 coordinator:** WithProviders(registry); nil → default claude-only registry
+  (TUI/tmux + every existing test untouched). Poll resolves per pane via Pane.Agent,
+  sets PaneState.Provider (new field; HasClaudeCode keeps name/meaning for TUI), periodic
+  path gated on AllowPeriodicNudge, LimitEvent gains Provider.
+- **D-P5-10 fixtures:** `codex0.146_*` (strings/live-chrome derived), `codex0.144_*`
+  (unsnooze captures). Same sanitization policy as Phase 4; keep `■ › · ─` glyphs exact.
 
 ## Commits
 
-1. **internal/terminal** + arch-test extension + detection.StripANSI delegates +
-   `_ "time/tzdata"` in main.go. Tests: CSI/private-mode/OSC-8/OSC-0/DCS/APC, line
-   preservation, Tail bounds; existing detection tests stay green.
-2. **Clock injection seam** (no behavior change): CheckRateLimitAt/HasResetAt; thread
-   now through parseResetTime; coordinator (`c.clock()`) + jobs (`now`) migrate;
-   characterization tests pin today's exact outputs (minutes format, −1h rollover,
-   fallback empty ResetsAt) under fixed fake now.
-3. **ResetSpec parser** (resetspec.go): full rules above; RateLimitStatus.Spec additive;
-   clock/minutes paths rebuilt on ParseReset with legacy fields mapped identically.
-   Table tests incl. Asia/Kolkata half-hour, Pacific/Auckland day-boundary, both DST
-   transitions, grace window, 12am/12pm, year rollover, implausibles.
-4. **Message families + positive corpus** (families.go + testdata/claude/positive/):
-   families per the type list; widen CheckRateLimitAt regexes (session/weekly/usage/
-   extra-usage/N-hour/try-again); every new pattern gets ≥1 negative probe. Corpus test
-   walks positive dir asserting IsLimited+Family+Kind+ParsedTime per a filename-keyed
-   table. Sanitize root example/example2 into corpus (originals stay). Fixture naming
-   versioned (cc2026-07_*, CC 2.1.220, herdr 0.7.5).
-5. **live.go: chrome/quote/stale guards + Analyze + negative corpus** + IsIdlePrompt
-   refinement + coordinator migration (Analyze, LimitEvent.Spec, Actionable gating,
-   menu-blocks-immediate-send). Negative fixtures: source_code, readme_quote,
-   user_prompt, agent_analysis (sanitized from live wA:p1 capture), command_history,
-   stale_scrollback_newer_output, test_output, non_claude_pane, code_fence_quote,
-   tool_echo_grep, starship_prompt_tail. Negative walk asserts Actionable=false AND
-   !(IsLimited && Actionable && nonzero ParsedTime). MUST land before commit 6.
-6. **Jobs integration**: gate 9 via Analyze (MenuVisible replaces blanket ❯ check;
-   delete manager.go hasMenuInTail); HandleLimit persists ResetKind/ResetTimezone/
-   Confidence; store additive fields + old-file load test; notification body includes
-   pane + human local reset time; log lines gain kind= confidence=; jobs regression
-   tests (starship-tail idle pane now passes gate 9; menu fixture still MANUAL_REQUIRED);
-   optionally fix BACKLOG 2 (status RESET column local time). inspect prints new fields.
-7. **detect subcommand** (BRIEF §12: `detect --file fixture.txt` prints
-   IsLimited/Actionable/MenuVisible/Family/Kind/Timezone/ParsedTime UTC+local/
-   Confidence/Evidence; never sends) + docs + PROGRESS/BACKLOG updates.
-   Live E2E (orchestrator, not Codex): weekly-format drill, timezone-format drill
-   (Europe/Amsterdam banner on UTC-parsed clock), negative live drill (BRIEF-quoting
-   pane → zero jobs), deployed-watcher upgrade check (schema-1 state file reconciles).
+1. **Provider abstraction + claude parity (no behavior change).** provider.go,
+   registry.go, provider/claude/claude.go (delegates IsClaudeCode/Analyze; gate-9 body
+   lifted VERBATIM from validate.go; action esc/"continue"/enter; prompt override);
+   coordinator.SendResumeAction (+SendContinueSequence delegates); arch test walks
+   ../provider, forbids provider→{jobs,store,runtime/*,tui,os/exec}. Tests: registry
+   resolution table (hint match, unknown hint→none, no-hint single, no-hint both→none,
+   disabled→none); claude characterization vs direct detection calls (incl. menu +
+   starship fixtures); SendResumeAction key-order equality vs old sequence on Fake.
+2. **Codex corpus + analyzer core.** provider/codex/codex.go (IsCodex, families:
+   usage-limit/model-usage-limit/credits/spend-cap, banner anchors per A.1),
+   reset.go (D-P5-5), testdata/positive/ per A.1×A.2 embedded in real chrome:
+   at-sameday, at-crossday-ordinal, model-switch, pro-upgrade, plus-upgrade,
+   admin-request, later-noreset, credits, spendcap, 0.144 relative-multiunit.
+   Corpus walk asserts IsLimited/Family/Kind/ParsedTime fake-clock (cross-day pinned
+   across year boundary; times pinned in non-host zone). IsCodex positives (sanitized
+   live chrome) + negatives (claude chrome, shell, psql tables). Package-local — not
+   wired until commit 4.
+3. **Codex live-tail guards + negative corpus (BEFORE any wiring).** live.go (chrome
+   trim, quote mask, stale guard, busy guard, Analyze); testdata/negative/:
+   headsup_warning, stream_error_retrying, working_esc_to_interrupt,
+   stale_scrollback_newer_output, claude_pane_content, quoted_in_prose (w7:p1 hazard),
+   code_fence_quote, auth_upgrade_plus, composer_user_typed_banner. Cross-provider BOTH
+   directions: add codex_pane_content.txt to claude negative corpus, assert claude
+   Analyze → Actionable=false. Prose-probe negatives for every chrome classifier.
+4. **Coordinator provider-aware polling.** WithProviders; per-pane resolve (Pane.Agent);
+   prov.Analyze replaces direct detection calls in Poll/checkPaneRateLimit; periodic
+   gated on AllowPeriodicNudge; sendContinue→sendResume(prov.ResumeAction()); test-
+   pattern uses resolved provider action (claude fallback); PaneState.Provider;
+   LimitEvent.Provider. Tests: codex pane full LimitEvent, zero periodic on unknown-
+   reset codex fixture, hint-wins (claude banner in Agent=codex pane → zero events),
+   no-hint ambiguity, existing claude coordinator tests green unmodified.
+5. **Jobs provider-aware.** Registry option; HandleLimit stamps event.Provider (fallback
+   cfg.Provider); gates 6/9 via provider; beginResume via SendResumeAction; unknown
+   provider → MANUAL_REQUIRED; logs gain provider=. Tests: full codex job cycle (exactly
+   one SendText(codex prompt)+enter, ZERO KeyEscape); codex pane replaced by shell →
+   MANUAL_REQUIRED; claude byte-identity (esc→"continue"→enter); pre-Phase-5 schema-1
+   state fixture loads+validates; provider "gemini" in state → MANUAL_REQUIRED.
+6. **CLI wiring + detect --provider + docs.** runcmd flags (--providers,
+   --claude-prompt, --codex-prompt; registry built once for coordinator+jobs);
+   detectcmd --provider claude|codex; status table gains PROVIDER column; README;
+   PROGRESS.md; BACKLOG.md (+rollout resets_at epoch as future signal; credits-park UX).
+   Tests: flag parsing, detect goldens (codex positive + heads-up negative), E2E-style
+   fake-runtime codex full cycle through runCommand components.
+7. **(Orchestrator)** live E2E drills + deploy to wD:p1 + PROGRESS record.
 
-## Raw material
+## Live E2E drills (orchestrator)
 
-- Live captures in scratchpad `p4-fixtures/`: claude_working_chrome.txt (w1:p1),
-  claude_idle_chrome.txt (w4:p1), agent_analysis_hazard.txt (wA:p1), codex_pane.txt
-  (w6:p1). Sanitize before committing: paths → /home/user, project names →
-  example-project, task text → same-shape filler; KEEP all glyphs/box-drawing/wording/
-  indentation; grep for token|key|secret|Bearer|ssh- before commit. Versions: Claude
-  Code 2.1.220, herdr 0.7.5 proto 17.
-
-## Appendix — reference patterns (claude-auto-retry, MIT)
-
-Limit lines: `/(?:hit|exceeded|reached).*(?:your|the)\s*(?:[\w-]+\s+){0,3}limit/i`,
-`/\d+-hour limit/i`, `/limit reached/i`, `/usage limit/i`, `/out of.*usage/i`,
-`/rate limit/i`, `/try again in/i`.
-Reset lines: `/resets?\s+(?:at\s+)?\d{1,2}(?::\d{2})?\s*(?:am|pm)?/i`,
-`/resets?\s+in[:\s]\s*\d/i`, `/try again in \d+\s*(?:hours?|minutes?|h|m)/i`.
-Time extraction: `/resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:\(([^)]+)\))?/i`;
-relative `/(?:try again|wait|resets?\s+in)[:\s]\s*(?:for\s+)?(?:in\s+)?(\d+)\s*(hours?|minutes?|mins?|h|m)\b/i`.
-Message examples to cover as fixtures: `5-hour limit reached - resets 3pm (UTC)`,
-`You've hit your limit · resets 3pm (Europe/Dublin)`, `You've hit your session limit ·
-resets 2am (Europe/Zurich)`, `You've hit your weekly limit · resets 9am (Europe/London)`,
-`You've hit your 5-hour limit · resets 3pm (UTC)`, `You've hit your weekly limit ·
-resets Oct 9, 10am`, `Claude usage limit reached. Resets at 2pm`, `You're out of extra
-usage · resets 3pm`, `Please try again in 5 hours`, `usage limit · resets in: 3 hours`,
-`resets in 2 hours`, `wait 30 mins`, `Rate limit hit. Resets at 4pm`, multi-line
-`⚠ You've hit your limit` / `· resets 3pm (UTC)`, menu block `What do you want to do?` /
-`❯ 1. Upgrade your plan` / `2. Stop and wait for limit to reset` / `Enter to confirm ·
-Esc to cancel`.
+1. Codex simulated-banner full cycle: scratch /bin/cat pane staged with a REAL-format
+   banner (`■ You've hit your usage limit. Upgrade to Pro … or try again at H:MM AM.`
+   local time uppercase, trailing period) + codex chrome (composer `› ` + footer) so
+   content detection binds (cat panes carry no agent label). Expect provider=codex,
+   kind=local-clock, restart mid-WAITING, exactly ONE SendText(long prompt)+enter,
+   NO escape, RESUMED attempts=1.
+2. Dry-run cross-day form (`…or try again at Feb 23rd, 2027 9:01 PM.`) → kind=date-time.
+3. Negative hint-wins on REAL codex pane w7:p1 (dry-run, 3 min): zero jobs — echoed/
+   quoted banners fail guards; Claude-looking banners must NOT make claude jobs there.
+4. Negative ambiguity: cat pane with claude banner + codex chrome → both detectors
+   match → no provider → zero jobs (2 min dry-run).
+5. Deployed compat: status/inspect against the real state file (PROVIDER column, claude
+   jobs intact) → then upgrade wD:p1.
 
 ## Risks
 
-1. Fall-back duplicate hour: time.Date picks earlier offset silently — explicit
-   late-side check required or watcher wakes an hour early.
-2. `⎿`-child live banner vs tool-echo mask: header-governed discipline is load-bearing;
-   `example` fixture pins it.
-3. Loose chrome regexes strip real work → stale banner pulled back in; prose-probe
-   table mandatory.
-4. Commit 4 widens regexes before commit 5's liveness guard: keep negative string
-   probes in commit 4; do NOT deploy the binary to wD:p1 between commits 4 and 5.
-5. Gate-9 relaxation only in commit 6, after menu detection proven in 5.
-6. time.Local leakage: location only from now.Location(); non-host-zone test.
-7. Periodic path now gated on Actionable — intended strictly-safer change; note in
-   PROGRESS.
-8. Abbreviation ambiguity (CST): fixed map only, medium confidence, never guess beyond.
+1. Banner anchors land (c2) before guards (c3): package-local until c4; never deploy
+   mid-branch.
+2. `›` vs `>`: codex composer must never satisfy claude IsIdlePrompt — cross-provider
+   negatives pin both directions.
+3. w7:p1 prints limit fixtures daily — hint-wins is load-bearing; drill 3 pins it.
+4. Codex prints process-local time, no tz: accept (same exposure as Claude local-clock);
+   document.
+5. Ordinal/`at` normalization corrupts schedules if wrong: table tests incl. 12:00 AM
+   cross-midnight + Dec→Jan rollover.
+6. Periodic-nudge leak would type into a live composer every 15 min: AllowPeriodicNudge
+   =false + zero-send test.
+7. TUI keeps nil-registry default; constructors stay back-compatible.
+8. Tests constructing jobs.Config{Provider:"claude"} stay green via fallback stamp.
