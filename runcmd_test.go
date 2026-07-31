@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -185,6 +188,37 @@ func TestResolveStatePathAutoOffAndExplicit(t *testing.T) {
 				t.Fatalf("resolveStatePath() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRunCommandFailsOnHeldRunLockBeforeRuntimeConstruction(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	lock, err := store.AcquireRunLock(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Release()
+
+	var stderr bytes.Buffer
+	if got := runCommand([]string{"--pane", "w1:p1", "--state-file", statePath, "--herdr-bin", "/missing/herdr"}, nil, &stderr); got != 1 {
+		t.Fatalf("runCommand exit = %d, want 1; stderr=%q", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "already in use") || !strings.Contains(stderr.String(), filepath.Clean(statePath)) || !strings.Contains(stderr.String(), strconv.Itoa(os.Getpid())) {
+		t.Fatalf("stderr = %q, want run-lock error", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "get own pane") {
+		t.Fatalf("runtime was constructed after lock failure: %q", stderr.String())
+	}
+}
+
+func TestRunCommandStateFileOffDoesNotCreateRunLock(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	var stderr bytes.Buffer
+	if got := runCommand([]string{"--pane", "w1:p1", "--state-file", "off", "--herdr-bin", "/missing/herdr"}, nil, &stderr); got != 1 {
+		t.Fatalf("runCommand exit = %d, want runtime failure 1; stderr=%q", got, stderr.String())
+	}
+	if _, err := os.Stat(statePath + ".run"); !os.IsNotExist(err) {
+		t.Fatalf("off state created run lock: err=%v", err)
 	}
 }
 

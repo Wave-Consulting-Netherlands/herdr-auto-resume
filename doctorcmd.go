@@ -15,6 +15,7 @@ import (
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	herdradapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/herdr"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
 
 type doctorConfig struct {
@@ -23,6 +24,7 @@ type doctorConfig struct {
 	Socket    string
 	Session   string
 	Workspace string
+	StateFile string
 }
 
 type doctorDeps struct {
@@ -74,6 +76,7 @@ func parseDoctorFlags(args []string, stderr io.Writer) (doctorConfig, error) {
 	fs.StringVar(&cfg.Socket, "socket", "", "herdr socket path")
 	fs.StringVar(&cfg.Session, "session", "", "herdr session")
 	fs.StringVar(&cfg.Workspace, "workspace", "", "herdr workspace")
+	fs.StringVar(&cfg.StateFile, "state-file", "auto", "watcher state file path, auto, or off")
 	if err := fs.Parse(args); err != nil {
 		fs.Usage()
 		return doctorConfig{}, err
@@ -162,10 +165,14 @@ func runDoctorCommand(args []string, out io.Writer, deps doctorDeps) int {
 	if err != nil {
 		return 2
 	}
+	watcherOK := reportWatcherLock(out, resolveStatePath(runConfig{Runtime: "herdr", StateFile: cfg.StateFile}))
 	if cfg.Transport == "socket" {
+		if !watcherOK {
+			return 1
+		}
 		return runSocketDoctor(cfg, out, deps)
 	}
-	failed := false
+	failed := !watcherOK
 	resolvedBin, err := deps.resolve(cfg.Bin)
 	if err != nil {
 		doctorLine(out, "FAIL", "binary", fmt.Sprintf("%s is not resolvable: %v", cfg.Bin, err))
@@ -255,6 +262,26 @@ func runDoctorCommand(args []string, out io.Writer, deps doctorDeps) int {
 		return 1
 	}
 	return 0
+}
+
+func reportWatcherLock(out io.Writer, statePath string) bool {
+	if statePath == "off" {
+		doctorLine(out, "INFO", "watcher", "none on off")
+		return true
+	}
+	lock, err := store.AcquireRunLock(statePath)
+	if err == nil {
+		_ = lock.Release()
+		doctorLine(out, "INFO", "watcher", fmt.Sprintf("none on %s", statePath))
+		return true
+	}
+	var held *store.RunLockHeldError
+	if errors.As(err, &held) {
+		doctorLine(out, "INFO", "watcher", fmt.Sprintf("active (pid %s) on %s", held.PID, held.StatePath))
+		return true
+	}
+	doctorLine(out, "FAIL", "watcher", err.Error())
+	return false
 }
 
 func runSocketDoctor(cfg doctorConfig, out io.Writer, deps doctorDeps) int {

@@ -324,6 +324,15 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	if err != nil {
 		return 2
 	}
+	statePath := resolveStatePath(cfg)
+	if statePath != "off" {
+		runLock, lockErr := store.AcquireRunLock(statePath)
+		if lockErr != nil {
+			fmt.Fprintf(stderr, "Error: %v\n", lockErr)
+			return 1
+		}
+		defer runLock.Release()
+	}
 	registry, err := buildProviderRegistry(cfg.Providers, cfg.ClaudePrompt, cfg.CodexPrompt)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
@@ -358,7 +367,6 @@ func runCommand(args []string, _, stderr io.Writer) int {
 			monitoredTerminalIDs[pane.TerminalID] = struct{}{}
 		}
 	}
-	statePath := resolveStatePath(cfg)
 	fmt.Fprintf(stderr, "state path: %s\n", statePath)
 	coordOpts := make([]coordinator.Option, 0, 2)
 	var manager *jobs.Manager
