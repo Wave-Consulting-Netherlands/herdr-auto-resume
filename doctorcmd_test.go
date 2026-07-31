@@ -19,7 +19,15 @@ import (
 
 func startDoctorSocket(t *testing.T, protocol int, acknowledge bool) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "herdr.sock")
+	// t.TempDir() embeds the full test/subtest name; long names push the
+	// socket path past the 108-byte sun_path limit (bind: invalid argument
+	// on CI). Use a short MkdirTemp dir instead.
+	dir, err := os.MkdirTemp("", "hard*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	path := filepath.Join(dir, "s.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatal(err)

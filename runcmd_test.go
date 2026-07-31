@@ -18,6 +18,7 @@ import (
 )
 
 func TestParseRunFlagsRequiresExplicitPane(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // isolate from a real user config
 	var stderr bytes.Buffer
 	_, err := parseRunFlags([]string{"--runtime", "herdr"}, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "at least one --pane") {

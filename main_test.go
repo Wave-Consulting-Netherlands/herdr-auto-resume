@@ -56,6 +56,7 @@ func TestRunCLIUnknownSubcommand(t *testing.T) {
 }
 
 func TestRunCLIRequiresPane(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // isolate from a real user config
 	var stdout, stderr bytes.Buffer
 	if got := runCLI([]string{"run"}, &stdout, &stderr); got != 2 {
 		t.Fatalf("runCLI exit = %d, want 2", got)
