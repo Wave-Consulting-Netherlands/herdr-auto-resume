@@ -53,3 +53,15 @@ run against a real scratch server before changing the recycle policy or declarin
 live acceptance complete.
 
 Reference: [Herdr Socket API](https://herdr.dev/docs/socket-api/).
+
+## Probe results (2026-07-31, herdr 0.7.5, live)
+
+- Request ids MUST be JSON strings; numeric ids → `invalid_request` with empty echoed id.
+- Subscription event envelope confirmed `{"event":"<dot-form kind>","data":{…}}`.
+- `pane.output_matched` fires at-subscribe when current window content matches and does
+  NOT refire within the same subscription; a NEW subscription re-matches current content.
+  Subscription recycling is therefore the primary re-arm mechanism.
+- `events.subscribe` replays a burst of historical lifecycle events (created/layout for
+  panes that may no longer exist) — treat as refresh triggers only, never as state.
+- Detach/reattach of the interactive client: no effect observed on server-side
+  subscriptions (soak will confirm long-idle behavior).

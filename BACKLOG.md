@@ -30,3 +30,11 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
 10. **Default transport flip after soak.** Keep `--transport cli` as the default until
     the explicit socket-mode soak and live drills are clean; then make the default flip
     a small, separately reviewed change.
+10. **Poisoned-window sub-30s transients.** `pane.output_matched` never refires within a
+    subscription and re-matches stale window content at (re)subscribe; a stale banner in
+    the detection window therefore consumes the armed shot, and a NEW banner living
+    <30s degrades to the detection-ticker floor. Live-drilled 2026-07-31: clean-window
+    2s transient caught in ~1s; poisoned-window 40s banner caught via ticker; poisoned
+    <30s missed. Realistic banners live minutes (covered). Improvement: recycle
+    immediately after each trigger-poll with identical-content damping (~5s), shrinking
+    the poisoned-window floor to ~5s.

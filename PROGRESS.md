@@ -303,6 +303,28 @@ All packages passed with Go 1.26.5, `PATH=$HOME/.local/go/bin:$PATH`, and
 `GOCACHE=/tmp/herdr-go-cache` (`GOMODCACHE=/tmp/herdr-go-mod-cache` was required by
 the sandbox's read-only default module cache).
 
+- 2026-07-31, Phase 6 probes + live drills (herdr 0.7.5, socket transport):
+  - **Review fixes during drills:** request ids must be JSON strings (numeric →
+    invalid_request; doctor caught it live) — fixed in socket.go + events.go.
+  - Probes: no output_matched refire within a subscription; new subscription re-matches
+    current content (recycle = primary re-arm, design validated); envelope
+    `{"event":dot-kind,"data"}` confirmed; subscribe replays historical lifecycle
+    events (refresh-triggers only). Recorded in docs/herdr-api.md.
+  - doctor --transport socket: all PASS (ping/protocol 17, snapshot 7 panes,
+    subscription round-trip).
+  - **BACKLOG-9 live acceptance:** clean-window 2s transient banner at --interval 10m →
+    durable WAITING job within ~1s via events (×1); poisoned-window 40s banner → caught
+    via the 30s ticker floor. Poisoned-window <30s transients degrade to the ticker —
+    documented as BACKLOG 10 with a damped-recycle improvement sketch. BACKLOG 9 closed.
+  - Pane-move drill: WAITING job followed wK:p1 → wP:p2 via terminal_id (source
+    workspace closed entirely).
+  - Negative: real codex pane w7:p1, socket transport, 2.5 min → zero jobs.
+  - Live cycle under socket: banner → WAITING → exactly one resume → RESUMED attempts=1.
+  - Soak: scratch socket-transport watcher started post-merge; wD:p1 stays on cli
+    transport until the soak is clean.
+
 ## Next task
 
-orchestrator: probes P1-P3, live drills, soak; then Phase 7 (packaging)
+BRIEF.md Phase 7 — packaging: release binaries under the herdr-auto-resume name
+(goreleaser rename, BACKLOG 4), systemd user service + launchd examples, Herdr-oriented
+TUI rework decision, plugin evaluation. Post-soak: switch wD:p1 to --transport socket.
