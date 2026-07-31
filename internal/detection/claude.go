@@ -70,12 +70,15 @@ func IsIdlePrompt(content string) bool {
 		lines = lines[len(lines)-20:]
 	}
 	for _, line := range lines {
-		if strings.Contains(line, "❯") {
+		if regexp.MustCompile(`❯\s*\d+\.`).MatchString(line) {
 			return false
 		}
 	}
 	for i := len(lines) - 1; i >= 0; i-- {
 		if strings.HasPrefix(lines[i], ">") {
+			return true
+		}
+		if strings.TrimSpace(lines[i]) == "❯" {
 			return true
 		}
 	}

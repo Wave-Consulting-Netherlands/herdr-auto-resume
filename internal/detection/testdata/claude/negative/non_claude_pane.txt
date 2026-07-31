@@ -1,0 +1,5 @@
+┌──────────────┐
+│ worker log   │
+└──────────────┘
+You've hit your limit · resets 3pm (UTC)
+worker process is still running

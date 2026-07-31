@@ -1,0 +1,3 @@
+--- FAIL: TestLimitMessage (0.00s)
+    want: You've hit your limit · resets 3pm (UTC)
+PASS

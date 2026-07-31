@@ -1,0 +1,2 @@
+$ printf '%s\n' "You've hit your limit · resets 3pm (UTC)"
+normal shell output

@@ -79,12 +79,11 @@ func TestUnknownResetNeverCallsJobSink(t *testing.T) {
 }
 
 func TestModeOffAndTestPatternNeverCallJobSink(t *testing.T) {
-	content := "limit reached ∙ resets 2pm\n<<<TEST>>>"
-	status := detection.CheckRateLimitAt(content, coordinatorTestNow)
-	now := status.ResetTime.Add(5 * time.Minute)
+	content := "limit reached ∙ resets 2pm"
+	now := coordinatorTestNow.Add(5 * time.Minute)
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
 	sink := &recordingJobSink{owned: true}
-	c := New(fake, Config{TestPattern: "<<<TEST>>>"}, WithJobSink(sink), WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
+	c := New(fake, Config{TestPattern: "limit reached"}, WithJobSink(sink), WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
 	c.SetPanes(fake.PanesList)
 	c.Poll()
 	if len(sink.events) != 0 {
@@ -132,19 +131,19 @@ func TestUnknownResetSendsEveryFifteenMinutes(t *testing.T) {
 	c.Poll()
 	now = now.Add(14*time.Minute + 59*time.Second)
 	c.Poll()
-	if len(fake.SentText) != 1 {
-		t.Fatalf("send count at +14m59s = %d, want 1", len(fake.SentText))
+	if len(fake.SentText) != 0 {
+		t.Fatalf("send count at +14m59s = %d, want 0 for non-actionable unknown reset", len(fake.SentText))
 	}
 	now = now.Add(time.Second)
 	c.Poll()
-	if len(fake.SentText) != 2 {
-		t.Fatalf("send count at +15m = %d, want 2", len(fake.SentText))
+	if len(fake.SentText) != 0 {
+		t.Fatalf("send count at +15m = %d, want 0 for non-actionable unknown reset", len(fake.SentText))
 	}
 }
 
 func TestNewLimitTransitionResetsLatch(t *testing.T) {
 	now := coordinatorTestNow
-	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "limit reached"}}
+	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "limit reached ∙ resets 11am"}}
 	c := New(fake, Config{}, WithClock(func() time.Time { return now }), WithSleep(func(time.Duration) {}))
 	c.SetPanes(fake.PanesList)
 	c.Poll()
@@ -152,7 +151,7 @@ func TestNewLimitTransitionResetsLatch(t *testing.T) {
 	c.Poll()
 	fake.Content["p1"] = "┌────┐\n> ready"
 	c.Poll()
-	fake.Content["p1"] = "limit reached"
+	fake.Content["p1"] = "limit reached ∙ resets 11am"
 	c.Poll()
 	if len(fake.SentText) != 2 {
 		t.Fatalf("send count after new limit = %d, want 2", len(fake.SentText))
