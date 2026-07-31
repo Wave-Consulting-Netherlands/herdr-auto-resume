@@ -214,7 +214,30 @@ ok  	github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/terminal	
     since Phase 3 deployment.
   - Final gate after fix: 239 tests green incl -race.
 
+## Phase 5 code complete — 2026-07-31
+
+- Added a provider interface and registry with authoritative `Pane.Agent` hint-wins
+  resolution; empty hints require exactly one content match, and ambiguity fails closed.
+- Preserved Claude detection, gate-9 safety behavior, and Escape → `continue` → Enter
+  sequencing with the injected 100 ms sleep; nil registries retain Claude-only defaults.
+- Added evidence-based Codex 0.146/0.144 banner families, reset-tail normalization, live
+  chrome/quote/stale/busy guards, no-menu semantics, Codex prompt → Enter resume, and no
+  periodic nudge.
+- Made coordinator polling and persistent jobs provider-aware without changing the store
+  schema. Unknown provider state becomes MANUAL_REQUIRED; schema-1 empty-provider state
+  falls back to Claude compatibility.
+
+### Final code gate
+
+```text
+go build ./...                              OK
+go vet ./...                                OK
+go test ./... -race -count=1                OK
+```
+
+All packages passed, including `internal/provider`, `internal/provider/claude`, and
+`internal/provider/codex`; the gate ran with Go 1.26.5 and `GOCACHE=/tmp/herdr-go-cache`.
+
 ## Next task
 
-Upgrade the deployed watcher binary (wD:p1) to the Phase 4 build, then BRIEF.md
-Phase 5 (Codex provider: fixtures, lifecycle signals, provider-specific resume).
+Phase 5 live drills + wD:p1 deploy (orchestrator), then BRIEF.md Phase 6 (socket client).

@@ -76,7 +76,8 @@ herdr-auto-resume run --pane w1:p1
 herdr-auto-resume run --pane w1:p1 --pane w2:p1 --interval 5s
 herdr-auto-resume run --pane w1:p1 --dry-run --test-pattern "<<<TEST>>>"
 herdr-auto-resume doctor
-herdr-auto-resume detect --file path/to/pane-capture.txt
+herdr-auto-resume detect --provider claude --file path/to/pane-capture.txt
+herdr-auto-resume detect --provider codex --file path/to/codex-capture.txt
 ```
 
 Use `--herdr-bin`, `--socket`, `--session`, and `--workspace` to select a Herdr
@@ -95,13 +96,24 @@ herdr-auto-resume cancel <job-id-prefix>
 ```
 
 The scheduler validates the pane, foreground process, working directory, and terminal
-state before sending one `Escape` → `continue` → `Enter` sequence. It persists before
-sending and verifies that the rate limit cleared or the pane evidence changed. Use
-`--dry-run` to exercise the lifecycle without writing pane input.
+state before sending a provider-specific resume action. Claude sends `Escape` →
+`continue` → `Enter`; Codex sends the configured continuation prompt → `Enter` and never
+sends Escape. Provider detection defaults to both providers and can be narrowed or
+customized with text-only flags:
 
-`detect --file` is a read-only fixture diagnostic. It prints the Claude limit analysis,
-typed reset kind/timezone/confidence, UTC and local parsed times, and matched evidence;
-it never connects to Herdr or sends pane input.
+```bash
+herdr-auto-resume run --pane w1:p1 --providers claude,codex
+herdr-auto-resume run --pane w1:p1 --providers codex --codex-prompt "Continue the task"
+herdr-auto-resume run --pane w1:p1 --claude-prompt "continue"
+```
+
+It persists before sending and verifies that the rate limit cleared or the pane evidence
+changed. Use `--dry-run` to exercise the lifecycle without writing pane input.
+
+`detect --file` is a read-only fixture diagnostic. Select `--provider claude|codex`; it
+prints the selected provider's limit analysis, typed reset kind/timezone/confidence, UTC
+and local parsed times, and matched evidence. It never connects to Herdr or sends pane
+input.
 
 ### Pane Colors
 

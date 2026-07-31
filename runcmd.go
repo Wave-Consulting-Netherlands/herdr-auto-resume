@@ -8,11 +8,15 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/jobs"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/codex"
 	runtimeapi "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	herdradapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/herdr"
 	tmuxadapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/tmux"
@@ -45,6 +49,9 @@ type runConfig struct {
 	Margin        time.Duration
 	MaxWait       time.Duration
 	VerifyTimeout time.Duration
+	Providers     string
+	ClaudePrompt  string
+	CodexPrompt   string
 }
 
 func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
@@ -70,6 +77,9 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	fs.DurationVar(&cfg.Margin, "margin", time.Minute, "safety margin after reset")
 	fs.DurationVar(&cfg.MaxWait, "max-wait", 192*time.Hour, "maximum scheduled wait horizon")
 	fs.DurationVar(&cfg.VerifyTimeout, "verify-timeout", 90*time.Second, "resume verification timeout")
+	fs.StringVar(&cfg.Providers, "providers", "claude,codex", "enabled providers: claude,codex")
+	fs.StringVar(&cfg.ClaudePrompt, "claude-prompt", claude.New("").ResumeAction().Text, "Claude continuation prompt")
+	fs.StringVar(&cfg.CodexPrompt, "codex-prompt", codex.New("").ResumeAction().Text, "Codex continuation prompt")
 	if err := fs.Parse(args); err != nil {
 		fs.Usage()
 		return runConfig{}, err
@@ -98,8 +108,40 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 		fs.Usage()
 		return runConfig{}, err
 	}
+	if _, err := buildProviderRegistry(cfg.Providers, cfg.ClaudePrompt, cfg.CodexPrompt); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
 	cfg.Panes = append([]string(nil), panes...)
 	return cfg, nil
+}
+
+func buildProviderRegistry(names, claudePrompt, codexPrompt string) (*provider.Registry, error) {
+	var enabled []provider.Provider
+	seen := make(map[string]bool)
+	for _, raw := range strings.Split(names, ",") {
+		name := strings.ToLower(strings.TrimSpace(raw))
+		if name == "" {
+			return nil, errors.New("unsupported provider \"\"")
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		switch name {
+		case "claude":
+			enabled = append(enabled, claude.New(claudePrompt))
+		case "codex":
+			enabled = append(enabled, codex.New(codexPrompt))
+		default:
+			return nil, fmt.Errorf("unsupported provider %q", name)
+		}
+	}
+	if len(enabled) == 0 {
+		return nil, errors.New("at least one provider is required")
+	}
+	return provider.NewRegistry(enabled...), nil
 }
 
 func resolveStatePath(cfg runConfig) string {
@@ -149,6 +191,11 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	if err != nil {
 		return 2
 	}
+	registry, err := buildProviderRegistry(cfg.Providers, cfg.ClaudePrompt, cfg.CodexPrompt)
+	if err != nil {
+		fmt.Fprintf(stderr, "Error: %v\n", err)
+		return 2
+	}
 	rt, err := runtimeForRun(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
@@ -184,7 +231,7 @@ func runCommand(args []string, _, stderr io.Writer) int {
 			VerifyTimeout: cfg.VerifyTimeout,
 			ReadLines:     cfg.Lines,
 			DryRun:        cfg.DryRun,
-		}, jobs.WithLogWriter(stderr))
+		}, jobs.WithLogWriter(stderr), jobs.WithProviders(registry))
 		if err := manager.Reconcile(); err != nil {
 			fmt.Fprintf(stderr, "Error: reconcile state: %v\n", err)
 			return 1
@@ -194,6 +241,7 @@ func runCommand(args []string, _, stderr io.Writer) int {
 			coordinator.WithPostPoll(manager.Tick),
 		)
 	}
+	coordOpts = append(coordOpts, coordinator.WithProviders(registry))
 
 	coord := coordinator.New(rt, coordinator.Config{
 		OwnPaneID:   selfPaneID,

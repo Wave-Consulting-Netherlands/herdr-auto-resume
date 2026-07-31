@@ -14,3 +14,9 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
    packaging (BRIEF Phase 7).
 5. **PATH for Go toolchain** (`~/.local/go/bin`) still per-shell export on this host;
    belongs in the chezmoi-managed dotfiles.
+6. **Codex rollout `resets_at` epoch integration.** Codex rollout JSONL carries structured
+   `rate_limits.*.resets_at` epochs; integrate this as a future signal when rollout
+   transcript support is scheduled, without changing the terminal fallback.
+7. **Codex credits-park UX.** Workspace credits and spend-cap banners are detected and
+   notified as non-actionable parked limits; add an explicit credits/park resolution
+   command when the job acknowledgement workflow is designed.

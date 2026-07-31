@@ -77,9 +77,9 @@ func splitJobArgs(args []string) (positionals, flags []string) {
 
 func writeJobStatus(out io.Writer, jobs []store.Job) {
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "JOB\tPANE\tSTATE\tRESET(local)\tRESUME(UTC)\tATTEMPTS\tERROR")
+	fmt.Fprintln(w, "JOB\tPANE\tSTATE\tRESET(local)\tRESUME(UTC)\tATTEMPTS\tERROR\tPROVIDER")
 	for _, job := range jobs {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", shortJobID(job.ID), job.PaneID, job.State, displayTime(job.ResetAtUTC.Local()), displayTime(job.ResumeAtUTC.UTC()), job.Attempts, job.LastError)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", shortJobID(job.ID), job.PaneID, job.State, displayTime(job.ResetAtUTC.Local()), displayTime(job.ResumeAtUTC.UTC()), job.Attempts, job.LastError, job.Provider)
 	}
 	_ = w.Flush()
 }

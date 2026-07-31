@@ -7,13 +7,16 @@ import (
 	"os"
 	"time"
 
-	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/codex"
 )
 
 func detectCommand(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("detect", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	file := fs.String("file", "", "read pane content from this file")
+	providerName := fs.String("provider", "claude", "provider to analyze: claude or codex")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -26,8 +29,18 @@ func detectCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: read fixture: %v\n", err)
 		return 1
 	}
+	var selected provider.Provider
+	switch *providerName {
+	case "claude":
+		selected = claude.New("")
+	case "codex":
+		selected = codex.New("")
+	default:
+		fmt.Fprintf(stderr, "error: unsupported provider %q\n", *providerName)
+		return 2
+	}
 	now := time.Now()
-	analysis := detection.Analyze(string(content), now)
+	analysis := selected.Analyze(string(content), now)
 	fmt.Fprintf(stdout, "IsLimited=%t\nActionable=%t\nMenuVisible=%t\nFamily=%s\nKind=%s\nTimezone=%s\n", analysis.IsLimited, analysis.Actionable, analysis.MenuVisible, analysis.Family, analysis.Reset.Kind, analysis.Reset.Timezone)
 	if analysis.Reset.ParsedTime.IsZero() {
 		fmt.Fprintln(stdout, "ParsedTimeUTC=-")
