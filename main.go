@@ -9,8 +9,8 @@ import (
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
-	tmuxadapter "github.com/walt-verweij/herdr-auto-resume/internal/runtime/tmux"
-	"github.com/walt-verweij/herdr-auto-resume/internal/tui"
+	tmuxadapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/tmux"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/tui"
 )
 
 var version = "dev"

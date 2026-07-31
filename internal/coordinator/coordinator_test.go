@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/walt-verweij/herdr-auto-resume/internal/detection"
-	"github.com/walt-verweij/herdr-auto-resume/internal/runtime"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 )
 
 func TestKnownResetSendsOnceAfterReset(t *testing.T) {

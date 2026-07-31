@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/walt-verweij/herdr-auto-resume/internal/runtime"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 )
 
 func TestParseRunFlagsRequiresExplicitPane(t *testing.T) {

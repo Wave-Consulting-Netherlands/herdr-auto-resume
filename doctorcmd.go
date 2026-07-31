@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/walt-verweij/herdr-auto-resume/internal/runtime"
-	herdradapter "github.com/walt-verweij/herdr-auto-resume/internal/runtime/herdr"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
+	herdradapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/herdr"
 )
 
 type doctorConfig struct {

@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-const modulePath = "github.com/walt-verweij/herdr-auto-resume"
+const modulePath = "github.com/Wave-Consulting-Netherlands/herdr-auto-resume"
 
 func TestCoreImportHygiene(t *testing.T) {
 	for _, dir := range []string{"../coordinator", "../detection", "../runtime"} {

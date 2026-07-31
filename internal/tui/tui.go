@@ -6,9 +6,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/walt-verweij/herdr-auto-resume/internal/coordinator"
-	runtimeapi "github.com/walt-verweij/herdr-auto-resume/internal/runtime"
-	tmuxadapter "github.com/walt-verweij/herdr-auto-resume/internal/runtime/tmux"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator"
+	runtimeapi "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
+	tmuxadapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/tmux"
 )
 
 const pollInterval = 3 * time.Second

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	runtimeapi "github.com/walt-verweij/herdr-auto-resume/internal/runtime"
+	runtimeapi "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 )
 
 var (

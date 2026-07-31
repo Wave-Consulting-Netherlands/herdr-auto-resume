@@ -9,14 +9,14 @@ branch `master`, tagged locally as `upstream-39ad5ef`).
 Upstream is MIT licensed, "Copyright (c) 2025 Henry Stanley". The `LICENSE` file is
 preserved unmodified. This fork retains upstream attribution per BRIEF.md §6.4 and §20.17.
 
-Fork remote: `https://github.com/walt-verweij/herdr-auto-resume` (origin);
+Fork remote: `https://github.com/Wave-Consulting-Netherlands/herdr-auto-resume` (origin);
 `https://github.com/henryaj/autoclaude` (upstream).
 
 ## Completed
 
 - **Phase 0 (in progress)** — 2026-07-30
   - Go 1.26.5 installed to `~/.local/go` (linux-arm64; host had no Go toolchain).
-  - GitHub fork created: `walt-verweij/herdr-auto-resume`.
+  - GitHub fork created: `Wave-Consulting-Netherlands/herdr-auto-resume`.
   - Repo initialized in `/home/ubuntu/dev/Herdr-auto-resume`; `master` checked out from
     `upstream/master` at `39ad5ef`; upstream tests green on import
     (`go build ./...` + `go test ./...`, detection package 55 assertions).
@@ -31,10 +31,15 @@ Fork remote: `https://github.com/walt-verweij/herdr-auto-resume` (origin);
 
 ## Design decisions
 
-- **Module rename in Phase 0** to `github.com/walt-verweij/herdr-auto-resume`, before any
+- **Module rename in Phase 0** to `github.com/Wave-Consulting-Netherlands/herdr-auto-resume`, before any
   new packages exist, so the rename touches only `go.mod` + 3 import sites instead of every
   later file. Note: `gh auth status` displays the account alias `wave-consulting-nl`, but
   the actual GitHub login (and thus module path owner) is `walt-verweij`.
+  **Superseded 2026-07-31:** repo transferred to the `Wave-Consulting-Netherlands` org and
+  the module renamed to `github.com/Wave-Consulting-Netherlands/herdr-auto-resume` (exact
+  GitHub casing, so the module path always matches the canonical repo URL). GitHub's
+  transfer dropped the fork linkage to `henryaj/autoclaude`; attribution remains in
+  LICENSE/README and the `upstream` remote.
 - `.goreleaser.yml` / CI workflows left untouched this phase; the goreleaser binary name
   still says `autoclaude`. To be revisited in the packaging phase (BRIEF.md Phase 7).
 - Scope of current work order: BRIEF.md Phases 0–2 only (bootstrap, runtime abstraction
@@ -64,26 +69,26 @@ Fork remote: `https://github.com/walt-verweij/herdr-auto-resume` (origin);
 - 2026-07-30, Phase 1 final `go test ./...`:
 
   ```text
-  ?    github.com/walt-verweij/herdr-auto-resume [no test files]
-  ok   github.com/walt-verweij/herdr-auto-resume/internal/arch (cached)
-  ok   github.com/walt-verweij/herdr-auto-resume/internal/coordinator (cached)
-  ok   github.com/walt-verweij/herdr-auto-resume/internal/detection (cached)
-  ok   github.com/walt-verweij/herdr-auto-resume/internal/runtime (cached)
-  ok   github.com/walt-verweij/herdr-auto-resume/internal/runtime/tmux (cached)
-  ?    github.com/walt-verweij/herdr-auto-resume/internal/tui [no test files]
+  ?    github.com/Wave-Consulting-Netherlands/herdr-auto-resume [no test files]
+  ok   github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/arch (cached)
+  ok   github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator (cached)
+  ok   github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection (cached)
+  ok   github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime (cached)
+  ok   github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/tmux (cached)
+  ?    github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/tui [no test files]
   ```
 
 - 2026-07-30, Phase 2 final `go test ./...`:
 
   ```text
-  ok   github.com/walt-verweij/herdr-auto-resume (cached)
-  ok   github.com/walt-verweij/herdr-auto-resume/internal/arch (cached)
-  ok   github.com/walt-verweij/herdr-auto-resume/internal/coordinator (cached)
-  ok   github.com/walt-verweij/herdr-auto-resume/internal/detection (cached)
-  ok   github.com/walt-verweij/herdr-auto-resume/internal/runtime (cached)
-  ok   github.com/walt-verweij/herdr-auto-resume/internal/runtime/herdr (cached)
-  ok   github.com/walt-verweij/herdr-auto-resume/internal/runtime/tmux (cached)
-  ?    github.com/walt-verweij/herdr-auto-resume/internal/tui [no test files]
+  ok   github.com/Wave-Consulting-Netherlands/herdr-auto-resume (cached)
+  ok   github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/arch (cached)
+  ok   github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator (cached)
+  ok   github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection (cached)
+  ok   github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime (cached)
+  ok   github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/herdr (cached)
+  ok   github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/tmux (cached)
+  ?    github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/tui [no test files]
   ```
 
 - 2026-07-30, Phase 2 live E2E on this host (herdr 0.7.5, protocol 17, server running):
