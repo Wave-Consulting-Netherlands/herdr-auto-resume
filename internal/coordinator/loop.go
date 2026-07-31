@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/walt-verweij/herdr-auto-resume/internal/runtime"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 )
 
 // RunLoop refreshes and polls coordinator state once for each supplied tick.

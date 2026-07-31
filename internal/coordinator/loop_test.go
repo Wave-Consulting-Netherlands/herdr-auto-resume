@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/walt-verweij/herdr-auto-resume/internal/runtime"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 )
 
 type signalWriter struct {

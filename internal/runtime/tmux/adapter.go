@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"strings"
 
-	runtimeapi "github.com/walt-verweij/herdr-auto-resume/internal/runtime"
+	runtimeapi "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 )
 
 // Adapter implements the runtime.Runtime interface using tmux commands.

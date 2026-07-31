@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	runtimeapi "github.com/walt-verweij/herdr-auto-resume/internal/runtime"
+	runtimeapi "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 )
 
 type recordedRunner struct {

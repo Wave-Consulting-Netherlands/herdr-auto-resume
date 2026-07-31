@@ -1,4 +1,4 @@
-module github.com/walt-verweij/herdr-auto-resume
+module github.com/Wave-Consulting-Netherlands/herdr-auto-resume
 
 go 1.23
 

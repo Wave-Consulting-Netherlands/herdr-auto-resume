@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/walt-verweij/herdr-auto-resume/internal/coordinator"
-	runtimeapi "github.com/walt-verweij/herdr-auto-resume/internal/runtime"
-	herdradapter "github.com/walt-verweij/herdr-auto-resume/internal/runtime/herdr"
-	tmuxadapter "github.com/walt-verweij/herdr-auto-resume/internal/runtime/tmux"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator"
+	runtimeapi "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
+	herdradapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/herdr"
+	tmuxadapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/tmux"
 )
 
 type stringList []string

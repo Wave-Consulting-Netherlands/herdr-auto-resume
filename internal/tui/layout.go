@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
-	"github.com/walt-verweij/herdr-auto-resume/internal/coordinator"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator"
 )
 
 // Colors for pane rendering - bold, high-contrast

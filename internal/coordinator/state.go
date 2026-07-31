@@ -3,7 +3,7 @@ package coordinator
 import (
 	"time"
 
-	"github.com/walt-verweij/herdr-auto-resume/internal/runtime"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 )
 
 // Mode controls whether a Claude Code pane may be continued automatically.
