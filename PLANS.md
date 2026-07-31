@@ -166,6 +166,32 @@ prompt = BRIEF §9.5 long prompt. `codex resume` CLI targets a new process — o
 
 ## Live E2E drills (orchestrator)
 
+**Gate status: OPEN — live Claude acceptance failed on 2026-07-31.** The deployed
+watcher was alive and targeted `wA:p1` with `--interval 10m --verify-timeout 30m`,
+but no state file/job was created for the visible `resets 10am (UTC)` episode. At
+inspection time, newer output and an idle prompt followed the banner, so `detect`
+returned `IsLimited=false` by the intentional stale-output guard. A manual fail-stop
+`continue` submission succeeded and Herdr reported the pane `working`, isolating the
+observed failure to limit acquisition/scheduling rather than pane input.
+
+The most likely missed-transition mechanism is supported by the current code path:
+startup polls while modes are off, `EnableAll` does not invoke the job sink, and the
+next action-capable poll waits for `--interval`. The exact transition was not
+instrumented. The deployed binary also predates the Phase 5 `detect --provider` CLI,
+but current HEAD retains the same startup ordering, so the design gap still applies.
+
+Before this live gate can close:
+
+1. Claude validates `review.md` finding 8 against current HEAD and chooses the narrow
+   acquisition design without weakening stale-output safety.
+2. Add a failing fake-clock regression where a limit is present during startup and
+   disappears before the first configured ticker event.
+3. Implement the selected immediate post-enable and event/short-cadence acquisition
+   behavior, then pass the normal build/vet/race gate.
+4. Rebuild and install current HEAD, restart `wD:p1`, and repeat the long-interval live
+   drill. Evidence must show one durable job, one resume submission, and terminal
+   `RESUMED` state.
+
 1. Codex simulated-banner full cycle: scratch /bin/cat pane staged with a REAL-format
    banner (`■ You've hit your usage limit. Upgrade to Pro … or try again at H:MM AM.`
    local time uppercase, trailing period) + codex chrome (composer `› ` + footer) so

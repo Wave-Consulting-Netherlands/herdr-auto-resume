@@ -20,3 +20,16 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
 7. **Codex credits-park UX.** Workspace credits and spend-cap banners are detected and
    notified as non-actionable parked limits; add an explicit credits/park resolution
    command when the job acknowledgement workflow is designed.
+8. **Claude review and triage of `review.md`.** Have Claude Code independently validate
+   every severity-ranked finding against the current HEAD, re-run or replace the focused
+   reproductions, identify false positives or duplicates, and convert confirmed findings
+   into an ordered remediation plan with regression tests. Update `PLANS.md` before any
+   implementation changes scope.
+9. **Failed live acceptance: transient Claude limit missed at long poll cadence.** On
+   2026-07-31 the live watcher targeted `wA:p1` with `--interval 10m
+   --verify-timeout 30m`, but created no durable job; once newer output followed the
+   limit banner, detection correctly failed closed as stale. Manual fail-stop submission
+   resumed Claude, isolating the failure to acquisition/scheduling. Preserve the stale
+   guard; design an immediate post-enable action poll plus event-driven or short-cadence
+   limit acquisition. Acceptance requires a fake-clock regression and a repeated live
+   drill that schedules exactly one job before transient evidence disappears.
