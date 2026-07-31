@@ -1,0 +1,155 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
+)
+
+func jobCommand(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: herdr-auto-resume status|inspect|cancel [id-prefix] [--state-file path]")
+		return 2
+	}
+	subcommand := args[0]
+	positionals, flagArgs := splitJobArgs(args[1:])
+	fs := flag.NewFlagSet(subcommand, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	statePath := fs.String("state-file", store.DefaultPath(), "state file path")
+	if err := fs.Parse(flagArgs); err != nil {
+		return 2
+	}
+	if *statePath == "off" {
+		fmt.Fprintln(stderr, "error: jobs require an enabled --state-file")
+		return 2
+	}
+	if len(positionals) > 1 || (subcommand != "status" && len(positionals) != 1) || (subcommand == "status" && len(positionals) != 0) {
+		fmt.Fprintln(stderr, "error: invalid job command arguments")
+		return 2
+	}
+	st := store.NewJSONStore(*statePath)
+	file, err := st.Load()
+	var corrupt store.CorruptError
+	if err != nil && !errors.As(err, &corrupt) {
+		fmt.Fprintf(stderr, "error: load state: %v\n", err)
+		return 1
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: %v\n", err)
+	}
+
+	switch subcommand {
+	case "status":
+		writeJobStatus(stdout, file.Jobs)
+		return 0
+	case "inspect":
+		return inspectJob(positionals[0], file.Jobs, stdout, stderr)
+	case "cancel":
+		return cancelJob(positionals[0], file, st, stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "unknown job subcommand: %s\n", subcommand)
+		return 2
+	}
+}
+
+func splitJobArgs(args []string) (positionals, flags []string) {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--state-file" && i+1 < len(args) {
+			flags = append(flags, args[i], args[i+1])
+			i++
+			continue
+		}
+		if strings.HasPrefix(args[i], "--state-file=") {
+			flags = append(flags, args[i])
+			continue
+		}
+		positionals = append(positionals, args[i])
+	}
+	return positionals, flags
+}
+
+func writeJobStatus(out io.Writer, jobs []store.Job) {
+	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "JOB\tPANE\tSTATE\tRESET(local)\tRESUME(UTC)\tATTEMPTS\tERROR")
+	for _, job := range jobs {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n", shortJobID(job.ID), job.PaneID, job.State, displayTime(job.ResetAtUTC.Local()), displayTime(job.ResumeAtUTC.UTC()), job.Attempts, job.LastError)
+	}
+	_ = w.Flush()
+}
+
+func shortJobID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+func displayTime(value time.Time) string {
+	if value.IsZero() {
+		return "-"
+	}
+	return value.Format(time.RFC3339)
+}
+
+func findJob(prefix string, jobs []store.Job) (*store.Job, error) {
+	var matches []store.Job
+	for _, job := range jobs {
+		if strings.HasPrefix(job.ID, prefix) {
+			matches = append(matches, job)
+		}
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no job matches %q", prefix)
+	}
+	if len(matches) > 1 {
+		return nil, fmt.Errorf("ambiguous job prefix %q", prefix)
+	}
+	job := matches[0]
+	return &job, nil
+}
+
+func inspectJob(prefix string, jobs []store.Job, stdout, stderr io.Writer) int {
+	job, err := findJob(prefix, jobs)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(job); err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	return 0
+}
+
+func cancelJob(prefix string, file store.File, st store.Store, stdout, stderr io.Writer) int {
+	job, err := findJob(prefix, file.Jobs)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	if job.State.Terminal() {
+		fmt.Fprintf(stderr, "error: job %s is terminal (%s)\n", job.ID, job.State)
+		return 1
+	}
+	for i := range file.Jobs {
+		if file.Jobs[i].ID == job.ID {
+			file.Jobs[i].State = store.StateCancelled
+			file.Jobs[i].LastValidation = "cancelled by user"
+		}
+	}
+	if err := st.Save(file); err != nil {
+		fmt.Fprintln(stderr, "error: save state:", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "cancelled %s\n", job.ID)
+	return 0
+}

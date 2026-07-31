@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/jobs"
 	runtimeapi "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	herdradapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/herdr"
 	tmuxadapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/tmux"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
 
 type stringList []string
@@ -29,16 +31,20 @@ func (s *stringList) Set(value string) error {
 }
 
 type runConfig struct {
-	Runtime     string
-	Panes       []string
-	Interval    time.Duration
-	Lines       int
-	DryRun      bool
-	TestPattern string
-	HerdrBin    string
-	Socket      string
-	Session     string
-	Workspace   string
+	Runtime       string
+	Panes         []string
+	Interval      time.Duration
+	Lines         int
+	DryRun        bool
+	TestPattern   string
+	HerdrBin      string
+	Socket        string
+	Session       string
+	Workspace     string
+	StateFile     string
+	Margin        time.Duration
+	MaxWait       time.Duration
+	VerifyTimeout time.Duration
 }
 
 func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
@@ -60,6 +66,10 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	fs.StringVar(&cfg.Socket, "socket", "", "herdr socket path")
 	fs.StringVar(&cfg.Session, "session", "", "herdr session")
 	fs.StringVar(&cfg.Workspace, "workspace", "", "herdr workspace")
+	fs.StringVar(&cfg.StateFile, "state-file", "auto", "persistent job state path, auto, or off")
+	fs.DurationVar(&cfg.Margin, "margin", time.Minute, "safety margin after reset")
+	fs.DurationVar(&cfg.MaxWait, "max-wait", 192*time.Hour, "maximum scheduled wait horizon")
+	fs.DurationVar(&cfg.VerifyTimeout, "verify-timeout", 90*time.Second, "resume verification timeout")
 	if err := fs.Parse(args); err != nil {
 		fs.Usage()
 		return runConfig{}, err
@@ -82,8 +92,24 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 		fs.Usage()
 		return runConfig{}, err
 	}
+	if cfg.Margin < 0 || cfg.MaxWait <= 0 || cfg.VerifyTimeout <= 0 {
+		err := errors.New("--margin must be non-negative; --max-wait and --verify-timeout must be positive")
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
 	cfg.Panes = append([]string(nil), panes...)
 	return cfg, nil
+}
+
+func resolveStatePath(cfg runConfig) string {
+	if cfg.StateFile == "off" || (cfg.StateFile == "auto" && cfg.Runtime == "tmux") {
+		return "off"
+	}
+	if cfg.StateFile == "" || cfg.StateFile == "auto" {
+		return store.DefaultPath()
+	}
+	return cfg.StateFile
 }
 
 func filterPanes(panes []runtimeapi.Pane, requested []string, ownPaneID string) ([]runtimeapi.Pane, bool) {
@@ -146,13 +172,35 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "Error: none of the requested panes were found")
 		return 1
 	}
+	statePath := resolveStatePath(cfg)
+	fmt.Fprintf(stderr, "state path: %s\n", statePath)
+	coordOpts := make([]coordinator.Option, 0, 2)
+	if statePath != "off" {
+		st := store.NewJSONStore(statePath)
+		manager := jobs.New(rt, st, jobs.Config{
+			Provider:      "claude",
+			Margin:        cfg.Margin,
+			MaxHorizon:    cfg.MaxWait,
+			VerifyTimeout: cfg.VerifyTimeout,
+			ReadLines:     cfg.Lines,
+			DryRun:        cfg.DryRun,
+		}, jobs.WithLogWriter(stderr))
+		if err := manager.Reconcile(); err != nil {
+			fmt.Fprintf(stderr, "Error: reconcile state: %v\n", err)
+			return 1
+		}
+		coordOpts = append(coordOpts,
+			coordinator.WithJobSink(manager),
+			coordinator.WithPostPoll(manager.Tick),
+		)
+	}
 
 	coord := coordinator.New(rt, coordinator.Config{
 		OwnPaneID:   selfPaneID,
 		TestPattern: cfg.TestPattern,
 		DryRun:      cfg.DryRun,
 		ReadLines:   cfg.Lines,
-	})
+	}, coordOpts...)
 	coord.SetPanes(panes)
 	coord.Poll()
 	coord.EnableAll()
