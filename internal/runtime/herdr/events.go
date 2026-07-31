@@ -209,11 +209,12 @@ func subscriptionParams(spec runtimeapi.SubscribeSpec) map[string]any {
 
 func (s *Socket) writeRequest(conn net.Conn, method string, params any) (uint64, error) {
 	id := s.nextRequestID()
+	// String id required by herdr 0.7.5 (see call() in socket.go).
 	request := struct {
-		ID     uint64 `json:"id"`
+		ID     string `json:"id"`
 		Method string `json:"method"`
 		Params any    `json:"params"`
-	}{ID: id, Method: method, Params: params}
+	}{ID: fmt.Sprint(id), Method: method, Params: params}
 	payload, err := json.Marshal(request)
 	if err != nil {
 		return 0, fmt.Errorf("encode herdr request: %w", err)
