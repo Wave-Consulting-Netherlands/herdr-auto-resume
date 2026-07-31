@@ -16,6 +16,7 @@ func (c *Coordinator) RunLoop(ctx context.Context, ticks <-chan time.Time, refre
 		logw = io.Discard
 	}
 	lastAction, hadAction := c.LastAction()
+	lastFailure, hadFailure := c.LastFailure()
 	for {
 		select {
 		case <-ctx.Done():
@@ -34,6 +35,14 @@ func (c *Coordinator) RunLoop(ctx context.Context, ticks <-chan time.Time, refre
 			c.Poll()
 			if c.postPoll != nil {
 				c.postPoll(c.clock())
+			}
+
+			failure, hasFailure := c.LastFailure()
+			if hasFailure && (!hadFailure || failure.Time != lastFailure.Time || failure.PaneID != lastFailure.PaneID || failure.Err.Error() != lastFailure.Err.Error()) {
+				lastFailure = failure
+				hadFailure = true
+				fmt.Fprintf(logw, "%s pane=%s resume send failed: %v\n", failure.Time.Format(time.RFC3339), failure.PaneID, failure.Err)
+				_ = c.rt.Notify("auto-resume", fmt.Sprintf("resume send failed pane %s: %v", failure.PaneID, failure.Err))
 			}
 
 			action, ok := c.LastAction()

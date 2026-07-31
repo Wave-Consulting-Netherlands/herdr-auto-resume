@@ -128,6 +128,45 @@ func TestRunLoopNotifiesRealActionOnce(t *testing.T) {
 	}
 }
 
+func TestRunLoopNotifiesResumeSendFailureWithoutSuccessAction(t *testing.T) {
+	fake := &runtime.Fake{
+		PanesList: []runtime.Pane{{ID: "p1"}},
+		Content:   map[string]string{"p1": "┌────┐\n> <<<TEST>>>"},
+		Errs:      map[string]error{"SendText": context.DeadlineExceeded},
+	}
+	c := New(fake, Config{TestPattern: "<<<TEST>>>"})
+	c.SetPanes(fake.PanesList)
+	c.Poll()
+	c.EnableAll()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ticks := make(chan time.Time, 1)
+	log := &signalWriter{writes: make(chan struct{}, 1)}
+	refreshed := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		c.RunLoop(ctx, ticks, func() ([]runtime.Pane, error) {
+			refreshed <- struct{}{}
+			return fake.PanesList, nil
+		}, log)
+		close(done)
+	}()
+	ticks <- time.Unix(6, 0)
+	<-refreshed
+	cancel()
+	<-done
+
+	if len(fake.SentText) != 1 || len(fake.SentKeys) != 1 {
+		t.Fatalf("writes = text %#v keys %#v, want one failed text and no Enter", fake.SentText, fake.SentKeys)
+	}
+	if action, ok := c.LastAction(); ok {
+		t.Fatalf("LastAction = %#v, want no success action", action)
+	}
+	if len(fake.Notes) != 1 || !strings.Contains(fake.Notes[0].Body, "resume send failed") {
+		t.Fatalf("notifications = %#v, want distinct resume failure", fake.Notes)
+	}
+}
+
 func TestRunLoopCallsPostPollWithInjectedClockAfterEachSuccessfulPoll(t *testing.T) {
 	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "plain shell"}}
 	now := time.Unix(42, 0)

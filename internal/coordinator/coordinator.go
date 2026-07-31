@@ -24,6 +24,12 @@ type ActionRecord struct {
 	DryRun bool
 }
 
+type FailureRecord struct {
+	Time   time.Time
+	PaneID string
+	Err    error
+}
+
 // LimitEvent is the complete known-reset evidence observed for one pane poll.
 type LimitEvent struct {
 	Pane       runtime.Pane
@@ -69,17 +75,20 @@ func WithProviders(registry *provider.Registry) Option {
 }
 
 type Coordinator struct {
-	rt         runtime.Runtime
-	cfg        Config
-	clock      func() time.Time
-	sleep      func(time.Duration)
-	states     map[string]PaneState
-	paneOrder  []string
-	lastAction ActionRecord
-	hasAction  bool
-	jobSink    JobSink
-	postPoll   func(now time.Time)
-	providers  *provider.Registry
+	rt          runtime.Runtime
+	cfg         Config
+	clock       func() time.Time
+	sleep       func(time.Duration)
+	states      map[string]PaneState
+	paneOrder   []string
+	lastAction  ActionRecord
+	hasAction   bool
+	lastFailure FailureRecord
+	hasFailure  bool
+	failedPanes map[string]bool
+	jobSink     JobSink
+	postPoll    func(now time.Time)
+	providers   *provider.Registry
 }
 
 func defaultRegistry() *provider.Registry {
@@ -88,12 +97,13 @@ func defaultRegistry() *provider.Registry {
 
 func New(rt runtime.Runtime, cfg Config, opts ...Option) *Coordinator {
 	c := &Coordinator{
-		rt:        rt,
-		cfg:       cfg,
-		clock:     time.Now,
-		sleep:     time.Sleep,
-		states:    make(map[string]PaneState),
-		providers: defaultRegistry(),
+		rt:          rt,
+		cfg:         cfg,
+		clock:       time.Now,
+		sleep:       time.Sleep,
+		states:      make(map[string]PaneState),
+		failedPanes: make(map[string]bool),
+		providers:   defaultRegistry(),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -161,10 +171,12 @@ func (c *Coordinator) Poll() {
 		if !wasLimited && statusLimited {
 			state.ContinueSent = false
 			state.LastPeriodicContinue = time.Time{}
+			delete(c.failedPanes, paneID)
 		}
 		if wasLimited && !statusLimited {
 			state.ContinueSent = false
 			state.LastPeriodicContinue = time.Time{}
+			delete(c.failedPanes, paneID)
 		}
 
 		if state.IsRateLimited && state.Mode == ModeAuto && analysis.Actionable {
@@ -182,15 +194,17 @@ func (c *Coordinator) Poll() {
 					if owned {
 						state.ContinueSent = true
 					}
-				} else if !analysis.MenuVisible && !state.ContinueSent && now.After(state.RateLimitTime) {
-					c.sendResume(paneID, current)
-					state.ContinueSent = true
+				} else if !analysis.MenuVisible && !state.ContinueSent && !c.failedPanes[paneID] && now.After(state.RateLimitTime) {
+					if c.sendResume(paneID, current) == nil {
+						state.ContinueSent = true
+					}
 				}
 			} else {
 				periodicInterval := 15 * time.Minute
-				if current.AllowPeriodicNudge() && !analysis.MenuVisible && (state.LastPeriodicContinue.IsZero() || now.Sub(state.LastPeriodicContinue) >= periodicInterval) {
-					c.sendResume(paneID, current)
-					state.LastPeriodicContinue = now
+				if current.AllowPeriodicNudge() && !analysis.MenuVisible && !c.failedPanes[paneID] && (state.LastPeriodicContinue.IsZero() || now.Sub(state.LastPeriodicContinue) >= periodicInterval) {
+					if c.sendResume(paneID, current) == nil {
+						state.LastPeriodicContinue = now
+					}
 				}
 			}
 		}
@@ -198,9 +212,10 @@ func (c *Coordinator) Poll() {
 		if c.cfg.TestPattern != "" &&
 			strings.Contains(content, c.cfg.TestPattern) &&
 			state.Mode == ModeAuto &&
-			!state.ContinueSent {
-			c.sendResume(paneID, current)
-			state.ContinueSent = true
+			!state.ContinueSent && !c.failedPanes[paneID] {
+			if c.sendResume(paneID, current) == nil {
+				state.ContinueSent = true
+			}
 		}
 		c.states[paneID] = *state
 	}
@@ -257,6 +272,10 @@ func (c *Coordinator) LastAction() (ActionRecord, bool) {
 	return c.lastAction, c.hasAction
 }
 
+func (c *Coordinator) LastFailure() (FailureRecord, bool) {
+	return c.lastFailure, c.hasFailure
+}
+
 func (c *Coordinator) checkPaneRateLimit(state *PaneState) {
 	if state == nil || state.Pane.ID == c.cfg.OwnPaneID {
 		return
@@ -284,14 +303,20 @@ func (c *Coordinator) checkPaneRateLimit(state *PaneState) {
 	state.ContinueSent = false
 }
 
-func (c *Coordinator) sendResume(paneID string, current provider.Provider) {
+func (c *Coordinator) sendResume(paneID string, current provider.Provider) error {
 	if c.cfg.DryRun {
 		c.recordAction(paneID, true)
-		return
+		return nil
 	}
 
-	_ = SendResumeAction(c.rt, paneID, current.ResumeAction(), c.sleep)
+	if err := SendResumeAction(c.rt, paneID, current.ResumeAction(), c.sleep); err != nil {
+		c.failedPanes[paneID] = true
+		c.lastFailure = FailureRecord{Time: c.clock(), PaneID: paneID, Err: err}
+		c.hasFailure = true
+		return err
+	}
 	c.recordAction(paneID, false)
+	return nil
 }
 
 func resetDisplayText(raw string) string {
@@ -313,22 +338,18 @@ func SendResumeAction(rt runtime.Runtime, paneID string, action provider.ResumeA
 	if sleep == nil {
 		sleep = time.Sleep
 	}
-	var firstErr error
 	for _, key := range action.KeysBefore {
-		if err := rt.SendKeys(paneID, key); err != nil && firstErr == nil {
-			firstErr = err
+		if err := rt.SendKeys(paneID, key); err != nil {
+			return err
 		}
 	}
 	if len(action.KeysBefore) > 0 {
 		sleep(100 * time.Millisecond)
 	}
-	if err := rt.SendText(paneID, action.Text); err != nil && firstErr == nil {
-		firstErr = err
+	if err := rt.SendText(paneID, action.Text); err != nil {
+		return err
 	}
-	if err := rt.SendKeys(paneID, action.SubmitKey); err != nil && firstErr == nil {
-		firstErr = err
-	}
-	return firstErr
+	return rt.SendKeys(paneID, action.SubmitKey)
 }
 
 func (c *Coordinator) recordAction(paneID string, dryRun bool) {
