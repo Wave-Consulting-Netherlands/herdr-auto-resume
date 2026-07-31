@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
@@ -66,29 +68,43 @@ func WithLogWriter(logw io.Writer) Option {
 	}
 }
 
+func WithProviders(registry *provider.Registry) Option {
+	return func(m *Manager) {
+		if registry != nil {
+			m.providers = registry
+		}
+	}
+}
+
 type Manager struct {
-	rt      runtime.Runtime
-	store   store.Store
-	cfg     Config
-	clock   func() time.Time
-	sleep   func(time.Duration)
-	nextID  func() string
-	logw    io.Writer
-	file    store.File
-	lastMod time.Time
+	rt        runtime.Runtime
+	store     store.Store
+	cfg       Config
+	clock     func() time.Time
+	sleep     func(time.Duration)
+	nextID    func() string
+	logw      io.Writer
+	file      store.File
+	lastMod   time.Time
+	providers *provider.Registry
+}
+
+func defaultRegistry() *provider.Registry {
+	return provider.NewRegistry(claude.New(""))
 }
 
 func New(rt runtime.Runtime, st store.Store, cfg Config, opts ...Option) *Manager {
 	cfg = withDefaults(cfg)
 	m := &Manager{
-		rt:     rt,
-		store:  st,
-		cfg:    cfg,
-		clock:  time.Now,
-		sleep:  time.Sleep,
-		nextID: uuidv4,
-		logw:   io.Discard,
-		file:   store.File{Version: 1, Jobs: []store.Job{}},
+		rt:        rt,
+		store:     st,
+		cfg:       cfg,
+		clock:     time.Now,
+		sleep:     time.Sleep,
+		nextID:    uuidv4,
+		logw:      io.Discard,
+		file:      store.File{Version: 1, Jobs: []store.Job{}},
+		providers: defaultRegistry(),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -146,6 +162,10 @@ func (m *Manager) HandleLimit(event LimitEvent) bool {
 		now = m.clock()
 	}
 	evidenceHash := hashContent(event.Content)
+	providerName := event.Provider
+	if providerName == "" {
+		providerName = m.cfg.Provider
+	}
 	for _, job := range m.file.Jobs {
 		if job.PaneID != event.Pane.ID {
 			continue
@@ -159,7 +179,7 @@ func (m *Manager) HandleLimit(event LimitEvent) bool {
 	resumeAt := resetAt.Add(m.cfg.Margin)
 	job := store.Job{
 		ID:            m.nextID(),
-		Provider:      m.cfg.Provider,
+		Provider:      providerName,
 		PaneID:        event.Pane.ID,
 		Agent:         event.Pane.Agent,
 		DetectedAt:    now.UTC(),
@@ -192,10 +212,10 @@ func (m *Manager) HandleLimit(event LimitEvent) bool {
 	m.file = store.File{Version: 1, Jobs: next}
 	m.noteModTime()
 	if job.State == store.StateFailed {
-		m.logf("job=%s failed: %s", job.ID, job.LastError)
+		m.logf("job=%s provider=%s failed: %s", job.ID, job.Provider, job.LastError)
 		m.notify("auto-resume", fmt.Sprintf("job %s failed: %s", job.ID, job.LastError), true)
 	} else {
-		m.logf("job=%s scheduled pane=%s resume=%s kind=%s confidence=%s", job.ID, job.PaneID, job.ResumeAtUTC.Format(time.RFC3339), job.ResetKind, job.Confidence)
+		m.logf("job=%s provider=%s scheduled pane=%s resume=%s kind=%s confidence=%s", job.ID, job.Provider, job.PaneID, job.ResumeAtUTC.Format(time.RFC3339), job.ResetKind, job.Confidence)
 		localReset := event.ResetTime.In(now.Location()).Format("2006-01-02 15:04 MST")
 		m.notify("auto-resume", fmt.Sprintf("job %s scheduled for pane %s; reset at %s", job.ID, job.PaneID, localReset), false)
 	}
@@ -312,7 +332,7 @@ func (m *Manager) reloadIfChanged() {
 	m.noteModTime()
 }
 
-func (m *Manager) beginResume(index int, job store.Job, now time.Time) {
+func (m *Manager) beginResume(index int, job store.Job, now time.Time, current provider.Provider) {
 	job.State = store.StateResuming
 	job.AttemptID = m.nextID()
 	job.AttemptAtUTC = now.UTC()
@@ -328,7 +348,7 @@ func (m *Manager) beginResume(index int, job store.Job, now time.Time) {
 		m.logf("job=%s dry-run resume", job.ID)
 		return
 	}
-	if err := coordinator.SendContinueSequence(m.rt, job.PaneID, m.sleep); err != nil {
+	if err := coordinator.SendResumeAction(m.rt, job.PaneID, current.ResumeAction(), m.sleep); err != nil {
 		job.State = store.StateManualRequired
 		job.LastError = "resume send failed: " + err.Error()
 		job.LastValidation = "resume send failed"
@@ -344,6 +364,14 @@ func (m *Manager) beginResume(index int, job store.Job, now time.Time) {
 		m.logf("job=%s resume submitted", job.ID)
 		m.notify("auto-resume", fmt.Sprintf("job %s submitted; verifying", job.ID), false)
 	}
+}
+
+func (m *Manager) providerForJob(job store.Job) provider.Provider {
+	name := job.Provider
+	if name == "" {
+		name = m.cfg.Provider
+	}
+	return m.providers.Resolve(name, "")
 }
 
 func (m *Manager) updateJob(index int, job store.Job) bool {

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
@@ -30,6 +29,11 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		finish(store.StateManualRequired, "attempt already recorded", true)
 		return
 	}
+	current := m.providerForJob(job)
+	if current == nil {
+		finish(store.StateManualRequired, "unknown provider: "+job.Provider, true)
+		return
+	}
 	panes, err := m.rt.ListPanes()
 	if err != nil {
 		job.LastValidation = "runtime unavailable: " + err.Error()
@@ -52,8 +56,8 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		finish(store.StateManualRequired, "pane read failed: "+err.Error(), true)
 		return
 	}
-	if !detection.IsClaudeCode(content) {
-		finish(store.StateManualRequired, "pane is not Claude Code", true)
+	if !current.DetectContent(content) {
+		finish(store.StateManualRequired, "pane is not "+current.Name(), true)
 		return
 	}
 	info, err := m.rt.ProcessInfo(job.PaneID)
@@ -68,24 +72,29 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		finish(store.StateManualRequired, "working directory changed", true)
 		return
 	}
-	status := detection.CheckRateLimitAt(content, now)
-	analysis := detection.Analyze(content, now)
-	idle := detection.IsIdlePrompt(content)
-	if analysis.MenuVisible || (!status.IsLimited && !idle) {
-		finish(store.StateManualRequired, "terminal is not in a safe blocked or idle state", true)
+	if ok, reason := current.SafeToResume(content, now); !ok {
+		finish(store.StateManualRequired, reason, true)
 		return
 	}
 	job.LastValidation = "validation passed"
 	if m.updateJob(index, job) {
-		m.beginResume(index, job, now)
+		m.beginResume(index, job, now, current)
 	}
 }
 
 func (m *Manager) verify(index int, job store.Job, now time.Time) {
 	content, err := m.rt.ReadPane(job.PaneID, m.cfg.ReadLines)
 	if err == nil {
-		status := detection.CheckRateLimitAt(content, now)
-		if now.Before(job.VerifyDeadlineUTC) && (!status.IsLimited || hashContent(content) != job.EvidenceHash) {
+		current := m.providerForJob(job)
+		if current == nil {
+			job.State = store.StateManualRequired
+			job.LastError = "unknown provider: " + job.Provider
+			job.LastValidation = "unknown provider"
+			_ = m.updateJob(index, job)
+			return
+		}
+		analysis := current.Analyze(content, now)
+		if now.Before(job.VerifyDeadlineUTC) && (!analysis.IsLimited || hashContent(content) != job.EvidenceHash) {
 			job.State = store.StateResumed
 			job.LastValidation = "resume verified"
 			job.LastError = ""
