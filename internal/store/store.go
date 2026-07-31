@@ -40,6 +40,9 @@ type Job struct {
 	WorkingDir        string    `json:"working_dir"`
 	DetectedAt        time.Time `json:"detected_at"`
 	RawReset          string    `json:"raw_reset"`
+	ResetKind         string    `json:"reset_kind,omitempty"`
+	ResetTimezone     string    `json:"reset_timezone,omitempty"`
+	Confidence        string    `json:"confidence,omitempty"`
 	ResetAtUTC        time.Time `json:"reset_at_utc"`
 	ResumeAtUTC       time.Time `json:"resume_at_utc"`
 	MarginSecs        int64     `json:"margin_secs"`

@@ -69,8 +69,9 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		return
 	}
 	status := detection.CheckRateLimitAt(content, now)
+	analysis := detection.Analyze(content, now)
 	idle := detection.IsIdlePrompt(content)
-	if hasMenuInTail(content) || (!status.IsLimited && !idle) {
+	if analysis.MenuVisible || (!status.IsLimited && !idle) {
 		finish(store.StateManualRequired, "terminal is not in a safe blocked or idle state", true)
 		return
 	}

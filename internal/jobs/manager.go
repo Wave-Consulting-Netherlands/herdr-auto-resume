@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -165,6 +164,9 @@ func (m *Manager) HandleLimit(event LimitEvent) bool {
 		Agent:         event.Pane.Agent,
 		DetectedAt:    now.UTC(),
 		RawReset:      event.ResetsRaw,
+		ResetKind:     string(event.Spec.Kind),
+		ResetTimezone: event.Spec.Timezone,
+		Confidence:    string(event.Spec.Confidence),
 		ResetAtUTC:    resetAt,
 		ResumeAtUTC:   resumeAt,
 		MarginSecs:    int64(m.cfg.Margin / time.Second),
@@ -193,8 +195,9 @@ func (m *Manager) HandleLimit(event LimitEvent) bool {
 		m.logf("job=%s failed: %s", job.ID, job.LastError)
 		m.notify("auto-resume", fmt.Sprintf("job %s failed: %s", job.ID, job.LastError), true)
 	} else {
-		m.logf("job=%s scheduled pane=%s resume=%s", job.ID, job.PaneID, job.ResumeAtUTC.Format(time.RFC3339))
-		m.notify("auto-resume", fmt.Sprintf("job %s scheduled for pane %s", job.ID, job.PaneID), false)
+		m.logf("job=%s scheduled pane=%s resume=%s kind=%s confidence=%s", job.ID, job.PaneID, job.ResumeAtUTC.Format(time.RFC3339), job.ResetKind, job.Confidence)
+		localReset := event.ResetTime.In(now.Location()).Format("2006-01-02 15:04 MST")
+		m.notify("auto-resume", fmt.Sprintf("job %s scheduled for pane %s; reset at %s", job.ID, job.PaneID, localReset), false)
 	}
 	return true
 }
@@ -386,17 +389,4 @@ func uuidv4() string {
 	bytes[6] = (bytes[6] & 0x0f) | 0x40
 	bytes[8] = (bytes[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16])
-}
-
-func hasMenuInTail(content string) bool {
-	lines := strings.Split(content, "\n")
-	if len(lines) > 20 {
-		lines = lines[len(lines)-20:]
-	}
-	for _, line := range lines {
-		if strings.Contains(line, "❯") {
-			return true
-		}
-	}
-	return false
 }

@@ -154,6 +154,21 @@ func TestJSONStoreToleratesUnknownFields(t *testing.T) {
 	}
 }
 
+func TestJSONStoreLoadsSchemaOneFileWithoutPhaseFourFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	data := []byte(`{"version":1,"jobs":[{"id":"old","provider":"claude","pane_id":"w1:p1","state":"WAITING","reset_at_utc":"2026-07-31T01:00:00Z"}]}`)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewJSONStore(path).Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got.Version != 1 || len(got.Jobs) != 1 || got.Jobs[0].ResetKind != "" || got.Jobs[0].ResetTimezone != "" || got.Jobs[0].Confidence != "" {
+		t.Fatalf("old file loaded as %#v, want schema-1 job with empty additive fields", got)
+	}
+}
+
 func TestDefaultPathHonorsXDGStateHome(t *testing.T) {
 	stateHome := filepath.Join(t.TempDir(), "state")
 	t.Setenv("XDG_STATE_HOME", stateHome)
