@@ -394,10 +394,23 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
   - Tested versions for the release record: herdr 0.7.5 (protocol 17), Claude Code
     2.1.220, codex-cli 0.146.0, Go 1.26.5.
 
-## Next task
+- 2026-07-31, **v0.2.0 released** (L5–L6 complete):
+  - Actions unblock: the repo's fork linkage kept workflows silently parked despite
+    `enabled: true` everywhere; a repo-level Actions disable/enable toggle activated
+    them. Three CI-only fixes followed: unix-socket path over the 108-byte sun_path
+    limit in a doctor test (short MkdirTemp), pane-requirement tests not hermetic
+    against a real user config (XDG_CONFIG_HOME isolation), and goreleaser v2's
+    deprecated `archives.format` → `formats`.
+  - CI green (tests + race + release-dry-run snapshot), tag `v0.2.0` via
+    scripts/release.sh, Release workflow green: 4 tarballs + checksums.txt published.
+  - linux_arm64 asset downloaded, checksum verified, `version` prints
+    `0.2.0 (commit 5b172a1, built 2026-07-31T19:36:04Z, go1.23.12)`; installed to
+    ~/.local/bin; both watchers (wD:p1 production cli+config, wQ:p1 soak socket)
+    restarted on the released binary; doctor all-green.
+  - Tested versions for this release: herdr 0.7.5 (protocol 17), Claude Code 2.1.220,
+    codex-cli 0.146.0; CI toolchain go1.23.12 (go.mod), dev toolchain go1.26.5.
 
-Enable GitHub Actions for the repo (org admin, or scope-refresh gh), confirm CI +
-release-dry-run green on master, then `./scripts/release.sh 0.2.0` and verify the
-released linux_arm64 asset (PLANS.md L5–L6). Post-soak (24–48h clean on wQ:p1):
-switch wD:p1 to `--transport socket`. All BRIEF.md phases 0–7 are otherwise complete;
-remaining follow-ups live in BACKLOG.md.
+## Project status
+
+**All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
+BACKLOG.md. Post-soak (24–48h clean on wQ:p1): switch wD:p1 to `--transport socket`.
