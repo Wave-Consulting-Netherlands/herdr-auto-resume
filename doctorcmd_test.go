@@ -90,8 +90,52 @@ func TestDoctorReportPassesAllChecks(t *testing.T) {
 	if got := runDoctorCommand(nil, &out, passingDoctorDeps()); got != 0 {
 		t.Fatalf("doctor exit = %d, want 0\n%s", got, out.String())
 	}
+	if first := strings.SplitN(out.String(), "\n", 2)[0]; !strings.HasPrefix(first, "INFO version: herdr-auto-resume ") {
+		t.Fatalf("first doctor line = %q, want version info", first)
+	}
 	if strings.Contains(out.String(), "FAIL") || !strings.Contains(out.String(), "PASS binary") || !strings.Contains(out.String(), "PASS adapter") {
 		t.Fatalf("report = %q", out.String())
+	}
+}
+
+func TestDoctorVersionLinePreservesCLIReportBody(t *testing.T) {
+	t.Setenv("HERDR_PANE_ID", "")
+	oldVersion, oldCommit, oldDate := version, commit, date
+	t.Cleanup(func() { version, commit, date = oldVersion, oldCommit, oldDate })
+	version, commit, date = "v0.2.0", "abc1234", "2026-07-31T12:00:00Z"
+
+	var out bytes.Buffer
+	if got := runDoctorCommand(nil, &out, passingDoctorDeps()); got != 0 {
+		t.Fatalf("doctor exit = %d\n%s", got, out.String())
+	}
+	lines := strings.SplitN(out.String(), "\n", 2)
+	if lines[0] != "INFO version: herdr-auto-resume v0.2.0 (abc1234)" {
+		t.Fatalf("version line = %q", lines[0])
+	}
+	wantBody := "PASS binary: /usr/bin/herdr (herdr 0.7.5)\n" +
+		"PASS socket: /home/user/.config/herdr/herdr.sock\n" +
+		"PASS status: protocol 17\n" +
+		"PASS adapter: decoded 1 panes\n" +
+		"PASS schema: valid JSON\n" +
+		"WARN self: HERDR_PANE_ID is unset; not running inside a herdr pane\n"
+	if len(lines) != 2 || lines[1] != wantBody {
+		t.Fatalf("doctor body changed: %q", strings.Join(lines[1:], "\n"))
+	}
+}
+
+func TestDoctorVersionLineIsFirstInSocketReport(t *testing.T) {
+	oldVersion, oldCommit, oldDate := version, commit, date
+	t.Cleanup(func() { version, commit, date = oldVersion, oldCommit, oldDate })
+	version, commit, date = "v0.2.0", "abc1234", "2026-07-31T12:00:00Z"
+
+	path := startDoctorSocket(t, 17, true)
+	var out bytes.Buffer
+	if got := runDoctorCommand([]string{"--transport", "socket", "--socket", path}, &out, passingDoctorDeps()); got != 0 {
+		t.Fatalf("doctor socket exit = %d\n%s", got, out.String())
+	}
+	first := strings.SplitN(out.String(), "\n", 2)[0]
+	if first != "INFO version: herdr-auto-resume v0.2.0 (abc1234)" {
+		t.Fatalf("first socket doctor line = %q", first)
 	}
 }
 

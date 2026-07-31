@@ -9,7 +9,7 @@
 
 A TUI app that monitors tmux panes running [Claude Code](https://claude.com/claude-code) and automatically sends "continue" when rate limits reset.
 
-![CI](https://github.com/henryaj/autoclaude/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/Wave-Consulting-Netherlands/herdr-auto-resume/actions/workflows/ci.yml/badge.svg)
 
 ## The Problem
 

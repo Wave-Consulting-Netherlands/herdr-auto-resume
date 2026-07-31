@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-# Release script for autoclaude
+# Release script for herdr-auto-resume
 # Usage: ./scripts/release.sh <version>
-# Example: ./scripts/release.sh 0.0.2
+# Example: ./scripts/release.sh 0.2.0
 
 VERSION="${1:-}"
 if [[ -z "$VERSION" ]]; then
@@ -13,8 +13,7 @@ if [[ -z "$VERSION" ]]; then
 fi
 
 TAG="v$VERSION"
-REPO="henryaj/autoclaude"
-TAP_REPO="henryaj/homebrew-tap"
+REPO="Wave-Consulting-Netherlands/herdr-auto-resume"
 
 echo "==> Releasing $TAG"
 
@@ -51,67 +50,4 @@ gh run watch "$RUN_ID" -R "$REPO" --exit-status || {
 echo "==> Downloading checksums"
 CHECKSUMS=$(gh release download "$TAG" -R "$REPO" -p checksums.txt -O -)
 
-# Extract checksums
-DARWIN_AMD64_SHA=$(echo "$CHECKSUMS" | grep darwin_amd64 | awk '{print $1}')
-DARWIN_ARM64_SHA=$(echo "$CHECKSUMS" | grep darwin_arm64 | awk '{print $1}')
-LINUX_AMD64_SHA=$(echo "$CHECKSUMS" | grep linux_amd64 | awk '{print $1}')
-LINUX_ARM64_SHA=$(echo "$CHECKSUMS" | grep linux_arm64 | awk '{print $1}')
-
-# Clone tap repo
-echo "==> Updating homebrew tap"
-TMPDIR=$(mktemp -d)
-git clone "git@github.com:$TAP_REPO.git" "$TMPDIR/tap" --quiet
-
-# Generate formula
-cat > "$TMPDIR/tap/autoclaude.rb" << EOF
-class Autoclaude < Formula
-  desc "Automatically resume Claude Code sessions after rate limits"
-  homepage "https://github.com/$REPO"
-  version "$VERSION"
-  license "MIT"
-
-  on_macos do
-    on_intel do
-      url "https://github.com/$REPO/releases/download/$TAG/autoclaude_${VERSION}_darwin_amd64.tar.gz"
-      sha256 "$DARWIN_AMD64_SHA"
-    end
-
-    on_arm do
-      url "https://github.com/$REPO/releases/download/$TAG/autoclaude_${VERSION}_darwin_arm64.tar.gz"
-      sha256 "$DARWIN_ARM64_SHA"
-    end
-  end
-
-  on_linux do
-    on_intel do
-      url "https://github.com/$REPO/releases/download/$TAG/autoclaude_${VERSION}_linux_amd64.tar.gz"
-      sha256 "$LINUX_AMD64_SHA"
-    end
-
-    on_arm do
-      url "https://github.com/$REPO/releases/download/$TAG/autoclaude_${VERSION}_linux_arm64.tar.gz"
-      sha256 "$LINUX_ARM64_SHA"
-    end
-  end
-
-  def install
-    bin.install "autoclaude"
-  end
-
-  test do
-    system "#{bin}/autoclaude", "-version"
-  end
-end
-EOF
-
-# Commit and push formula
-cd "$TMPDIR/tap"
-git add autoclaude.rb
-git commit -m "Update autoclaude to $VERSION"
-git push
-
-# Cleanup
-rm -rf "$TMPDIR"
-
 echo "==> Release $TAG complete!"
-echo "Install with: brew install henryaj/tap/autoclaude"

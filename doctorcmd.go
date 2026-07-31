@@ -156,6 +156,8 @@ func protocolNumber(value any) (int64, bool) {
 }
 
 func runDoctorCommand(args []string, out io.Writer, deps doctorDeps) int {
+	currentVersion, currentCommit, _ := versionInfo()
+	doctorLine(out, "INFO", "version", fmt.Sprintf("herdr-auto-resume %s (%s)", currentVersion, currentCommit))
 	cfg, err := parseDoctorFlags(args, out)
 	if err != nil {
 		return 2
