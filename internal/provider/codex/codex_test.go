@@ -23,6 +23,7 @@ func TestPositiveCodexCorpus(t *testing.T) {
 		"codex0.146_pro-upgrade.txt":         {FamilyUsageLimit, detection.ResetKindLocalClock},
 		"codex0.146_plus-upgrade.txt":        {FamilyUsageLimit, detection.ResetKindLocalClock},
 		"codex0.146_admin-request.txt":       {FamilyUsageLimit, detection.ResetKindDateTime},
+		"codex0.146_wrapped-80col.txt":       {FamilyUsageLimit, detection.ResetKindLocalClock},
 		"codex0.146_later-noreset.txt":       {FamilyUsageLimit, detection.ResetKindUnknown},
 		"codex0.146_credits.txt":             {FamilyCredits, detection.ResetKindUnknown},
 		"codex0.146_spendcap.txt":            {FamilySpendCap, detection.ResetKindUnknown},

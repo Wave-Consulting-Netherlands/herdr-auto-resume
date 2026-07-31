@@ -3,8 +3,11 @@ package codex
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
 )
 
 func TestCodexLiveNegativeCorpusNeverActionable(t *testing.T) {
@@ -54,5 +57,55 @@ func TestCodexBusyAndStaleTailBlocksSafeResume(t *testing.T) {
 		if ok, _ := New("").SafeToResume(content, now); ok {
 			t.Fatalf("SafeToResume() = true for guarded content %q", content)
 		}
+	}
+}
+
+func TestCodexWrappedUsageBannerJoinsResetTail(t *testing.T) {
+	now := time.Date(2026, 12, 31, 12, 0, 0, 0, codexTestZone)
+	const prefix = "■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or "
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "split before at",
+			content: prefix + "try again\n at 3:34 PM.\n› ",
+			want:    prefix + "try again at 3:34 PM.",
+		},
+		{
+			name:    "split mid URL",
+			content: "■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usa\nge to purchase more credits or try again at 3:34 PM.\n› ",
+			want:    "■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usa ge to purchase more credits or try again at 3:34 PM.",
+		},
+		{
+			name:    "three continuation lines",
+			content: "■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or\ntry\nagain\n at 3:34 PM.\n› ",
+			want:    "■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 3:34 PM.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			analysis := New("").Analyze(tc.content, now)
+			if !analysis.IsLimited || !analysis.Actionable || analysis.Family != FamilyUsageLimit || analysis.Reset.Kind != detection.ResetKindLocalClock || analysis.Reset.ParsedTime.IsZero() {
+				t.Fatalf("analysis = %#v, want actionable local-clock limit", analysis)
+			}
+			if analysis.Evidence != tc.want {
+				t.Fatalf("Evidence = %q, want %q", analysis.Evidence, tc.want)
+			}
+		})
+	}
+}
+
+func TestCodexWrappedUsageBannerStopsAtBlankLine(t *testing.T) {
+	now := time.Date(2026, 12, 31, 12, 0, 0, 0, codexTestZone)
+	banner := "■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or"
+	content := banner + "\n\ntry again at 5:00 PM. This is unrelated prose.\n› "
+	analysis := New("").Analyze(content, now)
+	if !analysis.IsLimited || analysis.Actionable || analysis.Reset.Kind != detection.ResetKindUnknown {
+		t.Fatalf("analysis = %#v, want non-actionable unknown limit", analysis)
+	}
+	if strings.Contains(analysis.Evidence, "try again at 5:00 PM") || analysis.Evidence != banner {
+		t.Fatalf("Evidence = %q, want only banner before blank line", analysis.Evidence)
 	}
 }

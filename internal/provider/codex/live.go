@@ -23,8 +23,9 @@ func analyzeLive(content string, now time.Time) detection.Analysis {
 	if bannerIndex < 0 {
 		return detection.Analysis{}
 	}
-	analysis := analyzeCore(lines[bannerIndex], now)
-	if hasBusyLines(identityLines) || hasNonChromeBelow(lines, bannerIndex) {
+	banner, bannerEnd := joinWrappedBanner(lines, bannerIndex)
+	analysis := analyzeCore(banner, now)
+	if hasBusyLines(identityLines) || hasNonChromeBelow(lines, bannerEnd) {
 		analysis.Actionable = false
 	}
 	return analysis
@@ -85,6 +86,27 @@ func findBannerIndex(lines []string) int {
 	return found
 }
 
+func joinWrappedBanner(lines []string, bannerIndex int) (string, int) {
+	parts := []string{lines[bannerIndex]}
+	end := bannerIndex + 1
+	if !usageLimitBanner.MatchString(strings.TrimSpace(lines[bannerIndex])) {
+		return strings.TrimSpace(lines[bannerIndex]), end
+	}
+	for end < len(lines) && end <= bannerIndex+3 {
+		line := strings.TrimSpace(lines[end])
+		if line == "" || strings.HasPrefix(line, "■ ") || composerLine.MatchString(line) || strings.HasPrefix(line, "─") || isCodexChromeLine(line) {
+			break
+		}
+		parts = append(parts, line)
+		end++
+	}
+	return collapseWhitespace(parts), end
+}
+
+func collapseWhitespace(parts []string) string {
+	return strings.Join(strings.Fields(strings.Join(parts, " ")), " ")
+}
+
 func hasBusyLiveTail(content string) bool { return hasBusyLines(liveIdentityLines(content)) }
 
 func hasBusyLines(lines []string) bool {
@@ -96,8 +118,8 @@ func hasBusyLines(lines []string) bool {
 	return false
 }
 
-func hasNonChromeBelow(lines []string, bannerIndex int) bool {
-	for _, line := range lines[bannerIndex+1:] {
+func hasNonChromeBelow(lines []string, start int) bool {
+	for _, line := range lines[start:] {
 		if !isCodexChromeLine(line) {
 			return true
 		}

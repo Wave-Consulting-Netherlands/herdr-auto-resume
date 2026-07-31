@@ -14,6 +14,7 @@ var ordinalPattern = regexp.MustCompile(`(?i)\b(\d+)(?:st|nd|rd|th)\b`)
 // normalizeResetTail converts only Codex's documented reset tails into the
 // syntax accepted by detection.ParseReset.
 func normalizeResetTail(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
 	match := tryAgainPattern.FindStringIndex(text)
 	if match == nil {
 		return ""
