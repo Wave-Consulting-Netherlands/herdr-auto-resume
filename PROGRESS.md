@@ -410,7 +410,24 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
   - Tested versions for this release: herdr 0.7.5 (protocol 17), Claude Code 2.1.220,
     codex-cli 0.146.0; CI toolchain go1.23.12 (go.mod), dev toolchain go1.26.5.
 
+- 2026-08-01, soak restarted as a systemd user unit (BACKLOG 10 clock reset):
+  - The pane-hosted socket soak died with its host workspace (wQ closed; pid 236620 gone).
+    Restarted as `~/.config/systemd/user/herdr-auto-resume-soak.service` so a Herdr server
+    bounce or a closed workspace can no longer end the soak: `--transport socket`,
+    `--socket ~/.config/herdr/herdr.sock`, isolated `soak-state.json`, production config
+    for the remaining settings, `Restart=on-failure`.
+  - Soak panes are wR:p1 (codex) and wS:p1 (claude) — deliberately disjoint from the
+    production watcher's panes, so two watchers can never resume the same pane.
+  - Production config's pane list was stale (four panes from closed workspaces); trimmed to
+    the live `[wA:p1]` and the service restarted. Verified `status: panes=1` for production
+    and `panes=2` for the soak via throwaway `--state-file off --dry-run` instances;
+    `doctor` (cli and socket) all PASS on both state files.
+  - Note for the record: the production unit showed 166 restarts, all
+    `list panes: ... ConnectionRefused` during a Herdr server bounce at 06:45 UTC. It
+    self-healed; `Restart=on-failure` + `RestartSec=5s` behaved as designed.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
-BACKLOG.md. Post-soak (24–48h clean on wQ:p1): switch wD:p1 to `--transport socket`.
+BACKLOG.md. Post-soak (24–48h clean on the socket soak unit, restarted 2026-08-01 06:56 UTC):
+switch the production watcher to `--transport socket`.
