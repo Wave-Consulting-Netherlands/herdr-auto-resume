@@ -35,9 +35,10 @@ type RuntimeConfig struct {
 }
 
 type MonitoringConfig struct {
-	Panes    []string
-	Interval time.Duration
-	Lines    int
+	Panes        []string
+	Interval     time.Duration
+	Lines        int
+	WaitForPanes bool
 }
 
 type ResumeConfig struct {
@@ -69,14 +70,15 @@ type rawRuntimeConfig struct {
 	Type      string  `yaml:"type"`
 	Transport *string `yaml:"transport"`
 	HerdrBin  string  `yaml:"herdr_bin"`
-	Socket    string  `yaml:"socket"`
+	Socket    *string `yaml:"socket"`
 	Workspace string  `yaml:"workspace"`
 }
 
 type rawMonitoringConfig struct {
-	Panes    []string `yaml:"panes"`
-	Interval string   `yaml:"interval"`
-	Lines    *int     `yaml:"lines"`
+	Panes        []string `yaml:"panes"`
+	Interval     string   `yaml:"interval"`
+	Lines        *int     `yaml:"lines"`
+	WaitForPanes *bool    `yaml:"wait_for_panes"`
 }
 
 type rawResumeConfig struct {
@@ -144,8 +146,8 @@ func Load(path string) (Config, bool, error) {
 	parsed := Config{
 		Version: 1,
 		Runtime: RuntimeConfig{
-			Type:     raw.Runtime.Type,
-			HerdrBin: raw.Runtime.HerdrBin, Socket: raw.Runtime.Socket,
+			Type:      raw.Runtime.Type,
+			HerdrBin:  raw.Runtime.HerdrBin,
 			Workspace: raw.Runtime.Workspace,
 		},
 		Monitoring: MonitoringConfig{Panes: append([]string(nil), raw.Monitoring.Panes...)},
@@ -164,11 +166,12 @@ func Load(path string) (Config, bool, error) {
 	mark("runtime.type", raw.Runtime.Type != "")
 	mark("runtime.transport", raw.Runtime.Transport != nil)
 	mark("runtime.herdr_bin", raw.Runtime.HerdrBin != "")
-	mark("runtime.socket", raw.Runtime.Socket != "")
+	mark("runtime.socket", raw.Runtime.Socket != nil)
 	mark("runtime.workspace", raw.Runtime.Workspace != "")
 	mark("monitoring.panes", raw.Monitoring.Panes != nil)
 	mark("monitoring.interval", raw.Monitoring.Interval != "")
 	mark("monitoring.lines", raw.Monitoring.Lines != nil)
+	mark("monitoring.wait_for_panes", raw.Monitoring.WaitForPanes != nil)
 	mark("resume.margin", raw.Resume.Margin != "")
 	mark("resume.max_wait", raw.Resume.MaxWait != "")
 	mark("resume.verify_timeout", raw.Resume.VerifyTimeout != "")
@@ -178,6 +181,12 @@ func Load(path string) (Config, bool, error) {
 	mark("state.file", raw.State.File != "")
 	if raw.Runtime.Transport != nil {
 		parsed.Runtime.Transport = *raw.Runtime.Transport
+	}
+	if raw.Runtime.Socket != nil {
+		parsed.Runtime.Socket = *raw.Runtime.Socket
+	}
+	if raw.Monitoring.WaitForPanes != nil {
+		parsed.Monitoring.WaitForPanes = *raw.Monitoring.WaitForPanes
 	}
 	if raw.Monitoring.Interval != "" {
 		parsed.Monitoring.Interval, err = time.ParseDuration(raw.Monitoring.Interval)

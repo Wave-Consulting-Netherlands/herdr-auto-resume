@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -39,6 +40,7 @@ type runConfig struct {
 	Runtime           string
 	Transport         string
 	TransportExplicit bool
+	SocketExplicit    bool
 	Panes             []string
 	Interval          time.Duration
 	Lines             int
@@ -52,6 +54,7 @@ type runConfig struct {
 	Margin            time.Duration
 	MaxWait           time.Duration
 	VerifyTimeout     time.Duration
+	WaitForPanes      bool
 	Providers         string
 	ClaudePrompt      string
 	CodexPrompt       string
@@ -81,6 +84,7 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	fs.Var(&panes, "pane", "pane ID to monitor (repeatable; required)")
 	fs.DurationVar(&cfg.Interval, "interval", 3*time.Second, "poll interval")
 	fs.IntVar(&cfg.Lines, "lines", 200, "number of recent pane lines to read")
+	fs.BoolVar(&cfg.WaitForPanes, "wait-for-panes", false, "wait for requested panes and transient runtime reachability")
 	fs.BoolVar(&cfg.DryRun, "dry-run", false, "record automatic continuations without sending them")
 	fs.StringVar(&cfg.TestPattern, "test-pattern", "", "trigger auto-continue when this string is found")
 	fs.StringVar(&cfg.HerdrBin, "herdr-bin", "herdr", "herdr binary path")
@@ -197,6 +201,7 @@ func mergeRunConfig(defaults runConfig, file appconfig.Config) runConfig {
 	}
 	if file.Has("runtime.socket") {
 		merged.Socket = file.Runtime.Socket
+		merged.SocketExplicit = true
 	}
 	if file.Has("runtime.workspace") {
 		merged.Workspace = file.Runtime.Workspace
@@ -209,6 +214,9 @@ func mergeRunConfig(defaults runConfig, file appconfig.Config) runConfig {
 	}
 	if file.Has("monitoring.lines") {
 		merged.Lines = file.Monitoring.Lines
+	}
+	if file.Has("monitoring.wait_for_panes") {
+		merged.WaitForPanes = file.Monitoring.WaitForPanes
 	}
 	if file.Has("resume.margin") {
 		merged.Margin = file.Resume.Margin
@@ -248,6 +256,8 @@ func applyExplicitRunFlags(dst, parsed *runConfig, panes *stringList, fs *flag.F
 			dst.Interval = parsed.Interval
 		case "lines":
 			dst.Lines = parsed.Lines
+		case "wait-for-panes":
+			dst.WaitForPanes = parsed.WaitForPanes
 		case "dry-run":
 			dst.DryRun = parsed.DryRun
 		case "test-pattern":
@@ -256,6 +266,7 @@ func applyExplicitRunFlags(dst, parsed *runConfig, panes *stringList, fs *flag.F
 			dst.HerdrBin = parsed.HerdrBin
 		case "socket":
 			dst.Socket = parsed.Socket
+			dst.SocketExplicit = true
 		case "session":
 			dst.Session = parsed.Session
 		case "workspace":
@@ -341,13 +352,118 @@ func filterPanesByIdentity(panes []runtimeapi.Pane, requested []string, terminal
 	return filtered, excludedOwn
 }
 
+const paneWaitBackoff = 5 * time.Second
+
+func listPanesStartup(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, waitForPanes bool, logw io.Writer) ([]runtimeapi.Pane, error) {
+	if waitForPanes {
+		return waitForPanesUntilReady(ctx, rt, requested, ownPaneID, logw, sleepForPanes)
+	}
+	allPanes, err := rt.ListPanes()
+	if err != nil {
+		return nil, fmt.Errorf("list panes: %w", err)
+	}
+	panes, excludedOwn := filterPanes(allPanes, requested, ownPaneID)
+	if excludedOwn && logw != nil {
+		fmt.Fprintf(logw, "warning: excluding own pane %s\n", ownPaneID)
+	}
+	if len(panes) == 0 {
+		return nil, errors.New("none of the requested panes were found")
+	}
+	return panes, nil
+}
+
+func waitForPanes(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, logw io.Writer, wait func(context.Context, time.Duration) error) ([]runtimeapi.Pane, error) {
+	return waitForPanesUntilReady(ctx, rt, requested, ownPaneID, logw, wait)
+}
+
+func waitForPanesUntilReady(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, logw io.Writer, wait func(context.Context, time.Duration) error) ([]runtimeapi.Pane, error) {
+	state := ""
+	ownWarningLogged := false
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		allPanes, err := rt.ListPanes()
+		if err != nil {
+			if !retryablePaneListError(err) {
+				return nil, err
+			}
+			if state != "error" && logw != nil {
+				fmt.Fprintf(logw, "warning: waiting for panes: %v\n", err)
+			}
+			state = "error"
+		} else {
+			panes, excludedOwn := filterPanes(allPanes, requested, ownPaneID)
+			if excludedOwn && !ownWarningLogged && logw != nil {
+				fmt.Fprintf(logw, "warning: excluding own pane %s\n", ownPaneID)
+				ownWarningLogged = true
+			}
+			if len(panes) > 0 {
+				if state != "" && logw != nil {
+					fmt.Fprintln(logw, "info: panes available")
+				}
+				return panes, nil
+			}
+			if state != "empty" && logw != nil {
+				fmt.Fprintln(logw, "warning: waiting for panes: none of the requested panes were found")
+			}
+			state = "empty"
+		}
+		if err := wait(ctx, paneWaitBackoff); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func sleepForPanes(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func retryablePaneListError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "connection refused") ||
+		strings.Contains(message, "no such file or directory") ||
+		strings.Contains(message, "timed out") ||
+		strings.Contains(message, "timeout") ||
+		strings.Contains(message, "unexpected eof")
+}
+
 func runtimeForRun(cfg runConfig) (runtimeapi.Runtime, error) {
 	if cfg.Runtime == "tmux" {
 		return tmuxadapter.New()
 	}
 	if cfg.Transport == "socket" {
+		if cfg.SocketExplicit && cfg.Socket == "" {
+			return nil, errors.New("socket path is empty")
+		}
+		path, err := herdradapter.ResolveSocketPath(cfg.Socket)
+		if err != nil {
+			return nil, err
+		}
+		if err := herdradapter.ValidateSocketPath(path); err != nil {
+			return nil, err
+		}
 		return herdradapter.NewSocket(herdradapter.SocketOptions{
-			Path: cfg.Socket, Workspace: cfg.Workspace,
+			Path: path, Workspace: cfg.Workspace,
 		}), nil
 	}
 	return herdradapter.New(herdradapter.Options{
@@ -476,22 +592,16 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	selfPaneID, err := rt.SelfPaneID()
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: get own pane: %v\n", err)
 		return 1
 	}
-	allPanes, err := rt.ListPanes()
+	panes, err := listPanesStartup(ctx, rt, cfg.Panes, selfPaneID, cfg.WaitForPanes, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "Error: list panes: %v\n", err)
-		return 1
-	}
-	panes, excludedOwn := filterPanes(allPanes, cfg.Panes, selfPaneID)
-	if excludedOwn {
-		fmt.Fprintf(stderr, "warning: excluding own pane %s\n", selfPaneID)
-	}
-	if len(panes) == 0 {
-		fmt.Fprintln(stderr, "Error: none of the requested panes were found")
+		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
 	monitoredTerminalIDs := make(map[string]struct{})
@@ -535,8 +645,6 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	coord.EnableAll()
 	coord.Poll()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	detectionInterval := cfg.Interval
 	if detectionInterval > 30*time.Second {
 		detectionInterval = 30 * time.Second

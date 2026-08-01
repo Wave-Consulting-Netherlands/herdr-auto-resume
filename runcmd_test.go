@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -90,6 +93,198 @@ func TestParseRunFlagsDefaultsToSocketTransport(t *testing.T) {
 	cfg, err := parseRunFlags([]string{"--pane", "w1:p1"}, &stderr)
 	if err != nil || cfg.Transport != "socket" {
 		t.Fatalf("transport = %q, err = %v; want socket default", cfg.Transport, err)
+	}
+}
+
+func TestParseRunFlagsWaitForPanesDefaultsOffAndHonorsFlagAndYAML(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stderr bytes.Buffer
+	cfg, err := parseRunFlags([]string{"--pane", "w1:p1"}, &stderr)
+	if err != nil {
+		t.Fatalf("default parse: %v", err)
+	}
+	if cfg.WaitForPanes {
+		t.Fatal("WaitForPanes = true by default, want false")
+	}
+	cfg, err = parseRunFlags([]string{"--pane", "w1:p1", "--wait-for-panes"}, &stderr)
+	if err != nil || !cfg.WaitForPanes {
+		t.Fatalf("flag parse cfg=%#v err=%v, want enabled", cfg, err)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\nmonitoring:\n  panes: [w1:p1]\n  wait_for_panes: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = parseRunFlags([]string{"--config", configPath}, &stderr)
+	if err != nil || !cfg.WaitForPanes {
+		t.Fatalf("YAML parse cfg=%#v err=%v, want enabled", cfg, err)
+	}
+	cfg, err = parseRunFlags([]string{"--config", configPath, "--wait-for-panes=false"}, &stderr)
+	if err != nil || cfg.WaitForPanes {
+		t.Fatalf("explicit false cfg=%#v err=%v, want disabled", cfg, err)
+	}
+}
+
+func TestRunCommandWaitForPanesOffKeepsStartupExitContract(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HERDR_PANE_ID", "")
+	for _, tc := range []struct {
+		name string
+		mode string
+		want string
+	}{
+		{name: "list error", mode: "error", want: "Error: list panes:"},
+		{name: "zero matches", mode: "empty", want: "Error: none of the requested panes were found"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := filepath.Join(t.TempDir(), "herdr")
+			body := "#!/bin/sh\n"
+			if tc.mode == "error" {
+				body += "echo 'list failed' >&2\nexit 1\n"
+			} else {
+				body += "echo '{\"result\":{\"panes\":[]}}'\n"
+			}
+			if err := os.WriteFile(script, []byte(body), 0700); err != nil {
+				t.Fatal(err)
+			}
+			var stderr bytes.Buffer
+			got := runCommand([]string{"--transport", "cli", "--pane", "w1:p1", "--herdr-bin", script, "--state-file", "off"}, nil, &stderr)
+			if got != 1 || !strings.Contains(stderr.String(), tc.want) {
+				t.Fatalf("exit=%d stderr=%q, want exit 1 and %q", got, stderr.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestListPanesStartupOffPreservesFailFastErrors(t *testing.T) {
+	fake := &runtime.Fake{Errs: map[string]error{"ListPanes": errors.New("connection refused")}}
+	_, err := listPanesStartup(context.Background(), fake, []string{"w1:p1"}, "", false, io.Discard)
+	if err == nil || err.Error() != "list panes: connection refused" {
+		t.Fatalf("error = %v, want byte-identical list error", err)
+	}
+	fake.Errs = nil
+	fake.PanesList = nil
+	_, err = listPanesStartup(context.Background(), fake, []string{"w1:p1"}, "", false, io.Discard)
+	if err == nil || err.Error() != "none of the requested panes were found" {
+		t.Fatalf("error = %v, want byte-identical empty-match error", err)
+	}
+}
+
+func TestWaitForPanesRetriesReachabilityAndLogsStateChanges(t *testing.T) {
+	fake := &runtime.Fake{
+		PanesList: []runtime.Pane{{ID: "w1:p1"}},
+		Errs:      map[string]error{"ListPanes": syscall.ECONNREFUSED},
+	}
+	var log bytes.Buffer
+	waits := 0
+	got, err := waitForPanes(context.Background(), fake, []string{"w1:p1"}, "", &log, func(ctx context.Context, _ time.Duration) error {
+		waits++
+		fake.Errs["ListPanes"] = nil
+		return nil
+	})
+	if err != nil || !reflect.DeepEqual(got, fake.PanesList) {
+		t.Fatalf("panes=%#v err=%v, want recovered pane", got, err)
+	}
+	if waits != 1 {
+		t.Fatalf("wait calls = %d, want 1", waits)
+	}
+	if strings.Count(log.String(), "waiting for panes") != 1 || strings.Count(log.String(), "panes available") != 1 {
+		t.Fatalf("log=%q, want one retry-state and one recovery message", log.String())
+	}
+}
+
+func TestWaitForPanesRetriesAbsentSocketTimeoutEOFAndEmptyMatches(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "connection refused", err: syscall.ECONNREFUSED},
+		{name: "absent socket", err: os.ErrNotExist},
+		{name: "timeout", err: context.DeadlineExceeded},
+		{name: "mid-request eof", err: io.ErrUnexpectedEOF},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "w1:p1"}}, Errs: map[string]error{"ListPanes": tc.err}}
+			calls := 0
+			got, err := waitForPanes(context.Background(), fake, []string{"w1:p1"}, "", io.Discard, func(context.Context, time.Duration) error {
+				calls++
+				fake.Errs["ListPanes"] = nil
+				return nil
+			})
+			if err != nil || len(got) != 1 || calls != 1 {
+				t.Fatalf("panes=%#v err=%v waits=%d, want one retry and recovery", got, err, calls)
+			}
+		})
+	}
+
+	fake := &runtime.Fake{}
+	waits := 0
+	got, err := waitForPanes(context.Background(), fake, []string{"w1:p1"}, "", io.Discard, func(context.Context, time.Duration) error {
+		waits++
+		fake.PanesList = []runtime.Pane{{ID: "w1:p1"}}
+		return nil
+	})
+	if err != nil || len(got) != 1 || waits != 1 {
+		t.Fatalf("empty-match recovery panes=%#v err=%v waits=%d", got, err, waits)
+	}
+}
+
+func TestWaitForPanesDoesNotRetryPermanentFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "protocol mismatch", err: herdradapter.HerdrError{Code: "protocol_mismatch", Message: "unsupported protocol"}},
+		{name: "malformed response", err: errors.New("decode herdr response: invalid character")},
+		{name: "permission denial", err: os.ErrPermission},
+		{name: "configuration error", err: errors.New("socket path is not absolute")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &runtime.Fake{Errs: map[string]error{"ListPanes": tc.err}}
+			waits := 0
+			_, err := waitForPanes(context.Background(), fake, []string{"w1:p1"}, "", io.Discard, func(context.Context, time.Duration) error {
+				waits++
+				return nil
+			})
+			if err == nil || !errors.Is(err, tc.err) || waits != 0 {
+				t.Fatalf("err=%v waits=%d, want permanent error and no retry", err, waits)
+			}
+		})
+	}
+}
+
+func TestWaitForPanesStopsWhenContextIsCancelled(t *testing.T) {
+	fake := &runtime.Fake{Errs: map[string]error{"ListPanes": syscall.ECONNREFUSED}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := waitForPanes(ctx, fake, []string{"w1:p1"}, "", io.Discard, func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+}
+
+func TestRuntimeForRunRejectsSyntacticallyInvalidSocketPaths(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "empty", path: "", want: "socket path is empty"},
+		{name: "relative", path: "herdr.sock", want: "not absolute"},
+		{name: "too long", path: "/tmp/" + strings.Repeat("x", 110), want: "unix limit"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := runtimeForRun(runConfig{Runtime: "herdr", Transport: "socket", Socket: tc.path, SocketExplicit: true})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

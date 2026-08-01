@@ -147,8 +147,11 @@ func (c *Coordinator) Poll() {
 		}
 
 		now := c.clock()
+		wasChecked := state.ProviderChecked
+		wasActive := stateProviderActive(*state)
 		current := c.providers.Resolve(state.Pane.Agent, content)
 		if current == nil {
+			state.ProviderChecked = true
 			state.Provider = ""
 			state.HasClaudeCode = false
 			state.IsRateLimited = false
@@ -161,6 +164,10 @@ func (c *Coordinator) Poll() {
 		}
 		state.Provider = current.Name()
 		state.HasClaudeCode = current.Name() == "claude"
+		if wasChecked && !wasActive && state.Mode == ModeOff && !state.UserDisabled {
+			state.Mode = ModeAuto
+		}
+		state.ProviderChecked = true
 		analysis := current.Analyze(content, now)
 		statusLimited := analysis.IsLimited
 
@@ -238,9 +245,11 @@ func (c *Coordinator) ToggleMode(paneID string) {
 	}
 	if state.Mode == ModeOff {
 		state.Mode = ModeAuto
+		state.UserDisabled = false
 		c.checkPaneRateLimit(&state)
 	} else {
 		state.Mode = ModeOff
+		state.UserDisabled = true
 	}
 	c.states[paneID] = state
 }
@@ -248,7 +257,7 @@ func (c *Coordinator) ToggleMode(paneID string) {
 func (c *Coordinator) EnableAll() {
 	for _, paneID := range c.paneOrder {
 		state := c.states[paneID]
-		if stateProviderActive(state) {
+		if stateProviderActive(state) && !state.UserDisabled {
 			state.Mode = ModeAuto
 			c.checkPaneRateLimit(&state)
 			c.states[paneID] = state
@@ -261,6 +270,7 @@ func (c *Coordinator) DisableAll() {
 		state := c.states[paneID]
 		if stateProviderActive(state) {
 			state.Mode = ModeOff
+			state.UserDisabled = true
 			c.states[paneID] = state
 		}
 	}

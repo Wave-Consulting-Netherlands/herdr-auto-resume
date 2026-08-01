@@ -24,6 +24,8 @@ func (m Mode) String() string {
 type PaneState struct {
 	Pane                 runtime.Pane
 	Mode                 Mode
+	UserDisabled         bool
+	ProviderChecked      bool
 	Provider             string
 	HasClaudeCode        bool
 	IsRateLimited        bool

@@ -65,6 +65,14 @@ state:
 	}
 }
 
+func TestLoadParsesWaitForPanes(t *testing.T) {
+	path := writeConfig(t, "version: 1\nmonitoring:\n  wait_for_panes: true\n")
+	cfg, found, err := Load(path)
+	if err != nil || !found || !cfg.Has("monitoring.wait_for_panes") || !cfg.Monitoring.WaitForPanes {
+		t.Fatalf("cfg=%#v found=%v err=%v, want wait_for_panes=true", cfg, found, err)
+	}
+}
+
 func TestLoadRejectsUnknownKey(t *testing.T) {
 	_, _, err := Load(writeConfig(t, "version: 1\nunknown: true\n"))
 	if err == nil || !strings.Contains(err.Error(), "unknown") {

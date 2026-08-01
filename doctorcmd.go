@@ -24,6 +24,7 @@ type doctorConfig struct {
 	Transport         string
 	TransportExplicit bool
 	RuntimeExplicit   bool
+	SocketExplicit    bool
 	Bin               string
 	Socket            string
 	Session           string
@@ -96,6 +97,8 @@ func parseDoctorFlags(args []string, stderr io.Writer) (doctorConfig, error) {
 			cfg.RuntimeExplicit = true
 		case "transport":
 			cfg.TransportExplicit = true
+		case "socket":
+			cfg.SocketExplicit = true
 		case "config":
 			cfg.ConfigExplicit = true
 		case "state-file":
@@ -210,6 +213,10 @@ func runDoctorCommand(args []string, out io.Writer, deps doctorDeps) int {
 		if !cfg.TransportExplicit && fileConfig.Has("runtime.transport") {
 			cfg.Transport = fileConfig.Runtime.Transport
 			cfg.TransportExplicit = true
+		}
+		if !cfg.SocketExplicit && fileConfig.Has("runtime.socket") {
+			cfg.Socket = fileConfig.Runtime.Socket
+			cfg.SocketExplicit = true
 		}
 		if !cfg.StateFileSet && fileConfig.Has("state.file") {
 			cfg.StateFile = fileConfig.State.File
@@ -347,6 +354,10 @@ func reportWatcherLock(out io.Writer, statePath string) bool {
 }
 
 func runSocketDoctor(cfg doctorConfig, out io.Writer, deps doctorDeps) int {
+	if cfg.SocketExplicit && cfg.Socket == "" {
+		doctorLine(out, "FAIL", "socket", "socket path is empty")
+		return 1
+	}
 	socketPath := cfg.Socket
 	if socketPath == "" {
 		home, err := deps.home()
@@ -356,6 +367,16 @@ func runSocketDoctor(cfg doctorConfig, out io.Writer, deps doctorDeps) int {
 		}
 		socketPath = home + "/.config/herdr/herdr.sock"
 	}
+	resolvedPath, err := herdradapter.ResolveSocketPath(socketPath)
+	if err != nil {
+		doctorLine(out, "FAIL", "socket", err.Error())
+		return 1
+	}
+	if err := herdradapter.ValidateSocketPath(resolvedPath); err != nil {
+		doctorLine(out, "FAIL", "socket", err.Error())
+		return 1
+	}
+	socketPath = resolvedPath
 	newSocket := deps.newSocket
 	if newSocket == nil {
 		newSocket = func(o herdradapter.SocketOptions) *herdradapter.Socket { return herdradapter.NewSocket(o) }

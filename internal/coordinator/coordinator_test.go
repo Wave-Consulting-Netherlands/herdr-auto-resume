@@ -49,6 +49,49 @@ func TestJobSinkReceivesKnownResetPayloadEveryPollAndOwnsLegacySend(t *testing.T
 	}
 }
 
+func TestPaneBecomingIdentifiableIsEnabledAndCreatesJob(t *testing.T) {
+	content := "limit reached ∙ resets 2pm"
+	now := detection.CheckRateLimitAt(content, coordinatorTestNow).ResetTime.Add(5 * time.Minute)
+	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": "shell starting"}}
+	sink := &recordingJobSink{owned: true}
+	c := New(fake, Config{}, WithClock(func() time.Time { return now }), WithJobSink(sink))
+	c.SetPanes(fake.PanesList)
+	c.Poll()
+	if got := c.Snapshot()[0].Mode; got != ModeOff {
+		t.Fatalf("startup mode = %v, want off for unidentified pane", got)
+	}
+	fake.Content["p1"] = content
+	c.Poll()
+	if got := c.Snapshot()[0].Mode; got != ModeAuto {
+		t.Fatalf("later mode = %v, want auto", got)
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("job events = %d, want 1", len(sink.events))
+	}
+}
+
+func TestPaneReenablePreservesExplicitDisable(t *testing.T) {
+	content := "limit reached ∙ resets 2pm"
+	now := detection.CheckRateLimitAt(content, coordinatorTestNow).ResetTime.Add(5 * time.Minute)
+	fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}, Content: map[string]string{"p1": content}}
+	sink := &recordingJobSink{owned: true}
+	c := New(fake, Config{}, WithClock(func() time.Time { return now }), WithJobSink(sink))
+	c.SetPanes(fake.PanesList)
+	c.Poll()
+	c.EnableAll()
+	c.ToggleMode("p1")
+	fake.Content["p1"] = "shell starting"
+	c.Poll()
+	fake.Content["p1"] = content
+	c.Poll()
+	if got := c.Snapshot()[0].Mode; got != ModeOff {
+		t.Fatalf("mode after explicit disable = %v, want off", got)
+	}
+	if len(sink.events) != 0 {
+		t.Fatalf("job events = %d, want none while explicitly disabled", len(sink.events))
+	}
+}
+
 func TestJobSinkFalseFailsSafeWithoutLegacySend(t *testing.T) {
 	content := "limit reached ∙ resets 2pm"
 	status := detection.CheckRateLimitAt(content, coordinatorTestNow)
