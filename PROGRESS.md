@@ -442,6 +442,9 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     unidentifiable ⇒ no job ever created (`panes=1`, inert); watcher started while the banner
     was already visible ⇒ job created and RESUMED within seconds. A boot-time systemd watcher
     that beats its agent panes to startup is silently inert.
+  - Step 6: soak unit restarted with the drill pane appended (`--pane wR:p1 --pane wS:p1
+    --pane wV:p1`), verified `panes=3` and doctor all-PASS. **48h evidence clock started
+    2026-08-01 13:48:27 UTC; drill due 2026-08-03 13:48 UTC.**
   - Rehearsal PASS (the real T+48h shape): cold watcher start against the idle harness →
     trigger → WAITING job `4b606fe1` (reset 13:44:00Z, resume 13:45:00Z) → exactly one resume
     at 13:45:19Z, attempts=1 → verification saw cleared evidence → RESUMED. Socket transport,

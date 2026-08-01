@@ -15,7 +15,8 @@ Deployed watchers during this phase:
 - `herdr-auto-resume.service` — production, cli transport, `monitoring.panes: [wA:p1]`,
   `state.json`.
 - `herdr-auto-resume-soak.service` — socket transport, `--pane wR:p1 --pane wS:p1`,
-  `soak-state.json`, on released v0.2.0; the evidence clock restarts at step 6.
+  `--pane wV:p1` (drill harness), `soak-state.json`, on released v0.2.0.
+  **Evidence clock started 2026-08-01 13:48:27 UTC; T+48h = 2026-08-03 13:48 UTC.**
 
 ## Sequencing
 
@@ -27,8 +28,8 @@ obvious cause. Features wait.
 
 - **D-P8-1 Soak validity = uptime AND a forced cycle.** Idle uptime proves the socket stays
   connected; it does not prove detect → WAITING → resume → RESUMED still works over the event
-  path. Clean requires all of: (a) ≥48h from the drill-pane provisioning restart (step 6; the
-  2026-08-01 06:56 UTC start is superseded) with no unexplained restarts of the soak unit;
+  path. Clean requires all of: (a) ≥48h from 2026-08-01 13:48:27 UTC (the step-6
+  restart; the 06:56 UTC start is superseded) with no unexplained restarts of the soak unit;
   (b) zero socket/reconnect/subscription errors in
   `journalctl --user -u herdr-auto-resume-soak.service`; (c) ≥1 forced full cycle passing
   under socket transport on the same v0.2.0 binary.
