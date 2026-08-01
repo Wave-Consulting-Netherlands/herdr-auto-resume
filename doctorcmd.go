@@ -20,15 +20,18 @@ import (
 )
 
 type doctorConfig struct {
-	Transport      string
-	Bin            string
-	Socket         string
-	Session        string
-	Workspace      string
-	StateFile      string
-	ConfigPath     string
-	ConfigExplicit bool
-	StateFileSet   bool
+	Runtime           string
+	Transport         string
+	TransportExplicit bool
+	RuntimeExplicit   bool
+	Bin               string
+	Socket            string
+	Session           string
+	Workspace         string
+	StateFile         string
+	ConfigPath        string
+	ConfigExplicit    bool
+	StateFileSet      bool
 }
 
 type doctorDeps struct {
@@ -75,7 +78,8 @@ func parseDoctorFlags(args []string, stderr io.Writer) (doctorConfig, error) {
 		fs.PrintDefaults()
 	}
 	var cfg doctorConfig
-	fs.StringVar(&cfg.Transport, "transport", "cli", "herdr transport: cli or socket")
+	fs.StringVar(&cfg.Runtime, "runtime", "", "runtime adapter: tmux or herdr")
+	fs.StringVar(&cfg.Transport, "transport", "", "herdr transport: cli or socket")
 	fs.StringVar(&cfg.Bin, "herdr-bin", "herdr", "herdr binary path")
 	fs.StringVar(&cfg.Socket, "socket", "", "herdr socket path")
 	fs.StringVar(&cfg.Session, "session", "", "herdr session")
@@ -86,26 +90,34 @@ func parseDoctorFlags(args []string, stderr io.Writer) (doctorConfig, error) {
 		fs.Usage()
 		return doctorConfig{}, err
 	}
-	if cfg.Transport != "cli" && cfg.Transport != "socket" {
-		err := fmt.Errorf("unsupported transport %q", cfg.Transport)
-		fmt.Fprintln(stderr, "error:", err)
-		fs.Usage()
-		return doctorConfig{}, err
-	}
-	if cfg.Transport == "socket" && cfg.Session != "" {
-		err := errors.New("--session is unsupported with socket transport; use --socket")
-		fmt.Fprintln(stderr, "error:", err)
-		fs.Usage()
-		return doctorConfig{}, err
-	}
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
+		case "runtime":
+			cfg.RuntimeExplicit = true
+		case "transport":
+			cfg.TransportExplicit = true
 		case "config":
 			cfg.ConfigExplicit = true
 		case "state-file":
 			cfg.StateFileSet = true
 		}
 	})
+	if cfg.Runtime == "" {
+		cfg.Runtime = "herdr"
+	}
+	if cfg.Runtime != "herdr" && cfg.Runtime != "tmux" {
+		err := fmt.Errorf("unsupported runtime %q", cfg.Runtime)
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return doctorConfig{}, err
+	}
+	if cfg.TransportExplicit {
+		if _, err := resolveTransportDefault(cfg.Runtime, cfg.Transport, cfg.Session, true, nil); err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			fs.Usage()
+			return doctorConfig{}, err
+		}
+	}
 	return cfg, nil
 }
 
@@ -192,11 +204,27 @@ func runDoctorCommand(args []string, out io.Writer, deps doctorDeps) int {
 		}
 	} else {
 		doctorLine(out, "PASS", "config", cfg.ConfigPath)
+		if !cfg.RuntimeExplicit && fileConfig.Has("runtime.type") {
+			cfg.Runtime = fileConfig.Runtime.Type
+		}
+		if !cfg.TransportExplicit && fileConfig.Has("runtime.transport") {
+			cfg.Transport = fileConfig.Runtime.Transport
+			cfg.TransportExplicit = true
+		}
 		if !cfg.StateFileSet && fileConfig.Has("state.file") {
 			cfg.StateFile = fileConfig.State.File
 		}
 	}
-	watcherOK := reportWatcherLock(out, resolveStatePath(runConfig{Runtime: "herdr", StateFile: cfg.StateFile}))
+	if cfg.Runtime == "" {
+		cfg.Runtime = "herdr"
+	}
+	resolvedTransport, transportErr := resolveTransportDefault(cfg.Runtime, cfg.Transport, cfg.Session, cfg.TransportExplicit, out)
+	if transportErr != nil {
+		doctorLine(out, "FAIL", "transport", transportErr.Error())
+		return 1
+	}
+	cfg.Transport = resolvedTransport
+	watcherOK := reportWatcherLock(out, resolveStatePath(runConfig{Runtime: cfg.Runtime, StateFile: cfg.StateFile}))
 	if cfg.Transport == "socket" {
 		if doctorErr := runSocketDoctor(cfg, out, deps); doctorErr != 0 {
 			return doctorErr

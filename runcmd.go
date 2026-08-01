@@ -36,24 +36,25 @@ func (s *stringList) Set(value string) error {
 }
 
 type runConfig struct {
-	Runtime       string
-	Transport     string
-	Panes         []string
-	Interval      time.Duration
-	Lines         int
-	DryRun        bool
-	TestPattern   string
-	HerdrBin      string
-	Socket        string
-	Session       string
-	Workspace     string
-	StateFile     string
-	Margin        time.Duration
-	MaxWait       time.Duration
-	VerifyTimeout time.Duration
-	Providers     string
-	ClaudePrompt  string
-	CodexPrompt   string
+	Runtime           string
+	Transport         string
+	TransportExplicit bool
+	Panes             []string
+	Interval          time.Duration
+	Lines             int
+	DryRun            bool
+	TestPattern       string
+	HerdrBin          string
+	Socket            string
+	Session           string
+	Workspace         string
+	StateFile         string
+	Margin            time.Duration
+	MaxWait           time.Duration
+	VerifyTimeout     time.Duration
+	Providers         string
+	ClaudePrompt      string
+	CodexPrompt       string
 }
 
 const herdrDetectionMatchRegex = `(?i)(?:limit\s+reached|rate\s+limit|usage\s+limit|out\s+of\s+(?:extra\s+)?usage|try\s+again\s+in|you['’]ve\s+hit\s+your|out\s+of\s+credits|spend\s+cap)`
@@ -67,7 +68,7 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	}
 	var panes stringList
 	defaults := runConfig{
-		Runtime: "herdr", Transport: "cli", Interval: 3 * time.Second, Lines: 200,
+		Runtime: "herdr", Interval: 3 * time.Second, Lines: 200,
 		HerdrBin: "herdr", StateFile: "auto", Margin: time.Minute,
 		MaxWait: 192 * time.Hour, VerifyTimeout: 90 * time.Second,
 		Providers: "claude,codex", ClaudePrompt: claude.New("").ResumeAction().Text,
@@ -76,7 +77,7 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	cfg := defaults
 	configPath := fs.String("config", appconfig.DefaultPath(), "configuration file path")
 	fs.StringVar(&cfg.Runtime, "runtime", "herdr", "runtime adapter: tmux or herdr")
-	fs.StringVar(&cfg.Transport, "transport", "cli", "herdr transport: cli or socket")
+	fs.StringVar(&cfg.Transport, "transport", "", "herdr transport: cli or socket")
 	fs.Var(&panes, "pane", "pane ID to monitor (repeatable; required)")
 	fs.DurationVar(&cfg.Interval, "interval", 3*time.Second, "poll interval")
 	fs.IntVar(&cfg.Lines, "lines", 200, "number of recent pane lines to read")
@@ -119,6 +120,13 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	parsedCfg := cfg
 	cfg = mergeRunConfig(defaults, fileConfig)
 	applyExplicitRunFlags(&cfg, &parsedCfg, &panes, fs)
+	resolvedTransport, transportErr := resolveTransportDefault(cfg.Runtime, cfg.Transport, cfg.Session, cfg.TransportExplicit, stderr)
+	if transportErr != nil {
+		fmt.Fprintln(stderr, "error:", transportErr)
+		fs.Usage()
+		return runConfig{}, transportErr
+	}
+	cfg.Transport = resolvedTransport
 	if len(cfg.Panes) == 0 {
 		err := errors.New("at least one --pane is required")
 		fmt.Fprintln(stderr, "error:", err)
@@ -182,6 +190,7 @@ func mergeRunConfig(defaults runConfig, file appconfig.Config) runConfig {
 	}
 	if file.Has("runtime.transport") {
 		merged.Transport = file.Runtime.Transport
+		merged.TransportExplicit = true
 	}
 	if file.Has("runtime.herdr_bin") {
 		merged.HerdrBin = file.Runtime.HerdrBin
@@ -232,6 +241,7 @@ func applyExplicitRunFlags(dst, parsed *runConfig, panes *stringList, fs *flag.F
 			dst.Runtime = parsed.Runtime
 		case "transport":
 			dst.Transport = parsed.Transport
+			dst.TransportExplicit = true
 		case "pane":
 			dst.Panes = append([]string(nil), (*panes)...)
 		case "interval":

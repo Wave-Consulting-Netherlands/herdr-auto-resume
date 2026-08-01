@@ -29,11 +29,67 @@ func TestParseRunFlagsRequiresExplicitPane(t *testing.T) {
 	}
 }
 
-func TestParseRunFlagsDefaultsToCLITransport(t *testing.T) {
+func TestParseRunFlagsTransportResolutionMatrix(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cases := []struct {
+		name        string
+		args        []string
+		config      string
+		want        string
+		wantErr     string
+		wantWarning string
+	}{
+		{name: "default herdr", args: []string{"--pane", "w1:p1"}, want: "socket"},
+		{name: "default herdr session", args: []string{"--pane", "w1:p1", "--session", "s1"}, want: "cli", wantWarning: "--session"},
+		{name: "default tmux", args: []string{"--pane", "w1:p1", "--runtime", "tmux"}, want: "cli", wantWarning: "--runtime"},
+		{name: "default tmux session", args: []string{"--pane", "w1:p1", "--runtime", "tmux", "--session", "s1"}, want: "cli", wantWarning: "--runtime"},
+		{name: "yaml herdr cli", config: "runtime:\n  type: herdr\n  transport: cli\n", args: []string{"--pane", "w1:p1"}, want: "cli"},
+		{name: "yaml herdr socket", config: "runtime:\n  type: herdr\n  transport: socket\n", args: []string{"--pane", "w1:p1"}, want: "socket"},
+		{name: "yaml herdr cli session", config: "runtime:\n  type: herdr\n  transport: cli\n", args: []string{"--pane", "w1:p1", "--session", "s1"}, want: "cli"},
+		{name: "yaml tmux cli", config: "runtime:\n  type: tmux\n  transport: cli\n", args: []string{"--pane", "w1:p1"}, want: "cli"},
+		{name: "yaml tmux socket", config: "runtime:\n  type: tmux\n  transport: socket\n", args: []string{"--pane", "w1:p1"}, wantErr: "runtime.transport socket requires runtime.type herdr"},
+		{name: "flag herdr cli", args: []string{"--pane", "w1:p1", "--transport", "cli"}, want: "cli"},
+		{name: "flag herdr socket", args: []string{"--pane", "w1:p1", "--transport", "socket"}, want: "socket"},
+		{name: "flag socket session", args: []string{"--pane", "w1:p1", "--transport", "socket", "--session", "s1"}, wantErr: "--session is unsupported"},
+		{name: "flag socket tmux", args: []string{"--pane", "w1:p1", "--transport", "socket", "--runtime", "tmux"}, wantErr: "requires --runtime herdr"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := ""
+			if tc.config != "" {
+				configPath = filepath.Join(t.TempDir(), "config.yaml")
+				if err := os.WriteFile(configPath, []byte("version: 1\n"+tc.config), 0600); err != nil {
+					t.Fatal(err)
+				}
+				tc.args = append([]string{"--config", configPath}, tc.args...)
+			}
+			var stderr bytes.Buffer
+			cfg, err := parseRunFlags(tc.args, &stderr)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, stderr=%q; want %q", err, stderr.String(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil || cfg.Transport != tc.want {
+				t.Fatalf("transport = %q, err = %v, stderr=%q; want %q", cfg.Transport, err, stderr.String(), tc.want)
+			}
+			if tc.wantWarning != "" && !strings.Contains(stderr.String(), tc.wantWarning) {
+				t.Fatalf("stderr = %q, want warning naming %q", stderr.String(), tc.wantWarning)
+			}
+			if tc.wantWarning == "" && strings.Contains(stderr.String(), "warning:") {
+				t.Fatalf("stderr = %q, want no fallback warning", stderr.String())
+			}
+		})
+	}
+}
+
+func TestParseRunFlagsDefaultsToSocketTransport(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var stderr bytes.Buffer
 	cfg, err := parseRunFlags([]string{"--pane", "w1:p1"}, &stderr)
-	if err != nil || cfg.Transport != "cli" {
-		t.Fatalf("transport = %q, err = %v; want cli default", cfg.Transport, err)
+	if err != nil || cfg.Transport != "socket" {
+		t.Fatalf("transport = %q, err = %v; want socket default", cfg.Transport, err)
 	}
 }
 

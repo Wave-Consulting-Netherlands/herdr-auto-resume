@@ -66,11 +66,11 @@ type rawConfig struct {
 }
 
 type rawRuntimeConfig struct {
-	Type      string `yaml:"type"`
-	Transport string `yaml:"transport"`
-	HerdrBin  string `yaml:"herdr_bin"`
-	Socket    string `yaml:"socket"`
-	Workspace string `yaml:"workspace"`
+	Type      string  `yaml:"type"`
+	Transport *string `yaml:"transport"`
+	HerdrBin  string  `yaml:"herdr_bin"`
+	Socket    string  `yaml:"socket"`
+	Workspace string  `yaml:"workspace"`
 }
 
 type rawMonitoringConfig struct {
@@ -144,7 +144,7 @@ func Load(path string) (Config, bool, error) {
 	parsed := Config{
 		Version: 1,
 		Runtime: RuntimeConfig{
-			Type: raw.Runtime.Type, Transport: raw.Runtime.Transport,
+			Type:     raw.Runtime.Type,
 			HerdrBin: raw.Runtime.HerdrBin, Socket: raw.Runtime.Socket,
 			Workspace: raw.Runtime.Workspace,
 		},
@@ -162,7 +162,7 @@ func Load(path string) (Config, bool, error) {
 		}
 	}
 	mark("runtime.type", raw.Runtime.Type != "")
-	mark("runtime.transport", raw.Runtime.Transport != "")
+	mark("runtime.transport", raw.Runtime.Transport != nil)
 	mark("runtime.herdr_bin", raw.Runtime.HerdrBin != "")
 	mark("runtime.socket", raw.Runtime.Socket != "")
 	mark("runtime.workspace", raw.Runtime.Workspace != "")
@@ -176,6 +176,9 @@ func Load(path string) (Config, bool, error) {
 	mark("providers.claude_prompt", raw.Providers.ClaudePrompt != "")
 	mark("providers.codex_prompt", raw.Providers.CodexPrompt != "")
 	mark("state.file", raw.State.File != "")
+	if raw.Runtime.Transport != nil {
+		parsed.Runtime.Transport = *raw.Runtime.Transport
+	}
 	if raw.Monitoring.Interval != "" {
 		parsed.Monitoring.Interval, err = time.ParseDuration(raw.Monitoring.Interval)
 		if err != nil {
