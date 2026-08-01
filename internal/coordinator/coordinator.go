@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"io"
 	"strings"
 	"time"
 
@@ -61,6 +62,16 @@ func WithJobSink(sink JobSink) Option {
 	return func(c *Coordinator) { c.jobSink = sink }
 }
 
+func WithLogWriter(logw io.Writer) Option {
+	return func(c *Coordinator) {
+		if logw == nil {
+			c.logw = io.Discard
+			return
+		}
+		c.logw = logw
+	}
+}
+
 func WithPostPoll(postPoll func(now time.Time)) Option {
 	return func(c *Coordinator) { c.postPoll = postPoll }
 }
@@ -76,20 +87,22 @@ func WithProviders(registry *provider.Registry) Option {
 }
 
 type Coordinator struct {
-	rt          runtime.Runtime
-	cfg         Config
-	clock       func() time.Time
-	sleep       func(time.Duration)
-	states      map[string]PaneState
-	paneOrder   []string
-	lastAction  ActionRecord
-	hasAction   bool
-	lastFailure FailureRecord
-	hasFailure  bool
-	failedPanes map[string]bool
-	jobSink     JobSink
-	postPoll    func(now time.Time)
-	providers   *provider.Registry
+	rt                 runtime.Runtime
+	cfg                Config
+	clock              func() time.Time
+	sleep              func(time.Duration)
+	states             map[string]PaneState
+	paneOrder          []string
+	lastAction         ActionRecord
+	hasAction          bool
+	lastFailure        FailureRecord
+	hasFailure         bool
+	failedPanes        map[string]bool
+	jobSink            JobSink
+	postPoll           func(now time.Time)
+	providers          *provider.Registry
+	logw               io.Writer
+	diagnosticEvidence map[string]string
 }
 
 func defaultRegistry() *provider.Registry {
@@ -98,13 +111,15 @@ func defaultRegistry() *provider.Registry {
 
 func New(rt runtime.Runtime, cfg Config, opts ...Option) *Coordinator {
 	c := &Coordinator{
-		rt:          rt,
-		cfg:         cfg,
-		clock:       time.Now,
-		sleep:       time.Sleep,
-		states:      make(map[string]PaneState),
-		failedPanes: make(map[string]bool),
-		providers:   defaultRegistry(),
+		rt:                 rt,
+		cfg:                cfg,
+		clock:              time.Now,
+		sleep:              time.Sleep,
+		states:             make(map[string]PaneState),
+		failedPanes:        make(map[string]bool),
+		providers:          defaultRegistry(),
+		logw:               io.Discard,
+		diagnosticEvidence: make(map[string]string),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -128,6 +143,11 @@ func (c *Coordinator) SetPanes(panes []runtime.Pane) {
 	}
 	c.states = updated
 	c.paneOrder = order
+	for paneID := range c.diagnosticEvidence {
+		if _, ok := updated[paneID]; !ok {
+			delete(c.diagnosticEvidence, paneID)
+		}
+	}
 }
 
 func (c *Coordinator) Poll() {
@@ -151,6 +171,9 @@ func (c *Coordinator) Poll() {
 		wasActive := stateProviderActive(*state)
 		current := c.providers.Resolve(state.Pane.Agent, content)
 		if current == nil {
+			if analysis := detection.Analyze(content, now); analysis.IsLimited {
+				c.logLimitedDiagnostic(state.Pane, "", analysis, content, "provider-unresolved")
+			}
 			state.ProviderChecked = true
 			state.Provider = ""
 			state.HasClaudeCode = false
@@ -187,6 +210,19 @@ func (c *Coordinator) Poll() {
 			delete(c.failedPanes, paneID)
 		}
 
+		if state.IsRateLimited {
+			switch {
+			case state.Mode != ModeAuto && wasChecked:
+				c.logLimitedDiagnostic(state.Pane, current.Name(), analysis, content, "not-auto")
+			case state.Mode == ModeAuto && analysis.MenuVisible && (c.jobSink == nil || !analysis.Actionable):
+				c.logLimitedDiagnostic(state.Pane, current.Name(), analysis, content, "menu-visible")
+			case state.Mode == ModeAuto && analysis.Reset.ParsedTime.IsZero():
+				c.logLimitedDiagnostic(state.Pane, current.Name(), analysis, content, "reset-unparsed")
+			case state.Mode == ModeAuto && !analysis.Actionable:
+				c.logLimitedDiagnostic(state.Pane, current.Name(), analysis, content, "not-actionable")
+			}
+		}
+
 		if state.IsRateLimited && state.Mode == ModeAuto && analysis.Actionable {
 			if !analysis.Reset.ParsedTime.IsZero() {
 				if c.jobSink != nil {
@@ -202,10 +238,15 @@ func (c *Coordinator) Poll() {
 					})
 					if owned {
 						state.ContinueSent = true
+					} else {
+						c.logLimitedDiagnostic(state.Pane, current.Name(), analysis, content, "job-manager-declined")
 					}
-				} else if !analysis.MenuVisible && !state.ContinueSent && !c.failedPanes[paneID] && now.After(state.RateLimitTime) {
-					if c.sendResume(paneID, current) == nil {
-						state.ContinueSent = true
+				} else {
+					c.logLimitedDiagnostic(state.Pane, current.Name(), analysis, content, "job-manager-unavailable")
+					if !analysis.MenuVisible && !state.ContinueSent && !c.failedPanes[paneID] && now.After(state.RateLimitTime) {
+						if c.sendResume(paneID, current) == nil {
+							state.ContinueSent = true
+						}
 					}
 				}
 			} else {
@@ -298,6 +339,9 @@ func (c *Coordinator) checkPaneRateLimit(state *PaneState) {
 	}
 	current := c.providers.Resolve(state.Pane.Agent, content)
 	if current == nil {
+		if analysis := detection.Analyze(content, c.clock()); analysis.IsLimited {
+			c.logLimitedDiagnostic(state.Pane, "", analysis, content, "provider-unresolved")
+		}
 		state.Provider = ""
 		state.HasClaudeCode = false
 		state.IsRateLimited = false

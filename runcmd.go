@@ -632,7 +632,7 @@ func runCommand(args []string, _, stderr io.Writer) int {
 			coordinator.WithPostPoll(manager.Tick),
 		)
 	}
-	coordOpts = append(coordOpts, coordinator.WithProviders(registry))
+	coordOpts = append(coordOpts, coordinator.WithProviders(registry), coordinator.WithLogWriter(stderr))
 
 	coord := coordinator.New(rt, coordinator.Config{
 		OwnPaneID:   selfPaneID,
