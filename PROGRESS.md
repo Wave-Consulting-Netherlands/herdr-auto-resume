@@ -466,6 +466,15 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     gated on a real resume, not drill evidence), D-P8-12 (instrument production only, leave
     the soak on v0.2.0).
 
+- 2026-08-01, SD-D2 deployed to production (D-P8-10/D-P8-12):
+  - Diagnostic logging landed as 20a109d (462 tests, -race): one line per evidence hash
+    naming pane/provider/reason whenever a limited pane yields no job.
+  - Built `0.2.0-diag (commit 20a109d)` to the DISTINCT path ~/.local/bin/herdr-auto-resume-diag
+    and pointed only the production unit at it (unit comment says how to revert). The soak
+    unit and its binary are untouched; soak pid 884025 still running since 13:48:27 UTC.
+  - The next real limit on wA:p1 now either creates a job or names its reason in the journal,
+    with scripts/limit-capture.sh holding the verbatim screen.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
