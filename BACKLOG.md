@@ -25,6 +25,17 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
 10. **Default transport flip after soak.** Keep --transport cli as the default until the
     explicit socket-mode soak and live drills are clean; then make the default flip a small,
     separately reviewed change.
+13. **Real limits produced no job on two monitored panes (2026-08-01, OPEN — highest
+    priority; PLANS.md milestone SD).** Two Claude sessions hit plain usage-limit banners in
+    `wA:p1` (production watcher) and `wS:p1` (soak watcher). No job, no state file, no log
+    line; neither state file has ever existed. The menu fail-closed path is ruled out (plain
+    banner) and both panes were being monitored. Root cause unknown — the failing path leaves
+    no artifact and the pane text is gone. `scripts/limit-capture.sh` now captures ground
+    truth for the next occurrence.
+14. **Every non-action on a limited pane is silent (PLANS.md D-P8-10).** Menu visible, reset
+    unparsed, provider unresolved, pane not enabled, horizon exceeded — all exit without a
+    trace, which is what made item 13 undiagnosable. Needs one log line per evidence hash
+    naming pane and reason.
 12. **Pane enablement is decided once, at startup (found 2026-08-01, Phase 8 step-5 rehearsal;
     scheduled as PLANS.md D-P8-9 in v0.3.0).** `runcmd.go` runs `Poll() → EnableAll() → Poll()`
     once, and `EnableAll` skips panes whose provider has not resolved yet, leaving

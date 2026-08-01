@@ -450,6 +450,22 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     at 13:45:19Z, attempts=1 → verification saw cleared evidence → RESUMED. Socket transport,
     released v0.2.0 binary, throwaway state file. Rehearsal is explicitly not soak evidence.
 
+- 2026-08-01, **real-world detection failure reported (BACKLOG 13, milestone SD):**
+  - Two Claude sessions hit usage limits and were not resumed: `wA:p1` (production watcher,
+    cli transport) and `wS:p1` (soak watcher, socket transport). Both panes were in their
+    watcher's list at the time. User confirms a plain limit banner, no options menu.
+  - Neither `state.json` nor `soak-state.json` has ever existed, so no job was created for
+    either event — this is a detection/enablement failure, not a resume failure, and the tool
+    has not been observed completing a real-world cycle in production, only in drills.
+  - Ruled out: the menu fail-closed path (`MenuVisible=true` forces `Actionable=false`, which
+    would have explained it, but the banner was plain); panes not being monitored.
+  - Not determined: the failing path writes no job, no state, and no log line, and both panes'
+    text is gone. Candidates left open in PLANS.md D3 rather than guessed at.
+  - Actions: `scripts/limit-capture.sh` (414b8cc) running detached for ground truth; PLANS.md
+    gains blocking milestone SD, plus D-P8-10 (silence is a defect), D-P8-11 (the flip is
+    gated on a real resume, not drill evidence), D-P8-12 (instrument production only, leave
+    the soak on v0.2.0).
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in

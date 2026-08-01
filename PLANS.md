@@ -20,9 +20,17 @@ Deployed watchers during this phase:
 
 ## Sequencing
 
-**S0 ops (now, no release) → S1 soak evidence (48h) → S2 v0.3.0 flip → S3 v0.4.0 features.**
-The flip ships in a release of its own precisely so that a post-flip regression has one
-obvious cause. Features wait.
+**S0 ops (done) → S1 soak evidence (48h, running) → SD real-world diagnosis (NEW, blocking) →
+S2 v0.3.0 flip → S3 v0.4.0 features.**
+
+SD was inserted on 2026-08-01 after two real Claude sessions hit plain usage-limit banners in
+monitored panes (`wA:p1` under the production watcher, `wS:p1` under the soak watcher) and
+produced **no job, no state file, and no log line**. Neither state file has ever existed, so
+the tool has not been observed completing a real-world cycle in production — only in drills.
+
+Transport defaults and startup tolerance are refinements to a tool whose core promise is
+currently failing. They do not ship first. S1 and SD run concurrently (SD's evidence gathering
+is read-only and does not disturb the soak), but **S2 does not begin until SD closes.**
 
 ## Decisions
 
@@ -141,6 +149,25 @@ obvious cause. Features wait.
   provider-active later (enable on transition, preserving any explicit user disable), with a
   regression test that starts a watcher against an unidentifiable pane, makes it identifiable,
   and asserts a job is created.
+- **D-P8-10 Silence on a limited pane is a defect in its own right.** Every path that sees a
+  limited pane and does NOT create a job exits without a trace today: menu visible, reset
+  unparsed, provider unresolved, pane not enabled, horizon exceeded. That silence is why the
+  2026-08-01 incident is undiagnosable after the fact — there is nothing to read. Requirement:
+  when a pane is detected as limited and no job results, log exactly one line per evidence
+  hash naming the pane and the specific reason. Once per evidence hash, not per poll, so a
+  limit sitting on screen for hours does not flood the journal. This is not optional polish;
+  without it the next occurrence is equally undiagnosable.
+- **D-P8-11 The flip is gated on a real-world resume, not on drill evidence.** The soak proves
+  socket transport carries a synthetic cycle. It does not prove the tool resumes a genuine
+  Claude limit, which is what actually failed twice. v0.3.0 does not ship until at least one
+  real limit has been detected, jobbed, and resumed on a real agent pane — or, if the root
+  cause proves to be environmental rather than a code defect, until that is established from
+  captured evidence and recorded here.
+- **D-P8-12 The diagnostic build deploys to PRODUCTION only; the soak watcher stays on
+  v0.2.0.** These are separate units with separate state files, so restarting the production
+  watcher on an instrumented binary does not touch the soak or its clock (D-P8-3 constrains
+  the soak watcher specifically). This buys fast real-world instrumentation without spending
+  the 48h of socket evidence already accumulated.
 - **D-P8-7 Damped recycle ships in v0.4.0, after the flip (BACKLOG 11).** Poisoned sub-30s
   windows degrade to the 30s ticker floor — a latency defect, not a correctness one. Changing
   recycle timing in the flip release would invalidate the soak evidence the flip is gated on.
@@ -202,7 +229,27 @@ obvious cause. Features wait.
    reconnect across a deliberate `herdr server stop`/start, and a pane move across tabs
    (terminal_id follow). Journal entries from this window are expected and timestamped as such.
 
-### S2 — v0.3.0: the flip (only after S1 is clean)
+### SD — real-world diagnosis (blocking; runs concurrently with S1)
+
+- **D1. Ground-truth capture — DONE 2026-08-01** (`scripts/limit-capture.sh`, commit 414b8cc,
+  running detached). Snapshots `wA:p1`/`wR:p1`/`wS:p1` on a signal deliberately broader than
+  the detector's own patterns — matching only what the detector accepts would reproduce the
+  blind spot under investigation. Read-only; bounded by content hash and per-pane cooldown.
+  Captures land in `~/.local/state/herdr-auto-resume/limit-captures/`.
+- **D2. Diagnostic logging (D-P8-10), TDD.** One line per evidence hash naming pane and reason
+  whenever a limited pane yields no job. Ship on the `phase-8-flip` branch, build, and deploy
+  to the PRODUCTION unit only (D-P8-12). Tests: each non-action reason logs exactly once;
+  repeated polls of identical evidence do not re-log; changed evidence logs again.
+- **D3. Diagnose from evidence, not reconstruction.** On the next real limit, correlate the
+  capture with the production journal. Candidate causes to discriminate — do not assume one:
+  banner wording outside the committed fixtures; reset expression parsed as zero (silently
+  drops the job); the banner absent from the read window when polled; pane never enabled
+  (D-P8-9, proven live); provider hint mismatch. Record the finding here before fixing.
+- **D4. Fix with a regression test built FROM the captured pane text**, committed as a fixture
+  so the real screen becomes permanent coverage. Then prove a real cycle end to end
+  (D-P8-11).
+
+### S2 — v0.3.0: the flip (only after S1 is clean AND SD is closed)
 
 10. Transport-default resolution moves behind one shared helper used by `run` AND `doctor`,
     implementing the D-P8-8 matrix; `--transport cli` remains fully supported. Tests: every row
