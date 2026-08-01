@@ -103,6 +103,32 @@ func TestCLIJobDispatch(t *testing.T) {
 	}
 }
 
+func TestJobCommandsSurfaceFutureStateVersion(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, tc := range []struct {
+		name string
+		verb string
+		args []string
+	}{
+		{name: "status", verb: "status"},
+		{name: "inspect", verb: "inspect", args: []string{"job"}},
+		{name: "cancel", verb: "cancel", args: []string{"job"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			if err := os.WriteFile(path, []byte(`{"version":2,"jobs":[]}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			args := append([]string{tc.verb}, tc.args...)
+			args = append(args, "--state-file", path)
+			var out, errOut bytes.Buffer
+			if got := jobCommand(args, &out, &errOut); got != 1 || !strings.Contains(errOut.String(), "error: load state:") || !strings.Contains(errOut.String(), "version 2") || !strings.Contains(errOut.String(), "supported version 1") {
+				t.Fatalf("exit=%d stdout=%q stderr=%q; want surfaced future-version error", got, out.String(), errOut.String())
+			}
+		})
+	}
+}
+
 func TestJobCommandUsesStateFileFromConfigWhenFlagUnset(t *testing.T) {
 	statePath := writeCommandState(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
