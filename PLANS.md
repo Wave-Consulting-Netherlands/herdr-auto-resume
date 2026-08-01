@@ -50,6 +50,11 @@ obvious cause. Features wait.
   near-future reset time, blocks on one line of input, then clears the banner and prints a
   distinct marker — so detection sees valid evidence, exactly one resume lands, and
   verification observes cleared evidence rather than a banner stuck in scrollback.
+  Two further constraints, both learned by building it (`scripts/soak-drill-harness.sh`):
+  the IDLE screen must already identify as Claude, or D-P8-9 leaves the pane inert for the
+  whole soak; and because an idle Claude pane receives a periodic nudge every 15 minutes, the
+  harness must drain buffered input after printing the banner, or the blocking read consumes a
+  months-old nudge and reports a resume that never happened. EOF is likewise not a resume.
 - **D-P8-3 No binary change touches the soak watcher once the clock starts.** Any code landing
   during S1 invalidates S1. The D-P8-2 restart happens before the clock starts and is the last
   restart. Tolerant-startup work (D-P8-4) is written and merged but NOT deployed until S2.
@@ -104,7 +109,7 @@ obvious cause. Features wait.
   receive content only, pane metadata carries no Codex session identifier (live `pane list`
   shows `agent_session` for claude panes and none for the codex pane), and several Codex panes
   can share a cwd — so "newest rollout JSONL" could schedule one pane from another pane's
-  reset. Step 18 is therefore preceded by a spike that must demonstrate a **verified unique
+  reset. Step 19 is therefore preceded by a spike that must demonstrate a **verified unique
   pane→rollout mapping**; if it cannot, BACKLOG 6 is deferred rather than approximated. Given
   a mapping: resolution is an injected pane-aware interface (testable, no global filesystem
   reach from the provider layer); ambiguity, concurrent candidates, missing, unreadable, or
@@ -116,8 +121,25 @@ obvious cause. Features wait.
   **Unresolved by design — these are the spike's output, not the implementer's judgment:** the
   exact JSON pointer, the file-selection rule, the tolerance duration, and which rate-limit
   window is primary when several are present. Step 16 must land a PLANS.md amendment recording
-  all four plus fixture evidence before step 18 may begin; an implementer who reaches step 18
+  all four plus fixture evidence before step 19 may begin; an implementer who reaches step 19
   and finds this paragraph unamended must stop rather than choose values.
+- **D-P8-9 Pane enablement must be re-evaluated, not decided once at startup (found by the
+  step-5 rehearsal, 2026-08-01).** `runcmd.go:524-526` runs `Poll() → EnableAll() → Poll()`
+  exactly once, and `EnableAll` only enables panes where `stateProviderActive` — provider
+  already resolved. A pane whose agent is not identifiable at that instant gets
+  `PaneState{Mode: ModeOff}` and is never revisited: the watcher reports `panes=N` forever and
+  can never act on it. Reproduced live and both directions confirmed on the same pane, banner,
+  binary, and transport — watcher started while the pane was unidentifiable ⇒ no job ever;
+  watcher started while the same banner was visible ⇒ job created and resumed within seconds.
+  Blast radius is production, not just the drill: a systemd watcher that starts before its
+  agent panes attach is silently inert until someone restarts it, and this is exactly the
+  ordering a boot-time unit produces.
+  **This makes D-P8-4 dangerous to ship alone** — a watcher that patiently waits for panes to
+  appear will then never enable them, converting a loud crash loop into a silent no-op. The
+  fix therefore ships in the same release: re-evaluate mode for panes that become
+  provider-active later (enable on transition, preserving any explicit user disable), with a
+  regression test that starts a watcher against an unidentifiable pane, makes it identifiable,
+  and asserts a job is created.
 - **D-P8-7 Damped recycle ships in v0.4.0, after the flip (BACKLOG 11).** Poisoned sub-30s
   windows degrade to the 30s ticker floor — a latency defect, not a correctness one. Changing
   recycle timing in the flip release would invalidate the soak evidence the flip is gated on.
@@ -193,19 +215,23 @@ obvious cause. Features wait.
     when it appears, backoff is rate-limited, the loop logs once per state change, and a
     cancelled context/SIGTERM exits promptly rather than spinning; config/flag precedence
     including set-to-default.
-12. Store upper-version rejection guard (D-P8-5b): a state file whose version exceeds the
+12. Pane re-enablement fix (D-P8-9), TDD — **required in the same release as step 11**, not
+    optional: a pane that becomes provider-active after startup transitions to ModeAuto and
+    produces jobs; an explicitly disabled pane stays disabled; the existing startup path is
+    unchanged for panes identifiable at t=0.
+13. Store upper-version rejection guard (D-P8-5b): a state file whose version exceeds the
     known schema is refused with a clear error instead of being silently coerced.
-13. Docs: README (socket is now the default, when it silently falls back to cli and why, cli
+14. Docs: README (socket is now the default, when it silently falls back to cli and why, cli
     opt-out), both packaging units switch to `--transport socket --wait-for-panes`,
     config.example.yaml, BACKLOG 10 closed.
-14. Release v0.3.0 via `scripts/release.sh`; verify an asset checksum and `version` output;
+15. Release v0.3.0 via `scripts/release.sh`; verify an asset checksum and `version` output;
     install; restart both services on the new binary; `doctor` both transports.
-15. 12h post-flip confirmation on production before S3 starts. A regression here reverts to
+16. 12h post-flip confirmation on production before S3 starts. A regression here reverts to
     `--transport cli` in the unit — one word, no rollback release.
 
 ### S3 — v0.4.0: features
 
-16. `ack` verb (D-P8-5), TDD: `acked_at`/`acked_reason` metadata round-trip; every row of the
+17. `ack` verb (D-P8-5), TDD: `acked_at`/`acked_reason` metadata round-trip; every row of the
     transition matrix including active-state and RESUMED rejection and the idempotent
     already-acked exit 0; the one-locked-transaction contract, proved by a concurrent
     watcher+CLI test where the job changes state between read and lock; the dedup change in
@@ -213,19 +239,19 @@ obvious cause. Features wait.
     creates a new job, non-acked terminal states unchanged; an end-to-end watcher-reload test
     proving the pane is genuinely unparked after a restart; prefix resolution, ambiguous
     prefix, unknown id; `status`/`inspect` rendering; a v0.2.0-shaped state file still loads.
-17. Codex `resets_at` spike (D-P8-6 gate): confirm a unique pane→rollout mapping against
+18. Codex `resets_at` spike (D-P8-6 gate): confirm a unique pane→rollout mapping against
     codex-cli 0.146 with two concurrent Codex panes sharing a cwd. Output is a PLANS.md
     amendment fixing the JSON pointer, file-selection rule, tolerance duration, and
     primary-window selection, with fixture evidence. **If no unique mapping exists, stop here
     and defer BACKLOG 6** with the finding recorded.
-18. Given a mapping AND the step-17 amendment: corroboration behind an injected pane-aware
+19. Given a mapping AND the step-17 amendment: corroboration behind an injected pane-aware
     resolver, TDD against committed fixtures — agreeing epoch refines, disagreement beyond
     tolerance keeps the terminal value and logs once per evidence hash, never-earlier rule
     holds, ambiguous or concurrent candidates fail closed, missing/corrupt file falls back at
     DEBUG.
-19. Damped recycle (D-P8-7), TDD on `recycleDue` timing, plus a live poisoned-window drill
+20. Damped recycle (D-P8-7), TDD on `recycleDue` timing, plus a live poisoned-window drill
     under 30s to prove the gap actually closed.
-20. Release v0.4.0; close BACKLOG 1, 7, 11 — and 6 only if step 17 cleared its gate.
+21. Release v0.4.0; close BACKLOG 1, 7, 11 — and 6 only if step 18 cleared its gate.
 
 ## Risks / open questions
 

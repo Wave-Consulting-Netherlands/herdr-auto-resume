@@ -426,6 +426,27 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     `list panes: ... ConnectionRefused` during a Herdr server bounce at 06:45 UTC. It
     self-healed; `Restart=on-failure` + `RestartSec=5s` behaved as designed.
 
+- 2026-08-01, Phase 8 S1 steps 4–5: drill harness built and rehearsed (PLANS.md D-P8-2):
+  - `scripts/soak-drill-harness.sh` idles as recognizable Claude chrome, emits a real limit
+    banner on a trigger file with a reset ~2 minutes out, accepts one resume, then wipes the
+    banner (ESC[3J, so scrollback goes too) and prints `DRILL-RESUMED-OK`.
+  - Preflight: the banner detects as claude (`IsLimited=true`, `Actionable=true`,
+    `MenuVisible=false`, high confidence) and matches none of Codex's identity patterns, so the
+    agent-less pane resolves to exactly one provider instead of failing closed.
+  - Two harness defects found by self-test before any live use: stdin EOF fell through the
+    unguarded `read` and printed the success marker without a resume (fabricated evidence), and
+    the periodic 15-minute nudge into an idle Claude pane would be consumed by the later
+    blocking read. Fixed with a guarded read and a pre-read input drain.
+  - **Product defect found (BACKLOG 12, scheduled as D-P8-9):** pane enablement is decided once
+    at startup. Same pane, banner, binary, and transport — watcher started while the pane was
+    unidentifiable ⇒ no job ever created (`panes=1`, inert); watcher started while the banner
+    was already visible ⇒ job created and RESUMED within seconds. A boot-time systemd watcher
+    that beats its agent panes to startup is silently inert.
+  - Rehearsal PASS (the real T+48h shape): cold watcher start against the idle harness →
+    trigger → WAITING job `4b606fe1` (reset 13:44:00Z, resume 13:45:00Z) → exactly one resume
+    at 13:45:19Z, attempts=1 → verification saw cleared evidence → RESUMED. Socket transport,
+    released v0.2.0 binary, throwaway state file. Rehearsal is explicitly not soak evidence.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in

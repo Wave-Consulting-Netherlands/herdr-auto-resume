@@ -25,6 +25,13 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
 10. **Default transport flip after soak.** Keep --transport cli as the default until the
     explicit socket-mode soak and live drills are clean; then make the default flip a small,
     separately reviewed change.
+12. **Pane enablement is decided once, at startup (found 2026-08-01, Phase 8 step-5 rehearsal;
+    scheduled as PLANS.md D-P8-9 in v0.3.0).** `runcmd.go` runs `Poll() → EnableAll() → Poll()`
+    once, and `EnableAll` skips panes whose provider has not resolved yet, leaving
+    `Mode = ModeOff` with no later re-evaluation. A watcher that starts before its agent panes
+    attach reports `panes=N` indefinitely and can never act on them. Reproduced live in both
+    directions on one pane, banner, binary, and transport. Must land with `--wait-for-panes`,
+    which otherwise converts a visible crash loop into a silent no-op.
 11. **Poisoned-window sub-30s transients.** pane.output_matched does not refire within one
     subscription, so a stale detection window can consume the armed shot. Live drilling caught
     clean-window 2s transients and poisoned 40s banners; poisoned sub-30s windows remain a
