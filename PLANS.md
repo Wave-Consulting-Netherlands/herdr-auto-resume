@@ -1,166 +1,260 @@
-# PLANS — Phase 7: Packaging, config, single-instance guard, TUI/plugin evaluation (FINAL)
+# PLANS — Phase 8: Socket default flip, tolerant startup, parked-job ack (v0.3.0 + v0.4.0)
 
-Supersedes the completed Phase 6 plan. Authoritative for BRIEF.md §14 Phase 7. Exit
-criteria: **documented installation and upgrade path; no manual process management
-required for normal use.** Closes BACKLOG 2 and 4; audits BRIEF §20.
+_Locked via grill — by Claude + Wave Consulting, 2026-08-01._
+
+Supersedes the completed Phase 7 plan. Closes BACKLOG 1, 6, 7, 10, 11. Exit criteria:
+**socket transport is the default on evidence, not hope; a watcher survives a Herdr restart
+that outlives it; no terminal job can park a pane with no way out.**
 
 Gate per commit: `go build ./... && go vet ./... && go test ./... -race -count=1`
 (Go 1.26.5 at ~/.local/go/bin, GOCACHE=/tmp/herdr-go-cache,
-GOMODCACHE=/tmp/herdr-go-mod-cache). Branch `phase-7-packaging`. Deployed watchers
-(wD:p1 cli, wQ:p1 soak socket, separate state files) keep working all phase; no store
-schema changes; no detection/job behavior changes beyond the run lock.
+GOMODCACHE=/tmp/herdr-go-mod-cache). Store schema stays 1 throughout (D-P8-5).
+
+Deployed watchers during this phase:
+
+- `herdr-auto-resume.service` — production, cli transport, `monitoring.panes: [wA:p1]`,
+  `state.json`.
+- `herdr-auto-resume-soak.service` — socket transport, `--pane wR:p1 --pane wS:p1`,
+  `soak-state.json`, on released v0.2.0; the evidence clock restarts at step 6.
+
+## Sequencing
+
+**S0 ops (now, no release) → S1 soak evidence (48h) → S2 v0.3.0 flip → S3 v0.4.0 features.**
+The flip ships in a release of its own precisely so that a post-flip regression has one
+obvious cause. Features wait.
 
 ## Decisions
 
-- **D-P7-1 Config file: IN, minimal read-only YAML (BRIEF §11).** internal/config.
-  Rationale: last phase — §11 must not stay unconformed; systemd units need a stable
-  ExecStart (edit config → restart, never unit edits); absent file ⇒ byte-identical
-  behavior (parity regression test mandatory). Scope: read-only; flat mapping of
-  EXISTING run flags; `version: 1` required; unknown keys rejected
-  (yaml KnownFields(true)); precedence built-in defaults < config file < explicitly-set
-  flags (flag.FlagSet.Visit tracks set flags — including a flag explicitly set to its
-  default value, which still wins). Path ~/.config/herdr-auto-resume/config.yaml,
-  `--config` override (explicit missing path = error; default missing = fine; honors
-  XDG_CONFIG_HOME). New dependency: gopkg.in/yaml.v3 (the phase's only one).
-- **D-P7-2 First release = v0.2.0, NOT v0.1.0.** Upstream autoclaude tags
-  v0.1.0–v0.1.2 exist and are pushed on origin (ancestors of HEAD). Never touch them;
-  v0.2.0 is a minor bump per §18 (config changes ⇒ minor).
-- **D-P7-3 Plugin: defer.** Live `herdr plugin --help` (0.7.5) shows install/link/
-  enable/list/config-dir/action invoke/log/plugin-owned panes — §8.4's benefits could
-  wrap the existing binary later, but no startup/event-hook contract beyond what the
-  socket API gives, no schema methods, moving 0.7.x target. §21 decision stands.
-  Record capability inventory + wrap-the-binary sketch in docs/packaging.md.
-- **D-P7-4 Herdr-native TUI: defer.** §12: daemon+CLI outrank TUI; status/inspect/
-  doctor + herdr's own views cover the display list. tmux Bubble Tea TUI stays as-is
-  (upstream parity). Record rationale.
-- **D-P7-5 Single-instance run lock (live footgun: a soak watcher defaulted into the
-  production state file).** Exclusive non-blocking flock on `<abs(statePath)>.run`
-  sidecar, acquired once at run startup after resolveStatePath, held for the whole run
-  (fd open). Second instance same state file → fail fast exit 1 with holder PID + hint
-  to use a different --state-file. `--state-file off` ⇒ no lock. Different state files
-  ⇒ different locks (wD/wQ setup untouched). Deliberately NOT the transactional store
-  .lock (short-lived, CLI commands take it) — separate .run file so status/cancel work
-  while a watcher runs. No unlink on release (unlink+flock race trap; stale empty file
-  harmless).
-- **D-P7-6 Fold-ins: BACKLOG 2 only.** writeJobStatus already calls .Local() but host
-  TZ is UTC so unproven — thread a *time.Location (default time.Local), pin with a
-  Europe/Amsterdam regression. BACKLOG 1/6/7/10 stay out (noted deliberately).
-- **D-P7-7 Two first-class run modes:** (1) inside a herdr pane by hand (today's
-  wD:p1); (2) systemd user service / launchd example. Unit: explicit --transport
-  (cli today; post-soak socket = one word), Restart=on-failure, restart-loops until
-  herdr reachable (herdr not systemd-managed here; After=herdr.service shown
-  commented), Environment=PATH=%h/.local/bin:… (user units lack ~/.local/bin),
-  NoNewPrivileges. Docs: `loginctl enable-linger` MANDATORY on headless hosts (this
-  host has Linger=no).
+- **D-P8-1 Soak validity = uptime AND a forced cycle.** Idle uptime proves the socket stays
+  connected; it does not prove detect → WAITING → resume → RESUMED still works over the event
+  path. Clean requires all of: (a) ≥48h from the drill-pane provisioning restart (step 6; the
+  2026-08-01 06:56 UTC start is superseded) with no unexplained restarts of the soak unit;
+  (b) zero socket/reconnect/subscription errors in
+  `journalctl --user -u herdr-auto-resume-soak.service`; (c) ≥1 forced full cycle passing
+  under socket transport on the same v0.2.0 binary.
+  Criterion (b) is evaluated over the window **ending when the T+48h drill begins**, and is
+  frozen and recorded in PROGRESS.md at that moment. The deliberate reconnect drill (step 9)
+  will itself produce reconnect entries; those fall in an explicitly timestamped
+  expected-error window recorded beside the frozen gate and are judged on whether the watcher
+  recovered — not on their absence. Without that split the gate contradicts its own
+  reinforcement step.
+- **D-P8-2 The forced cycle runs THROUGH the soak watcher, on a pre-provisioned harness pane.**
+  Two corrections from review round 1: (a) `--test-pattern` is not a lifecycle drill — it calls
+  `sendResume` directly (`coordinator.go:213`) and never creates a durable job, so it proves
+  only that key injection works over the socket; (b) a fresh third watcher opens a fresh
+  subscription, which cannot prove the 48-hour-old stream still delivers events, and stream
+  longevity is the entire point of the soak. Therefore: provision a long-lived drill pane NOW,
+  add it to the soak watcher's pane list, and restart the soak once at provisioning time
+  (cheap — the clock has barely started). The drill fires at T+48h through the aged connection.
+  The harness is a script, not `/bin/cat`: it prints a real provider limit banner with a
+  near-future reset time, blocks on one line of input, then clears the banner and prints a
+  distinct marker — so detection sees valid evidence, exactly one resume lands, and
+  verification observes cleared evidence rather than a banner stuck in scrollback.
+- **D-P8-3 No binary change touches the soak watcher once the clock starts.** Any code landing
+  during S1 invalidates S1. The D-P8-2 restart happens before the clock starts and is the last
+  restart. Tolerant-startup work (D-P8-4) is written and merged but NOT deployed until S2.
+- **D-P8-4 Tolerant startup behind `--wait-for-panes`, default off — covering list ERRORS, not
+  just empty results.** Review round 1 is correct that the flag as first specified would not
+  have fixed the outage that motivated it: startup returns 1 on `ListPanes` error
+  (`runcmd.go:474`) before the empty-match check is ever reached, and the observed 166 restarts
+  were `list panes: ConnectionRefused` during a Herdr server bounce — not empty matches. Under
+  the flag, zero matches and **retryable** list errors enter a rate-limited retry loop (fixed
+  backoff, logged once per state change, not per attempt) that is context/signal-aware so
+  SIGTERM still stops the process promptly. Retryable means transient reachability only —
+  connection refused, socket absent, timeout, EOF mid-request. Permanent failures still exit 1
+  even under the flag: protocol-version mismatch, malformed or undecodable responses,
+  permission/authentication denials, and configuration errors such as an unsupported transport
+  or an unusable socket path. Caveat from review round 3: a mistyped socket path and a socket
+  that simply has not been created yet both surface as `ENOENT` and are indistinguishable at
+  runtime, so a valid-but-absent path stays RETRYABLE; only a syntactically invalid path (empty,
+  non-absolute after expansion, or over the ~108-byte `sun_path` limit) fails fast.
+  A service that retries a protocol mismatch every 5s forever is a worse
+  outcome than the crash loop this flag exists to remove — it looks healthy and monitors
+  nothing. Default stays fail-fast so an interactive run still tells you the
+  pane ID is wrong; both shipped units set the flag. Startup-only behavior — it does not touch
+  the running event path, which is why it can share the v0.3.0 release with the flip.
+- **D-P8-5 `ack <job-id-prefix>` as a RELEASED TOMBSTONE, expressed in metadata, no schema
+  bump (BACKLOG 1 + 7).** Two corrections from review round 1. (a) A new terminal state alone
+  unparks nothing: `handleLimitLocked` (`manager.go:198`) suppresses a new job unless the
+  existing job is terminal **and** `State == StateResumed` **and** the evidence hash differs,
+  so `ACKED` would block exactly like `FAILED` does today. The dedup condition must treat an
+  acknowledged job as released: identical evidence stays suppressed (no resume loop on an
+  unchanged banner), changed evidence may create a new job. (b) A schema bump is the wrong
+  tool: `JSONStore.Load` accepts any version, and a v0.2.0 binary reading an unknown `ACKED`
+  state would treat it as non-terminal and keep the pane parked — a silent wrong-direction
+  downgrade. So acknowledgement is recorded as `acked_at` (+ `acked_reason`) metadata on the
+  existing terminal job; old readers see a familiar terminal state and behave as they do now.
+  A defensive upper-version rejection guard ships anyway in v0.3.0 for future changes.
+  Otherwise unchanged: explicit job-id prefix only, resolution and ambiguity handling mirror
+  `cancel`, no `--all`, no TTL auto-expiry, credits parks get a clear `inspect` reason string
+  rather than a second verb.
+  **Transition matrix (exhaustive, nothing implied):** terminal-and-not-RESUMED → ACKED, the
+  only success path. Active states (WAITING, and any in-flight resume/verify state) → rejected,
+  "job is still active; cancel it first" — ack must never race the scheduler for a job it may
+  be mid-resume on. RESUMED → rejected as a no-op, nothing is parked. Already-acked → rejected
+  as a no-op, exit 0 so a repeated ack in a script is not an error. Unknown or ambiguous prefix
+  → rejected exactly as `cancel` does.
+  **Transaction contract:** prefix resolution, eligibility check, mutation, and save happen
+  inside ONE store transaction against a freshly loaded snapshot under the existing `.lock` —
+  never resolve from a snapshot read before the lock and write it back after. A concurrent
+  watcher+CLI test must prove a job that changed state between read and lock is re-evaluated,
+  not clobbered.
+- **D-P8-6 Codex `resets_at` corroboration is GATED ON A SPIKE, and fails closed (BACKLOG 6).**
+  Review round 1 is right that the correlation is unspecified and unsafe as written: providers
+  receive content only, pane metadata carries no Codex session identifier (live `pane list`
+  shows `agent_session` for claude panes and none for the codex pane), and several Codex panes
+  can share a cwd — so "newest rollout JSONL" could schedule one pane from another pane's
+  reset. Step 18 is therefore preceded by a spike that must demonstrate a **verified unique
+  pane→rollout mapping**; if it cannot, BACKLOG 6 is deferred rather than approximated. Given
+  a mapping: resolution is an injected pane-aware interface (testable, no global filesystem
+  reach from the provider layer); ambiguity, concurrent candidates, missing, unreadable, or
+  unparseable files all fail closed to the terminal-parsed value. The merge rule is explicit —
+  named JSON field, an explicit tolerance window, and **never earlier than the terminal value**
+  (a too-early resume is the harmful direction) — with divergence logged once per evidence
+  hash at INFO, not per poll. "Silent fallback" from the round-0 wording is withdrawn: absence
+  is DEBUG, disagreement is INFO.
+  **Unresolved by design — these are the spike's output, not the implementer's judgment:** the
+  exact JSON pointer, the file-selection rule, the tolerance duration, and which rate-limit
+  window is primary when several are present. Step 16 must land a PLANS.md amendment recording
+  all four plus fixture evidence before step 18 may begin; an implementer who reaches step 18
+  and finds this paragraph unamended must stop rather than choose values.
+- **D-P8-7 Damped recycle ships in v0.4.0, after the flip (BACKLOG 11).** Poisoned sub-30s
+  windows degrade to the 30s ticker floor — a latency defect, not a correctness one. Changing
+  recycle timing in the flip release would invalidate the soak evidence the flip is gated on.
+  Fix it on a known-good socket baseline: recycle immediately after each trigger-poll with
+  ~5s identical-content damping, extending `recycleDue`.
+- **D-P8-8 The flip's blast radius is `--runtime tmux` FIRST, `--session` second — resolved by
+  a written precedence matrix.** Review round 1 caught the larger break: `runcmd.go:141`
+  rejects socket transport unless runtime is herdr, so a default flip turns every
+  `--runtime tmux` invocation into a hard startup error, and the same applies to the tmux TUI
+  path. `--session` is the second case. Resolution: transport defaults to socket **only when
+  the effective runtime is herdr and no `--session` is in play**; otherwise it defaults to cli
+  with a warning naming the flag that caused the fallback. Explicitly requested impossible
+  combinations (`--transport socket --runtime tmux`, `--transport socket --session x`) keep
+  erroring exactly as today — the fallback applies to defaults, never to an explicit request.
+  "Explicit" means `flag.FlagSet.Visit` saw the flag, or the YAML set the key; the matrix
+  covers built-in default / YAML / flag × herdr / tmux × session-set / unset, for **both**
+  `run` and `doctor` (which resolves configuration on its own path, `doctorcmd.go:70`), and
+  every row gets a test.
 
-## Commits
+## Work
 
-1. **Release identity + version provenance (BACKLOG 4).**
-   - main.go: add `var commit = "none"`, `var date = "unknown"`; `version` prints
-     `herdr-auto-resume <version> (commit <commit>, built <date>, <go version>)`;
-     version=="dev" falls back to runtime/debug.ReadBuildInfo vcs.revision/vcs.time.
-   - doctorcmd.go: first line `INFO version: herdr-auto-resume <version> (<commit>)`
-     (both transports; §18 doctor-in-bug-reports).
-   - .goreleaser.yml: project_name herdr-auto-resume; builds[0].binary
-     herdr-auto-resume; ldflags `-s -w -X main.version={{.Version}} -X
-     main.commit={{.ShortCommit}} -X main.date={{.Date}}`; drop homebrew comment.
-   - .github/workflows/ci.yml: go-version-file go.mod; add release-dry-run job
-     (goreleaser-action ~> v2: `check` then `release --snapshot --clean
-     --skip=publish`, fetch-depth 0) — goreleaser is NOT installed locally; CI is the
-     validation.
-   - .github/workflows/release.yml: go-version-file go.mod; remove
-     HOMEBREW_TAP_GITHUB_TOKEN.
-   - scripts/release.sh: REPO=Wave-Consulting-Netherlands/herdr-auto-resume; delete
-     homebrew-tap section; keep tag-guard → tag → push → gh run watch → checksums.
-   - README.md: fix CI badge to org repo (restructure waits for commit 5).
-   Tests: version output (name, injected values, dev fallback no-panic); doctor
-   version-line-first with otherwise byte-identical output (both transports).
-2. **Single-instance run lock (D-P7-5, TDD).**
-   - internal/store/runlock.go: AcquireRunLock(statePath) (*RunLock, error) —
-     MkdirAll 0700, open `<abs>.run` O_RDWR|O_CREATE 0600, Flock LOCK_EX|LOCK_NB;
-     EWOULDBLOCK → read stored PID → error "state file %s is already in use by
-     herdr-auto-resume run (pid %s); use a different --state-file for a second
-     watcher"; success → truncate+write own PID; Release() closes fd.
-   - runcmd.go: after resolveStatePath, if statePath != "off" acquire; error → print +
-     exit 1; defer Release.
-   - doctorcmd.go: NB-probe the resolved .run lock → `INFO watcher: active (pid N) on
-     <path>` / `INFO watcher: none on <path>`; release probe immediately.
-   Tests: second acquire same path fails w/ path+pid (flock conflicts across separate
-   open descriptions in-process — no subprocess needed); different paths both succeed;
-   release-then-reacquire; PID written; runCommand exits 1 before runtime construction
-   when pre-held; `--state-file off` touches no lock; doctor INFO lines.
-3. **Minimal YAML config (D-P7-1, TDD).**
-   - go.mod/go.sum: gopkg.in/yaml.v3.
-   - internal/config/config.go + validate.go: Load(path) (Config, found bool, error).
-     Schema (all optional except version: 1):
-     runtime{type herdr, transport cli, herdr_bin, socket, workspace};
-     monitoring{panes [], interval 3s, lines 200};
-     resume{margin 60s, max_wait 192h, verify_timeout 90s};
-     providers{enabled [claude codex], claude_prompt, codex_prompt};
-     state{file auto}. Strict decode, durations via ParseDuration, ~ expansion for
-     socket/state.file. DefaultPath honors XDG_CONFIG_HOME.
-   - runcmd.go: --config flag; merge defaults → config → explicitly-set flags
-     (fs.Visit); ALL existing validation runs on the merged result (pane requirement
-     satisfiable from monitoring.panes — makes the systemd unit generic).
-   - jobscmd.go: job commands' --state-file default comes from config state.file when
-     resolvable (fixes wrong-state-file status confusion).
-   - doctorcmd.go: config check — absent default `INFO config: none`; valid `PASS
-     config: <path>`; invalid `FAIL` with the validation error.
-   Tests: full parse; unknown key rejected naming the key; version missing/wrong;
-   bad duration/transport/provider; tilde expansion; absent default = zero+not-found;
-   precedence matrix incl. flag-set-to-default-value wins; panes-from-config satisfies
-   requirement; --config missing explicit path errors; **absent config ⇒ parseRunFlags
-   deep-equals today's output (deployment parity)**. go mod tidy clean.
-4. **BACKLOG 2 + packaging assets.**
-   - jobscmd.go: writeJobStatus(out, jobs, loc *time.Location); caller passes
-     time.Local; Europe/Amsterdam regression proves local rendering. Close BACKLOG 2.
-   - packaging/systemd/herdr-auto-resume.service per D-P7-7 (Type=exec; ExecStart
-     `%h/.local/bin/herdr-auto-resume run --config %h/.config/herdr-auto-resume/
-     config.yaml --transport cli`; Environment=PATH=%h/.local/bin:/usr/local/bin:
-     /usr/bin:/bin; Restart=on-failure; RestartSec=5s; NoNewPrivileges=yes;
-     StartLimitIntervalSec=0; WantedBy=default.target; commented After/Wants
-     herdr.service).
-   - packaging/launchd/nl.wave-consulting.herdr-auto-resume.plist: ProgramArguments
-     […run --config … --transport cli], RunAtLoad, KeepAlive{SuccessfulExit=false},
-     Std*Path under ~/Library/Logs; marked example-only/untested.
-   - packaging/config.example.yaml: full commented schema.
-   Verify: gate; `systemd-analyze --user verify` non-gating; plistlib parse check.
-5. **README restructure + docs + conformance audit.**
-   - README: Install (release tarballs, go install, source), Quickstart, Running it
-     (pane mode AND systemd/launchd, linger note), Operations (status/inspect/cancel/
-     detect/doctor, multi-watcher state isolation + run lock), Configuration reference
-     (all flags + config schema + precedence), Upgrade (binary replace → restart;
-     semver policy per §18; tested herdr/CC/Codex versions per release),
-     Troubleshooting (doctor first, run-lock error meaning). Keep fork notice + tmux
-     TUI section.
-   - docs/packaging.md: plugin inventory (D-P7-3), TUI deferral (D-P7-4), release
-     flow, launchd caveat.
-   - PROGRESS.md: Phase 7 record + D-P7 decisions + **BRIEF §20 audit**: met 1,2,4-17
-     (evidence per phase records); met-with-deviation 3 (strict opt-in, no runtime
-     enable/disable verbs — disable = restart without the pane; intentional);
-     deferred: herdr TUI, plugin packaging, §12 `test` subcommand (covered by
-     --test-pattern + --dry-run), §11 logging/notifications config sections.
-   - BACKLOG.md: close 2 and 4; annotate 5 out-of-repo; 1/6/7/10 kept deliberately;
-     fix duplicate item numbering.
-6. **(Orchestrator)** L1 doctor both transports (version/config/watcher lines);
-   L2 run-lock live drill vs the running wD watcher (default state → fail-fast w/ PID;
-   /tmp state → starts); L3 config-parity restart of wD (+ optional systemd migration:
-   enable-linger, unit, verify); L4 merge + CI green incl. release-dry-run;
-   L5 release: ./scripts/release.sh 0.2.0 → tag → CI release → verify linux_arm64
-   asset checksum + `version` output → install → restart watchers; L6 PROGRESS release
-   record (tested versions: herdr 0.7.5/proto 17 + CC/Codex versions in use).
+### S0 — ops hardening (no release; partly done 2026-08-01)
 
-## Risks
+1. Done: soak restarted as `~/.config/systemd/user/herdr-auto-resume-soak.service`; production
+   `monitoring.panes` trimmed `[w1:p1, w4:p1, wA:p1, w6:p1, w7:p1]` → `[wA:p1]`; both services
+   verified (`panes=1` / `panes=2` via throwaway `--state-file off --dry-run` instances,
+   `doctor` PASS on both state files). Recorded in PROGRESS.md, commit 62a4a80.
+2. Add `.codex-review/` to `.gitignore` (grill scratch, not an artifact).
+3. README Troubleshooting: pane IDs are per-session and go stale when workspaces close; a
+   watcher that restarts every 5s with "none of the requested panes were found" means a stale
+   `monitoring.panes`, not a broken install.
 
-1. Goreleaser validated only in CI (absent locally) — release-dry-run job lands on
-   master BEFORE tagging; failed tag release = delete only v0.2.0, retry.
-2. Never touch v0.0.x/v0.1.x upstream tags.
-3. Old/new binary mix during rollout takes no cross lock (old predates .run) —
-   accepted; restart both watchers promptly; documented.
-4. Config precedence regressions — absent-file parity test mandatory; deployment gets
-   no config file until L3.
-5. fs.Visit walks only SET flags — the set-to-default-value case is pinned in tests.
-6. systemd user-unit PATH restriction — unit ships Environment=PATH; docs prefer
-   absolute --herdr-bin; linger required (host has Linger=no).
-7. yaml.v3 maintenance mode — accepted (tiny strict surface).
-8. BACKLOG.md has duplicate item numbers — renumber while editing.
+### S1 — soak evidence (48h clock restarts at drill-pane provisioning)
+
+4. Provision the drill harness (D-P8-2): a long-lived scratch workspace whose pane runs a
+   script that idles until signalled, then prints a real provider limit banner with a reset
+   ~2 minutes out, blocks on one line of stdin, and on receiving it clears the banner and
+   prints a distinct marker. Validate the banner text against the committed detection fixtures
+   with `herdr-auto-resume detect --provider … --file …` BEFORE it is used as evidence — a
+   drill that fails because the banner was never recognized proves nothing about transport.
+   Detection preflight is necessary but not sufficient: terminal clearing, line discipline
+   (does the harness's blocking read actually consume the injected line?), and what
+   verification observes after the clear are all still unproven at this point.
+5. **Rehearse the whole cycle before the clock starts.** Run one complete throwaway
+   WAITING → RESUMED cycle against the harness using a disposable watcher — same v0.2.0
+   binary, same socket transport, same `--lines` read depth, same provider action, same
+   terminal setup, throwaway state file. This rehearsal is explicitly NOT evidence (fresh
+   connection, D-P8-2); its only job is to fail now rather than at T+48h. Fix the harness and
+   repeat until it passes. Only then:
+6. Restart the soak unit once with the drill pane appended to its pane list. **This restart
+   starts the 48h clock**; no further restarts (D-P8-3).
+7. Passive: daily `journalctl --user -u herdr-auto-resume-soak.service` sweep for restarts and
+   socket errors; `doctor --transport socket --state-file …/soak-state.json` PASS.
+8. At T+48h, freeze and record criterion (b) in PROGRESS.md, then signal the harness and assert
+   through the aged connection: detection → WAITING job persisted in `soak-state.json` →
+   exactly one resume → RESUMED with attempts=1 → verification saw cleared evidence. Record the
+   transcript and job id.
+9. Reinforcement on the same aged watcher, after the drill and after the gate is frozen:
+   reconnect across a deliberate `herdr server stop`/start, and a pane move across tabs
+   (terminal_id follow). Journal entries from this window are expected and timestamped as such.
+
+### S2 — v0.3.0: the flip (only after S1 is clean)
+
+10. Transport-default resolution moves behind one shared helper used by `run` AND `doctor`,
+    implementing the D-P8-8 matrix; `--transport cli` remains fully supported. Tests: every row
+    of defaults/YAML/flag × herdr/tmux × session-set/unset, in both commands, plus
+    explicitly-requested impossible combinations still erroring and explicit-cli parity.
+11. `--wait-for-panes` + `monitoring.wait_for_panes` (D-P8-4), TDD. Tests: off ⇒ list error
+    exits 1 and zero matches exits 1 (today's behavior, pinned); on ⇒ retryable list errors
+    (connection refused, absent socket, timeout, mid-request EOF) retry and recover when the
+    runtime returns, **permanent errors (protocol mismatch, malformed response, permission
+    denial, configuration error) still exit 1**, zero matches retries and picks the pane up
+    when it appears, backoff is rate-limited, the loop logs once per state change, and a
+    cancelled context/SIGTERM exits promptly rather than spinning; config/flag precedence
+    including set-to-default.
+12. Store upper-version rejection guard (D-P8-5b): a state file whose version exceeds the
+    known schema is refused with a clear error instead of being silently coerced.
+13. Docs: README (socket is now the default, when it silently falls back to cli and why, cli
+    opt-out), both packaging units switch to `--transport socket --wait-for-panes`,
+    config.example.yaml, BACKLOG 10 closed.
+14. Release v0.3.0 via `scripts/release.sh`; verify an asset checksum and `version` output;
+    install; restart both services on the new binary; `doctor` both transports.
+15. 12h post-flip confirmation on production before S3 starts. A regression here reverts to
+    `--transport cli` in the unit — one word, no rollback release.
+
+### S3 — v0.4.0: features
+
+16. `ack` verb (D-P8-5), TDD: `acked_at`/`acked_reason` metadata round-trip; every row of the
+    transition matrix including active-state and RESUMED rejection and the idempotent
+    already-acked exit 0; the one-locked-transaction contract, proved by a concurrent
+    watcher+CLI test where the job changes state between read and lock; the dedup change in
+    `handleLimitLocked` — acked + identical evidence stays suppressed, acked + changed evidence
+    creates a new job, non-acked terminal states unchanged; an end-to-end watcher-reload test
+    proving the pane is genuinely unparked after a restart; prefix resolution, ambiguous
+    prefix, unknown id; `status`/`inspect` rendering; a v0.2.0-shaped state file still loads.
+17. Codex `resets_at` spike (D-P8-6 gate): confirm a unique pane→rollout mapping against
+    codex-cli 0.146 with two concurrent Codex panes sharing a cwd. Output is a PLANS.md
+    amendment fixing the JSON pointer, file-selection rule, tolerance duration, and
+    primary-window selection, with fixture evidence. **If no unique mapping exists, stop here
+    and defer BACKLOG 6** with the finding recorded.
+18. Given a mapping AND the step-17 amendment: corroboration behind an injected pane-aware
+    resolver, TDD against committed fixtures — agreeing epoch refines, disagreement beyond
+    tolerance keeps the terminal value and logs once per evidence hash, never-earlier rule
+    holds, ambiguous or concurrent candidates fail closed, missing/corrupt file falls back at
+    DEBUG.
+19. Damped recycle (D-P8-7), TDD on `recycleDue` timing, plus a live poisoned-window drill
+    under 30s to prove the gap actually closed.
+20. Release v0.4.0; close BACKLOG 1, 7, 11 — and 6 only if step 17 cleared its gate.
+
+## Risks / open questions
+
+1. **The soak may never see a real limit event.** D-P8-1 accepts synthetic evidence; a genuine
+   organic cycle under socket is nice-to-have, not a gate. If the flip later proves wrong, the
+   forced-cycle drill is the artifact to re-examine first.
+2. **Two watchers, disjoint panes, one Herdr.** Production covers `wA:p1`, soak covers
+   `wR:p1`/`wS:p1`. If either pane list is ever edited to overlap, both watchers can resume the
+   same pane — state dedup is per-state-file and offers no cross-watcher protection.
+3. **`wA:p1` is this Claude session's own pane.** The production watcher monitors the pane an
+   agent session runs in; self-pane exclusion only applies to the watcher's own `HERDR_PANE_ID`,
+   which systemd units do not inherit.
+4. **Ack correctness lives in the dedup rule, not the verb** (D-P8-5). The CLI surface is
+   trivial; the risk is `handleLimitLocked` — too loose and an unchanged banner triggers a
+   resume loop, too tight and the pane is still parked. The end-to-end reload test is the
+   real acceptance criterion, not the unit tests around the verb.
+5. **BACKLOG 6 may be undeliverable** (D-P8-6). Herdr exposes `agent_session` for claude panes
+   but not for the codex pane observed live; if no unique pane→rollout mapping exists, the
+   honest outcome is deferral, not a heuristic that can schedule one pane from another pane's
+   reset.
+6. **Flipping the default is a behavior change for existing installs** that never set
+   `--transport`. Semver minor per §18, called out in release notes; `doctor` output makes the
+   active transport obvious.
+7. **The 48h clock restarts** if the soak unit is restarted for any reason, including a Herdr
+   server bounce that outlives its retry window.
+
+## Out of scope
+
+Herdr-native TUI and plugin packaging (D-P7-3/4 deferrals stand); pane selection by stable
+identity such as workspace label or cwd (noted as a successor to D-P8-4, not this phase);
+BRIEF §11 logging/notification config sections; any change to the tmux runtime or TUI;
+upstream-tag hygiene beyond leaving v0.1.x alone.
