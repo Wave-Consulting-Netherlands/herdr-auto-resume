@@ -154,7 +154,14 @@ func (o *Operator) Run(prefix string, output io.Writer) error {
 	if workspace.PaneID == "" {
 		return errors.New("create revive workspace returned no pane id")
 	}
-	if err := o.config.Spawner.RunPane(workspace.PaneID, "claude", "--resume", session.SessionID); err != nil {
+	// herdr 0.7.5: `workspace create --cwd` records the cwd in the envelope but
+	// the pane shell still opens in the server's startup cwd (verified live),
+	// and `claude --resume` resolves sessions per-cwd. Enter the session's cwd
+	// explicitly, passing cwd and session id as positional shell parameters so
+	// file-sourced values are data, never shell-interpolated.
+	if err := o.config.Spawner.RunPane(workspace.PaneID,
+		"sh", "-c", `cd "$1" && exec claude --resume "$2"`, "sh",
+		session.CWD, session.SessionID); err != nil {
 		return fmt.Errorf("start Claude in revive pane: %w", err)
 	}
 	pane, err := o.waitForAttachment(session.SessionID)

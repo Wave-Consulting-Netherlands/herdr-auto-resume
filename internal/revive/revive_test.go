@@ -79,7 +79,7 @@ func TestOperatorHappyPathPersistsAttachedAfterSpawn(t *testing.T) {
 	if err := op.Run("11111111-1111-4111-8111-111", &output); err != nil {
 		t.Fatal(err)
 	}
-	if spawner.creates != 1 || len(spawner.runs) != 1 || strings.Join(spawner.runs[0], " ") != "pane-1 claude --resume "+reviveSessionID {
+	if spawner.creates != 1 || len(spawner.runs) != 1 || strings.Join(spawner.runs[0], " ") != `pane-1 sh -c cd "$1" && exec claude --resume "$2" sh /tmp/revive `+reviveSessionID {
 		t.Fatalf("unexpected spawn calls: %#v", spawner)
 	}
 	if !strings.Contains(output.String(), "no continue was sent") {
