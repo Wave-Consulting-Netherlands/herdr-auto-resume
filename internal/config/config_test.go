@@ -81,6 +81,28 @@ func TestLoadParsesSessionFileChannel(t *testing.T) {
 	}
 }
 
+func TestLoadParsesAdmissionAndRequiresSessionFileChannel(t *testing.T) {
+	path := writeConfig(t, "version: 1\nproviders:\n  session_file_channel: true\nmonitoring:\n  admit_session_matches: true\n")
+	cfg, found, err := Load(path)
+	if err != nil || !found || !cfg.Has("monitoring.admit_session_matches") || !cfg.Monitoring.AdmitSessionMatches {
+		t.Fatalf("cfg=%#v found=%v err=%v, want admission enabled", cfg, found, err)
+	}
+
+	path = writeConfig(t, "version: 1\nmonitoring:\n  admit_session_matches: true\n")
+	_, _, err = Load(path)
+	if err == nil || !strings.Contains(err.Error(), "monitoring.admit_session_matches") || !strings.Contains(err.Error(), "providers.session_file_channel") {
+		t.Fatalf("Load() error = %v, want admission prerequisite naming both keys", err)
+	}
+}
+
+func TestLoadRejectsAdmissionForTmux(t *testing.T) {
+	path := writeConfig(t, "version: 1\nruntime:\n  type: tmux\nproviders:\n  session_file_channel: true\nmonitoring:\n  admit_session_matches: true\n")
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "admit_session_matches") || !strings.Contains(err.Error(), "tmux") {
+		t.Fatalf("Load() error = %v, want tmux admission rejection", err)
+	}
+}
+
 func TestLoadRejectsSessionFileChannelForTmux(t *testing.T) {
 	path := writeConfig(t, "version: 1\nruntime:\n  type: tmux\nproviders:\n  session_file_channel: true\n")
 	_, _, err := Load(path)

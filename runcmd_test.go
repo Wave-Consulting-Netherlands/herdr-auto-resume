@@ -141,6 +141,49 @@ func TestParseRunFlagsSessionFileChannelFlagAndYAML(t *testing.T) {
 	}
 }
 
+func TestParseRunFlagsAdmissionFlagAndYAML(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stderr bytes.Buffer
+	cfg, err := parseRunFlags([]string{"--pane", "w1:p1", "--session-file-channel", "--admit-session-matches"}, &stderr)
+	if err != nil || !cfg.AdmitSessionMatches {
+		t.Fatalf("flag cfg=%#v err=%v, want admission enabled", cfg, err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nproviders:\n  session_file_channel: true\nmonitoring:\n  admit_session_matches: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = parseRunFlags([]string{"--config", path, "--pane", "w1:p1"}, &stderr)
+	if err != nil || !cfg.AdmitSessionMatches {
+		t.Fatalf("YAML cfg=%#v err=%v, want admission enabled", cfg, err)
+	}
+}
+
+func TestParseRunFlagsRejectsAdmissionValidationMatrix(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{name: "channel off", args: []string{"--pane", "w1:p1", "--admit-session-matches"}, want: []string{"admit_session_matches", "session_file_channel"}},
+		{name: "tmux", args: []string{"--pane", "w1:p1", "--session-file-channel", "--admit-session-matches", "--runtime", "tmux"}, want: []string{"admit_session_matches", "tmux"}},
+		{name: "state off", args: []string{"--pane", "w1:p1", "--session-file-channel", "--admit-session-matches", "--state-file", "off"}, want: []string{"admit_session_matches", "state-file"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			_, err := parseRunFlags(tc.args, &stderr)
+			if err == nil {
+				t.Fatalf("args=%v accepted, want validation error", tc.args)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error=%v, want substring %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestParseRunFlagsRejectsSessionFileChannelWithoutPersistentStateOrOnTmux(t *testing.T) {
 	for _, args := range [][]string{
 		{"--pane", "w1:p1", "--session-file-channel", "--state-file", "off"},
@@ -471,6 +514,7 @@ func TestRecycleDueRequiresTriggerAndSixtySecondBound(t *testing.T) {
 }
 
 func TestParseRunFlagsAcceptsRepeatedPanesAndOptions(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var stderr bytes.Buffer
 	cfg, err := parseRunFlags([]string{
 		"--runtime", "tmux", "--pane", "w1:p1", "--pane", "w2:p1",
@@ -546,6 +590,7 @@ func TestRunCommandFailsOnHeldRunLockBeforeRuntimeConstruction(t *testing.T) {
 }
 
 func TestRunCommandStateFileOffDoesNotCreateRunLock(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	var stderr bytes.Buffer
 	if got := runCommand([]string{"--pane", "w1:p1", "--state-file", "off", "--herdr-bin", "/missing/herdr"}, nil, &stderr); got != 1 {

@@ -14,13 +14,14 @@ import (
 )
 
 type Config struct {
-	OwnPaneID          string
-	TestPattern        string
-	DryRun             bool
-	ReadLines          int
-	SessionFileChannel bool
-	Margin             time.Duration
-	VerifyTimeout      time.Duration
+	OwnPaneID           string
+	TestPattern         string
+	DryRun              bool
+	ReadLines           int
+	SessionFileChannel  bool
+	AdmitSessionMatches bool
+	Margin              time.Duration
+	VerifyTimeout       time.Duration
 }
 
 type ActionRecord struct {
@@ -293,6 +294,78 @@ func (c *Coordinator) Poll() {
 	}
 }
 
+// AdmitSessionFilePanes examines a complete, unfiltered pane snapshot before
+// the normal monitored-pane filter runs. Admission is deliberately kept in
+// the coordinator loop: the caller mutates its in-memory monitored set in
+// admit, while the observation remains pending until ProcessSessionFile
+// creates or deduplicates the job. The set is intentionally not persisted;
+// an admitted pane must be re-admitted after watcher restart by a fresh
+// observation.
+func (c *Coordinator) AdmitSessionFilePanes(panes []runtime.Pane, complete bool, isMonitored func(runtime.Pane) bool, selfPaneID string, admit func(runtime.Pane), now time.Time) {
+	if !c.cfg.SessionFileChannel || !c.cfg.AdmitSessionMatches || c.sessionFileSource == nil || !complete || admit == nil {
+		return
+	}
+	if _, err := c.sessionFileSource.Scan(); err != nil {
+		c.logf("session-file admission scan failed: %v", err)
+		return
+	}
+	pending, err := c.sessionFileSource.Pending()
+	if err != nil {
+		c.logf("session-file admission pending load failed: %v", err)
+		return
+	}
+	verifyTimeout := c.cfg.VerifyTimeout
+	if verifyTimeout <= 0 {
+		verifyTimeout = 90 * time.Second
+	}
+	margin := c.cfg.Margin
+	if margin < 0 {
+		margin = 0
+	}
+	for _, observation := range pending {
+		if sessionFileObservationExpired(observation, now, margin, verifyTimeout) {
+			continue
+		}
+		matches := make([]runtime.Pane, 0, 1)
+		for _, pane := range panes {
+			if pane.AgentSessionID == observation.SessionID {
+				matches = append(matches, pane)
+			}
+		}
+		if len(matches) != 1 {
+			c.logf("session-file admission request=%s pending: %d agent_session matches", observation.RequestID, len(matches))
+			continue
+		}
+		pane := matches[0]
+		if selfPaneID != "" && pane.ID == selfPaneID {
+			c.logf("session-file admission request=%s refused: self pane=%s", observation.RequestID, pane.ID)
+			continue
+		}
+		if !strings.EqualFold(pane.Agent, observation.Provider) {
+			c.logf("session-file admission request=%s refused: provider mismatch pane=%s pane_provider=%q observation_provider=%q", observation.RequestID, pane.ID, pane.Agent, observation.Provider)
+			continue
+		}
+		if pane.CWD != observation.CWD {
+			c.logf("session-file admission request=%s refused: cwd mismatch pane=%s pane_cwd=%q observation_cwd=%q", observation.RequestID, pane.ID, pane.CWD, observation.CWD)
+			continue
+		}
+		if isMonitored != nil && isMonitored(pane) {
+			continue
+		}
+		episodeID := fmt.Sprintf("%s/%s/%s", observation.Provider, observation.SessionID, observation.ResetAt.UTC().Format(time.RFC3339))
+		if resolver, ok := c.sessionFileSource.(sessionFileEpisodeResolver); ok {
+			episode, _, err := resolver.ResolveEpisode(observation)
+			if err != nil {
+				c.logf("session-file admission request=%s episode resolve failed: %v", observation.RequestID, err)
+				continue
+			}
+			episodeID = episode.ID
+		}
+		c.logf("session-file admission: admitted pane=%s session=%s episode=%s", pane.ID, observation.SessionID, episodeID)
+		admit(pane)
+	}
+}
+
 // ProcessSessionFile scans and resolves pending file observations against the
 // fresh monitored-pane snapshot. It runs in the coordinator's serialized loop.
 func (c *Coordinator) ProcessSessionFile(panes []runtime.Pane, now time.Time) {
@@ -321,11 +394,7 @@ func (c *Coordinator) ProcessSessionFile(panes []runtime.Pane, now time.Time) {
 		if observedAt.IsZero() {
 			observedAt = now
 		}
-		expiresAt := observation.ResetAt.Add(verifyTimeout)
-		if alt := observedAt.Add(24 * time.Hour); alt.Before(expiresAt) {
-			expiresAt = alt
-		}
-		if !observation.ResetAt.IsZero() && (now.After(observation.ResetAt.Add(margin)) || !now.Before(expiresAt)) {
+		if sessionFileObservationExpired(observation, now, margin, verifyTimeout) {
 			_ = c.sessionFileSource.CommitPending(observation.RequestID, "rejected")
 			continue
 		}
@@ -364,6 +433,18 @@ func (c *Coordinator) ProcessSessionFile(panes []runtime.Pane, now time.Time) {
 			}
 		}
 	}
+}
+
+func sessionFileObservationExpired(observation sessionfile.SessionObservation, now time.Time, margin, verifyTimeout time.Duration) bool {
+	observedAt := observation.ObservedAt
+	if observedAt.IsZero() {
+		observedAt = now
+	}
+	expiresAt := observation.ResetAt.Add(verifyTimeout)
+	if alt := observedAt.Add(24 * time.Hour); alt.Before(expiresAt) {
+		expiresAt = alt
+	}
+	return !observation.ResetAt.IsZero() && (now.After(observation.ResetAt.Add(margin)) || !now.Before(expiresAt))
 }
 
 func (c *Coordinator) logf(format string, args ...any) {

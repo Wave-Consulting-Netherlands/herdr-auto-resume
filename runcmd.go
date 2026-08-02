@@ -38,28 +38,29 @@ func (s *stringList) Set(value string) error {
 }
 
 type runConfig struct {
-	Runtime            string
-	Transport          string
-	TransportExplicit  bool
-	SocketExplicit     bool
-	Panes              []string
-	Interval           time.Duration
-	Lines              int
-	DryRun             bool
-	TestPattern        string
-	HerdrBin           string
-	Socket             string
-	Session            string
-	Workspace          string
-	StateFile          string
-	Margin             time.Duration
-	MaxWait            time.Duration
-	VerifyTimeout      time.Duration
-	WaitForPanes       bool
-	Providers          string
-	SessionFileChannel bool
-	ClaudePrompt       string
-	CodexPrompt        string
+	Runtime             string
+	Transport           string
+	TransportExplicit   bool
+	SocketExplicit      bool
+	Panes               []string
+	Interval            time.Duration
+	Lines               int
+	DryRun              bool
+	TestPattern         string
+	HerdrBin            string
+	Socket              string
+	Session             string
+	Workspace           string
+	StateFile           string
+	Margin              time.Duration
+	MaxWait             time.Duration
+	VerifyTimeout       time.Duration
+	WaitForPanes        bool
+	Providers           string
+	SessionFileChannel  bool
+	AdmitSessionMatches bool
+	ClaudePrompt        string
+	CodexPrompt         string
 }
 
 const herdrDetectionMatchRegex = `(?i)(?:limit\s+reached|rate\s+limit|usage\s+limit|out\s+of\s+(?:extra\s+)?usage|try\s+again\s+in|you['’]ve\s+hit\s+your|out\s+of\s+credits|spend\s+cap)`
@@ -99,6 +100,7 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	fs.DurationVar(&cfg.VerifyTimeout, "verify-timeout", 90*time.Second, "resume verification timeout")
 	fs.StringVar(&cfg.Providers, "providers", "claude,codex", "enabled providers: claude,codex")
 	fs.BoolVar(&cfg.SessionFileChannel, "session-file-channel", false, "read Claude session files and correlate rate-limit observations")
+	fs.BoolVar(&cfg.AdmitSessionMatches, "admit-session-matches", false, "admit an unmonitored pane named by a session-file observation")
 	fs.StringVar(&cfg.ClaudePrompt, "claude-prompt", claude.New("").ResumeAction().Text, "Claude continuation prompt")
 	fs.StringVar(&cfg.CodexPrompt, "codex-prompt", codex.New("").ResumeAction().Text, "Codex continuation prompt")
 	if err := fs.Parse(args); err != nil {
@@ -142,6 +144,24 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	}
 	if cfg.Runtime != "herdr" && cfg.Runtime != "tmux" {
 		err := fmt.Errorf("unsupported runtime %q", cfg.Runtime)
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.AdmitSessionMatches && !cfg.SessionFileChannel {
+		err := errors.New("monitoring.admit_session_matches requires providers.session_file_channel")
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.AdmitSessionMatches && cfg.Runtime == "tmux" {
+		err := errors.New("monitoring.admit_session_matches requires a session-identity runtime; runtime.type tmux has no agent session")
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.AdmitSessionMatches && resolveStatePath(cfg) == "off" {
+		err := errors.New("monitoring.admit_session_matches requires a persistent --state-file")
 		fmt.Fprintln(stderr, "error:", err)
 		fs.Usage()
 		return runConfig{}, err
@@ -248,6 +268,9 @@ func mergeRunConfig(defaults runConfig, file appconfig.Config) runConfig {
 	if file.Has("providers.session_file_channel") {
 		merged.SessionFileChannel = file.Providers.SessionFileChannel
 	}
+	if file.Has("monitoring.admit_session_matches") {
+		merged.AdmitSessionMatches = file.Monitoring.AdmitSessionMatches
+	}
 	if file.Has("providers.claude_prompt") {
 		merged.ClaudePrompt = file.Providers.ClaudePrompt
 	}
@@ -301,6 +324,8 @@ func applyExplicitRunFlags(dst, parsed *runConfig, panes *stringList, fs *flag.F
 			dst.Providers = parsed.Providers
 		case "session-file-channel":
 			dst.SessionFileChannel = parsed.SessionFileChannel
+		case "admit-session-matches":
+			dst.AdmitSessionMatches = parsed.AdmitSessionMatches
 		case "claude-prompt":
 			dst.ClaudePrompt = parsed.ClaudePrompt
 		case "codex-prompt":
@@ -351,6 +376,10 @@ func filterPanes(panes []runtimeapi.Pane, requested []string, ownPaneID string) 
 }
 
 func filterPanesByIdentity(panes []runtimeapi.Pane, requested []string, terminalIDs map[string]struct{}, ownPaneID string) ([]runtimeapi.Pane, bool) {
+	return filterPanesByIdentityWithPaneIDs(panes, requested, terminalIDs, nil, ownPaneID)
+}
+
+func filterPanesByIdentityWithPaneIDs(panes []runtimeapi.Pane, requested []string, terminalIDs, paneIDs map[string]struct{}, ownPaneID string) ([]runtimeapi.Pane, bool) {
 	wanted := make(map[string]struct{}, len(requested))
 	for _, id := range requested {
 		wanted[id] = struct{}{}
@@ -360,7 +389,8 @@ func filterPanesByIdentity(panes []runtimeapi.Pane, requested []string, terminal
 	for _, pane := range panes {
 		_, idWanted := wanted[pane.ID]
 		_, terminalWanted := terminalIDs[pane.TerminalID]
-		if !idWanted && !terminalWanted {
+		_, paneWanted := paneIDs[pane.ID]
+		if !idWanted && !terminalWanted && !paneWanted {
 			continue
 		}
 		if ownPaneID != "" && pane.ID == ownPaneID {
@@ -625,7 +655,9 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		return 1
 	}
 	monitoredTerminalIDs := make(map[string]struct{})
+	monitoredPaneIDs := make(map[string]struct{}, len(panes))
 	for _, pane := range panes {
+		monitoredPaneIDs[pane.ID] = struct{}{}
 		if pane.TerminalID != "" {
 			monitoredTerminalIDs[pane.TerminalID] = struct{}{}
 		}
@@ -678,13 +710,14 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	coordOpts = append(coordOpts, coordinator.WithProviders(registry), coordinator.WithLogWriter(stderr))
 
 	coord := coordinator.New(rt, coordinator.Config{
-		OwnPaneID:          selfPaneID,
-		TestPattern:        cfg.TestPattern,
-		DryRun:             cfg.DryRun,
-		ReadLines:          cfg.Lines,
-		SessionFileChannel: cfg.SessionFileChannel,
-		Margin:             cfg.Margin,
-		VerifyTimeout:      cfg.VerifyTimeout,
+		OwnPaneID:           selfPaneID,
+		TestPattern:         cfg.TestPattern,
+		DryRun:              cfg.DryRun,
+		ReadLines:           cfg.Lines,
+		SessionFileChannel:  cfg.SessionFileChannel,
+		AdmitSessionMatches: cfg.AdmitSessionMatches,
+		Margin:              cfg.Margin,
+		VerifyTimeout:       cfg.VerifyTimeout,
 	}, coordOpts...)
 	coord.SetPanes(panes)
 	coord.Poll()
@@ -721,6 +754,28 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	subscribedPaneIDs := paneIDs(panes)
 	lastRecycle := time.Now()
 	var lastTrigger time.Time
+	admitPane := func(pane runtimeapi.Pane) {
+		// Admission is watcher-lifetime state only. A restart must require a
+		// fresh session-file observation before widening monitoring again.
+		monitoredPaneIDs[pane.ID] = struct{}{}
+		if pane.TerminalID != "" {
+			monitoredTerminalIDs[pane.TerminalID] = struct{}{}
+		}
+		seen := false
+		for _, subscribed := range subscribedPaneIDs {
+			if subscribed == pane.ID {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			subscribedPaneIDs = append(subscribedPaneIDs, pane.ID)
+			if eventSource != nil {
+				eventSource.UpdateSubscribedPanes(append([]string(nil), subscribedPaneIDs...))
+				lastRecycle = time.Now()
+			}
+		}
+	}
 	coord.RunLoopWithCadence(ctx, detectionTicks, statusTicker.C, func() ([]runtimeapi.Pane, error) {
 		var snapshot []runtimeapi.Pane
 		var hasSnapshot bool
@@ -751,6 +806,8 @@ func runCommand(args []string, _, stderr io.Writer) int {
 							}
 						}
 						if monitored {
+							delete(monitoredPaneIDs, event.PreviousPaneID)
+							monitoredPaneIDs[event.Pane.ID] = struct{}{}
 							if manager != nil {
 								if err := manager.ReassignPane(event.PreviousPaneID, event.Pane); err != nil {
 									fmt.Fprintf(stderr, "warning: reassign pane identity: %v\n", err)
@@ -778,7 +835,11 @@ func runCommand(args []string, _, stderr io.Writer) int {
 						lastRecycle = time.Now()
 					}
 					if hasSnapshot {
-						filtered, _ := filterPanesByIdentity(snapshot, cfg.Panes, monitoredTerminalIDs, selfPaneID)
+						coord.AdmitSessionFilePanes(snapshot, true, func(pane runtimeapi.Pane) bool {
+							_, ok := monitoredPaneIDs[pane.ID]
+							return ok
+						}, selfPaneID, admitPane, time.Now())
+						filtered, _ := filterPanesByIdentityWithPaneIDs(snapshot, cfg.Panes, monitoredTerminalIDs, monitoredPaneIDs, selfPaneID)
 						return filtered, nil
 					}
 					goto refreshFromRuntime
@@ -790,7 +851,11 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		if err != nil {
 			return nil, err
 		}
-		filtered, _ := filterPanesByIdentity(all, cfg.Panes, monitoredTerminalIDs, selfPaneID)
+		coord.AdmitSessionFilePanes(all, true, func(pane runtimeapi.Pane) bool {
+			_, ok := monitoredPaneIDs[pane.ID]
+			return ok
+		}, selfPaneID, admitPane, time.Now())
+		filtered, _ := filterPanesByIdentityWithPaneIDs(all, cfg.Panes, monitoredTerminalIDs, monitoredPaneIDs, selfPaneID)
 		return filtered, nil
 	}, managerTick(manager), stderr)
 	return 0
