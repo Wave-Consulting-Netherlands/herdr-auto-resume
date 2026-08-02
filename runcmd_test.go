@@ -124,6 +124,36 @@ func TestParseRunFlagsWaitForPanesDefaultsOffAndHonorsFlagAndYAML(t *testing.T) 
 	}
 }
 
+func TestParseRunFlagsSessionFileChannelFlagAndYAML(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stderr bytes.Buffer
+	cfg, err := parseRunFlags([]string{"--pane", "w1:p1", "--session-file-channel"}, &stderr)
+	if err != nil || !cfg.SessionFileChannel {
+		t.Fatalf("flag cfg=%#v err=%v, want enabled", cfg, err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nproviders:\n  session_file_channel: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = parseRunFlags([]string{"--config", path, "--pane", "w1:p1"}, &stderr)
+	if err != nil || !cfg.SessionFileChannel {
+		t.Fatalf("YAML cfg=%#v err=%v, want enabled", cfg, err)
+	}
+}
+
+func TestParseRunFlagsRejectsSessionFileChannelWithoutPersistentStateOrOnTmux(t *testing.T) {
+	for _, args := range [][]string{
+		{"--pane", "w1:p1", "--session-file-channel", "--state-file", "off"},
+		{"--pane", "w1:p1", "--session-file-channel", "--runtime", "tmux"},
+	} {
+		var stderr bytes.Buffer
+		_, err := parseRunFlags(args, &stderr)
+		if err == nil || !strings.Contains(err.Error(), "session_file_channel") {
+			t.Fatalf("args=%v error=%v stderr=%q, want session_file_channel rejection", args, err, stderr.String())
+		}
+	}
+}
+
 func TestRunCommandWaitForPanesOffKeepsStartupExitContract(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HERDR_PANE_ID", "")

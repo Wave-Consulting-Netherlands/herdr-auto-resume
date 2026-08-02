@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -9,13 +10,17 @@ import (
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/sessionfile"
 )
 
 type Config struct {
-	OwnPaneID   string
-	TestPattern string
-	DryRun      bool
-	ReadLines   int
+	OwnPaneID          string
+	TestPattern        string
+	DryRun             bool
+	ReadLines          int
+	SessionFileChannel bool
+	Margin             time.Duration
+	VerifyTimeout      time.Duration
 }
 
 type ActionRecord struct {
@@ -35,6 +40,8 @@ type FailureRecord struct {
 type LimitEvent struct {
 	Pane       runtime.Pane
 	Provider   string
+	Source     string
+	EpisodeID  string
 	ResetsRaw  string
 	ResetTime  time.Time
 	Spec       detection.ResetSpec
@@ -46,6 +53,16 @@ type LimitEvent struct {
 // JobSink owns known-reset limit episodes when configured by the headless runner.
 type JobSink interface {
 	HandleLimit(LimitEvent) bool
+}
+
+type SessionFileSource interface {
+	Scan() ([]sessionfile.SessionObservation, error)
+	Pending() ([]sessionfile.SessionObservation, error)
+	CommitPending(requestID, episodeID string) error
+}
+
+type sessionFileEpisodeResolver interface {
+	ResolveEpisode(sessionfile.SessionObservation) (sessionfile.Episode, bool, error)
 }
 
 type Option func(*Coordinator)
@@ -86,6 +103,10 @@ func WithProviders(registry *provider.Registry) Option {
 	}
 }
 
+func WithSessionFileSource(source SessionFileSource) Option {
+	return func(c *Coordinator) { c.sessionFileSource = source }
+}
+
 type Coordinator struct {
 	rt                 runtime.Runtime
 	cfg                Config
@@ -103,6 +124,7 @@ type Coordinator struct {
 	providers          *provider.Registry
 	logw               io.Writer
 	diagnosticEvidence map[string]string
+	sessionFileSource  SessionFileSource
 }
 
 func defaultRegistry() *provider.Registry {
@@ -269,6 +291,83 @@ func (c *Coordinator) Poll() {
 		}
 		c.states[paneID] = *state
 	}
+}
+
+// ProcessSessionFile scans and resolves pending file observations against the
+// fresh monitored-pane snapshot. It runs in the coordinator's serialized loop.
+func (c *Coordinator) ProcessSessionFile(panes []runtime.Pane, now time.Time) {
+	if !c.cfg.SessionFileChannel || c.sessionFileSource == nil {
+		return
+	}
+	if _, err := c.sessionFileSource.Scan(); err != nil {
+		c.logf("session-file scan failed: %v", err)
+		return
+	}
+	pending, err := c.sessionFileSource.Pending()
+	if err != nil {
+		c.logf("session-file pending load failed: %v", err)
+		return
+	}
+	verifyTimeout := c.cfg.VerifyTimeout
+	if verifyTimeout <= 0 {
+		verifyTimeout = 90 * time.Second
+	}
+	margin := c.cfg.Margin
+	if margin < 0 {
+		margin = 0
+	}
+	for _, observation := range pending {
+		observedAt := observation.ObservedAt
+		if observedAt.IsZero() {
+			observedAt = now
+		}
+		expiresAt := observation.ResetAt.Add(verifyTimeout)
+		if alt := observedAt.Add(24 * time.Hour); alt.Before(expiresAt) {
+			expiresAt = alt
+		}
+		if !observation.ResetAt.IsZero() && (now.After(observation.ResetAt.Add(margin)) || !now.Before(expiresAt)) {
+			_ = c.sessionFileSource.CommitPending(observation.RequestID, "rejected")
+			continue
+		}
+		matches := make([]runtime.Pane, 0, 1)
+		for _, pane := range panes {
+			if pane.AgentSessionID != observation.SessionID || !strings.EqualFold(pane.Agent, observation.Provider) || pane.CWD != observation.CWD {
+				continue
+			}
+			matches = append(matches, pane)
+		}
+		if len(matches) != 1 {
+			c.logf("session-file request=%s pending: %d consistent monitored pane matches", observation.RequestID, len(matches))
+			continue
+		}
+		if c.jobSink == nil {
+			c.logf("session-file request=%s pending: job manager unavailable", observation.RequestID)
+			continue
+		}
+		spec := detection.ParseReset(observation.ResetRaw, observedAt)
+		event := LimitEvent{
+			Pane: matches[0], Provider: observation.Provider, Source: "session-file",
+			ResetsRaw: observation.ResetRaw, ResetTime: observation.ResetAt, Spec: spec,
+			Content: observation.ResetRaw, Evidence: observation.ResetRaw, ObservedAt: observedAt,
+		}
+		if resolver, ok := c.sessionFileSource.(sessionFileEpisodeResolver); ok {
+			episode, _, err := resolver.ResolveEpisode(observation)
+			if err != nil {
+				c.logf("session-file request=%s episode resolve failed: %v", observation.RequestID, err)
+				continue
+			}
+			event.EpisodeID = episode.ID
+		}
+		if c.jobSink.HandleLimit(event) {
+			if err := c.sessionFileSource.CommitPending(observation.RequestID, event.EpisodeID); err != nil {
+				c.logf("session-file request=%s commit failed: %v", observation.RequestID, err)
+			}
+		}
+	}
+}
+
+func (c *Coordinator) logf(format string, args ...any) {
+	fmt.Fprintf(c.logw, format+"\n", args...)
 }
 
 func (c *Coordinator) Snapshot() []PaneState {

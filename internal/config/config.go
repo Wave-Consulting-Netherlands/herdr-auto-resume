@@ -48,9 +48,10 @@ type ResumeConfig struct {
 }
 
 type ProvidersConfig struct {
-	Enabled      []string
-	ClaudePrompt string
-	CodexPrompt  string
+	Enabled            []string
+	ClaudePrompt       string
+	CodexPrompt        string
+	SessionFileChannel bool
 }
 
 type StateConfig struct {
@@ -88,9 +89,10 @@ type rawResumeConfig struct {
 }
 
 type rawProvidersConfig struct {
-	Enabled      []string `yaml:"enabled"`
-	ClaudePrompt string   `yaml:"claude_prompt"`
-	CodexPrompt  string   `yaml:"codex_prompt"`
+	Enabled            []string `yaml:"enabled"`
+	ClaudePrompt       string   `yaml:"claude_prompt"`
+	CodexPrompt        string   `yaml:"codex_prompt"`
+	SessionFileChannel *bool    `yaml:"session_file_channel"`
 }
 
 type rawStateConfig struct {
@@ -178,9 +180,13 @@ func Load(path string) (Config, bool, error) {
 	mark("providers.enabled", raw.Providers.Enabled != nil)
 	mark("providers.claude_prompt", raw.Providers.ClaudePrompt != "")
 	mark("providers.codex_prompt", raw.Providers.CodexPrompt != "")
+	mark("providers.session_file_channel", raw.Providers.SessionFileChannel != nil)
 	mark("state.file", raw.State.File != "")
 	if raw.Runtime.Transport != nil {
 		parsed.Runtime.Transport = *raw.Runtime.Transport
+	}
+	if raw.Providers.SessionFileChannel != nil {
+		parsed.Providers.SessionFileChannel = *raw.Providers.SessionFileChannel
 	}
 	if raw.Runtime.Socket != nil {
 		parsed.Runtime.Socket = *raw.Runtime.Socket

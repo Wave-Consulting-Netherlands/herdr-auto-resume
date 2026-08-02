@@ -275,7 +275,7 @@ func responseIDMatches(raw json.RawMessage, want uint64) bool {
 func panesFromInfo(infos []paneInfo) []runtimeapi.Pane {
 	panes := make([]runtimeapi.Pane, 0, len(infos))
 	for _, pane := range infos {
-		panes = append(panes, runtimeapi.Pane{ID: pane.PaneID, TerminalID: pane.TerminalID, WorkspaceID: pane.WorkspaceID, Title: pane.TerminalTitle, Agent: pane.Agent, AgentSessionID: pane.AgentSession.Value})
+		panes = append(panes, runtimeapi.Pane{ID: pane.PaneID, TerminalID: pane.TerminalID, WorkspaceID: pane.WorkspaceID, Title: pane.TerminalTitle, CWD: pane.CWD, Agent: pane.Agent, AgentSessionID: pane.AgentSession.Value})
 	}
 	return panes
 }

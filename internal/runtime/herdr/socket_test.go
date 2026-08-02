@@ -151,7 +151,7 @@ func TestSocketRuntimeMethodsUseOneRequestPerConnectionAndExactParams(t *testing
 		t.Fatalf("SelfPaneID() = %q, %v; socket transport must not read HERDR_*", got, err)
 	}
 	panes, err := client.ListPanes()
-	if err != nil || !reflect.DeepEqual(panes, []runtimeapi.Pane{{ID: "p1", TerminalID: "term-1", Title: "Claude", Agent: "claude", AgentSessionID: "829d1239-1560-476e-8744-e0c4df8b2b8c"}, {ID: "p2", TerminalID: "term-2"}}) {
+	if err != nil || !reflect.DeepEqual(panes, []runtimeapi.Pane{{ID: "p1", TerminalID: "term-1", Title: "Claude", CWD: "/work", Agent: "claude", AgentSessionID: "829d1239-1560-476e-8744-e0c4df8b2b8c"}, {ID: "p2", TerminalID: "term-2"}}) {
 		t.Fatalf("ListPanes() = %#v, %v", panes, err)
 	}
 	if got, err := client.ReadPane("p1", 17); err != nil || got != "screen" {
@@ -174,7 +174,7 @@ func TestSocketRuntimeMethodsUseOneRequestPerConnectionAndExactParams(t *testing
 		t.Fatalf("Ping() = %#v, %v", pong, err)
 	}
 	snapshot, err := client.Snapshot()
-	if err != nil || len(snapshot.Panes) != 2 || snapshot.Panes[0].TerminalID != "term-1" || snapshot.Panes[0].AgentSessionID != "829d1239-1560-476e-8744-e0c4df8b2b8c" || snapshot.Panes[1].AgentSessionID != "" {
+	if err != nil || len(snapshot.Panes) != 2 || snapshot.Panes[0].TerminalID != "term-1" || snapshot.Panes[0].CWD != "/work" || snapshot.Panes[0].AgentSessionID != "829d1239-1560-476e-8744-e0c4df8b2b8c" || snapshot.Panes[1].AgentSessionID != "" {
 		t.Fatalf("Snapshot() = %#v, %v", snapshot, err)
 	}
 

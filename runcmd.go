@@ -22,6 +22,7 @@ import (
 	runtimeapi "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	herdradapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/herdr"
 	tmuxadapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/tmux"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/sessionfile"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
 
@@ -37,27 +38,28 @@ func (s *stringList) Set(value string) error {
 }
 
 type runConfig struct {
-	Runtime           string
-	Transport         string
-	TransportExplicit bool
-	SocketExplicit    bool
-	Panes             []string
-	Interval          time.Duration
-	Lines             int
-	DryRun            bool
-	TestPattern       string
-	HerdrBin          string
-	Socket            string
-	Session           string
-	Workspace         string
-	StateFile         string
-	Margin            time.Duration
-	MaxWait           time.Duration
-	VerifyTimeout     time.Duration
-	WaitForPanes      bool
-	Providers         string
-	ClaudePrompt      string
-	CodexPrompt       string
+	Runtime            string
+	Transport          string
+	TransportExplicit  bool
+	SocketExplicit     bool
+	Panes              []string
+	Interval           time.Duration
+	Lines              int
+	DryRun             bool
+	TestPattern        string
+	HerdrBin           string
+	Socket             string
+	Session            string
+	Workspace          string
+	StateFile          string
+	Margin             time.Duration
+	MaxWait            time.Duration
+	VerifyTimeout      time.Duration
+	WaitForPanes       bool
+	Providers          string
+	SessionFileChannel bool
+	ClaudePrompt       string
+	CodexPrompt        string
 }
 
 const herdrDetectionMatchRegex = `(?i)(?:limit\s+reached|rate\s+limit|usage\s+limit|out\s+of\s+(?:extra\s+)?usage|try\s+again\s+in|you['’]ve\s+hit\s+your|out\s+of\s+credits|spend\s+cap)`
@@ -96,6 +98,7 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	fs.DurationVar(&cfg.MaxWait, "max-wait", 192*time.Hour, "maximum scheduled wait horizon")
 	fs.DurationVar(&cfg.VerifyTimeout, "verify-timeout", 90*time.Second, "resume verification timeout")
 	fs.StringVar(&cfg.Providers, "providers", "claude,codex", "enabled providers: claude,codex")
+	fs.BoolVar(&cfg.SessionFileChannel, "session-file-channel", false, "read Claude session files and correlate rate-limit observations")
 	fs.StringVar(&cfg.ClaudePrompt, "claude-prompt", claude.New("").ResumeAction().Text, "Claude continuation prompt")
 	fs.StringVar(&cfg.CodexPrompt, "codex-prompt", codex.New("").ResumeAction().Text, "Codex continuation prompt")
 	if err := fs.Parse(args); err != nil {
@@ -139,6 +142,18 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	}
 	if cfg.Runtime != "herdr" && cfg.Runtime != "tmux" {
 		err := fmt.Errorf("unsupported runtime %q", cfg.Runtime)
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.SessionFileChannel && cfg.Runtime == "tmux" {
+		err := errors.New("providers.session_file_channel requires a session-identity runtime; runtime.type tmux has no agent session")
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.SessionFileChannel && resolveStatePath(cfg) == "off" {
+		err := errors.New("providers.session_file_channel requires a persistent --state-file")
 		fmt.Fprintln(stderr, "error:", err)
 		fs.Usage()
 		return runConfig{}, err
@@ -230,6 +245,9 @@ func mergeRunConfig(defaults runConfig, file appconfig.Config) runConfig {
 	if file.Has("providers.enabled") {
 		merged.Providers = strings.Join(file.Providers.Enabled, ",")
 	}
+	if file.Has("providers.session_file_channel") {
+		merged.SessionFileChannel = file.Providers.SessionFileChannel
+	}
 	if file.Has("providers.claude_prompt") {
 		merged.ClaudePrompt = file.Providers.ClaudePrompt
 	}
@@ -281,6 +299,8 @@ func applyExplicitRunFlags(dst, parsed *runConfig, panes *stringList, fs *flag.F
 			dst.VerifyTimeout = parsed.VerifyTimeout
 		case "providers":
 			dst.Providers = parsed.Providers
+		case "session-file-channel":
+			dst.SessionFileChannel = parsed.SessionFileChannel
 		case "claude-prompt":
 			dst.ClaudePrompt = parsed.ClaudePrompt
 		case "codex-prompt":
@@ -613,8 +633,22 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	fmt.Fprintf(stderr, "state path: %s\n", statePath)
 	coordOpts := make([]coordinator.Option, 0, 2)
 	var manager *jobs.Manager
+	var sessionScanner *sessionfile.Scanner
+	var episodeRegistry *sessionfile.EpisodeRegistry
 	if statePath != "off" {
 		st := store.NewJSONStore(statePath)
+		if cfg.SessionFileChannel {
+			sessionScanner, err = sessionfile.New(sessionfile.Config{StatePath: statePath})
+			if err != nil {
+				fmt.Fprintf(stderr, "Error: initialize session-file scanner: %v\n", err)
+				return 1
+			}
+			episodeRegistry, err = sessionfile.NewEpisodeRegistry(statePath)
+			if err != nil {
+				fmt.Fprintf(stderr, "Error: initialize episode registry: %v\n", err)
+				return 1
+			}
+		}
 		manager = jobs.New(rt, st, jobs.Config{
 			Provider:      "claude",
 			Margin:        cfg.Margin,
@@ -622,23 +656,35 @@ func runCommand(args []string, _, stderr io.Writer) int {
 			VerifyTimeout: cfg.VerifyTimeout,
 			ReadLines:     cfg.Lines,
 			DryRun:        cfg.DryRun,
-		}, jobs.WithLogWriter(stderr), jobs.WithProviders(registry))
+		}, jobs.WithLogWriter(stderr), jobs.WithProviders(registry), jobs.WithEpisodeRegistry(episodeRegistry))
 		if err := manager.Reconcile(); err != nil {
 			fmt.Fprintf(stderr, "Error: reconcile state: %v\n", err)
 			return 1
+		}
+		if sessionScanner != nil {
+			if err := sessionScanner.ReconcilePending(manager.EpisodeIDs()); err != nil {
+				fmt.Fprintf(stderr, "Error: reconcile session-file pending observations: %v\n", err)
+				return 1
+			}
 		}
 		coordOpts = append(coordOpts,
 			coordinator.WithJobSink(manager),
 			coordinator.WithPostPoll(manager.Tick),
 		)
 	}
+	if sessionScanner != nil {
+		coordOpts = append(coordOpts, coordinator.WithSessionFileSource(sessionScanner))
+	}
 	coordOpts = append(coordOpts, coordinator.WithProviders(registry), coordinator.WithLogWriter(stderr))
 
 	coord := coordinator.New(rt, coordinator.Config{
-		OwnPaneID:   selfPaneID,
-		TestPattern: cfg.TestPattern,
-		DryRun:      cfg.DryRun,
-		ReadLines:   cfg.Lines,
+		OwnPaneID:          selfPaneID,
+		TestPattern:        cfg.TestPattern,
+		DryRun:             cfg.DryRun,
+		ReadLines:          cfg.Lines,
+		SessionFileChannel: cfg.SessionFileChannel,
+		Margin:             cfg.Margin,
+		VerifyTimeout:      cfg.VerifyTimeout,
 	}, coordOpts...)
 	coord.SetPanes(panes)
 	coord.Poll()

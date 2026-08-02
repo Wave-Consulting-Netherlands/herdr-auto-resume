@@ -1,1 +1,1 @@
-{"id":"socket:pane:list","result":{"panes":[{"agent":"claude","agent_session":{"value":"829d1239-1560-476e-8744-e0c4df8b2b8c"},"pane_id":"p1","terminal_id":"term-1","terminal_title":"Claude"},{"pane_id":"p2","terminal_id":"term-2"}]}}
+{"id":"socket:pane:list","result":{"panes":[{"agent":"claude","agent_session":{"value":"829d1239-1560-476e-8744-e0c4df8b2b8c"},"cwd":"/work","pane_id":"p1","terminal_id":"term-1","terminal_title":"Claude"},{"pane_id":"p2","terminal_id":"term-2"}]}}

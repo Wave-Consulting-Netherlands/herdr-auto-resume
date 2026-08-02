@@ -57,6 +57,8 @@ type Job struct {
 	EvidenceHash      string    `json:"evidence_hash"`
 	EvidenceAtUTC     time.Time `json:"evidence_at_utc"`
 	DryRun            bool      `json:"dry_run"`
+	Episode           string    `json:"episode,omitempty"`
+	Source            string    `json:"source,omitempty"`
 }
 
 // File is the complete on-disk state document.

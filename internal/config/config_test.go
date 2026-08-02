@@ -73,6 +73,22 @@ func TestLoadParsesWaitForPanes(t *testing.T) {
 	}
 }
 
+func TestLoadParsesSessionFileChannel(t *testing.T) {
+	path := writeConfig(t, "version: 1\nproviders:\n  session_file_channel: true\n")
+	cfg, found, err := Load(path)
+	if err != nil || !found || !cfg.Has("providers.session_file_channel") || !cfg.Providers.SessionFileChannel {
+		t.Fatalf("cfg=%#v found=%v err=%v, want session file channel enabled", cfg, found, err)
+	}
+}
+
+func TestLoadRejectsSessionFileChannelForTmux(t *testing.T) {
+	path := writeConfig(t, "version: 1\nruntime:\n  type: tmux\nproviders:\n  session_file_channel: true\n")
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "session_file_channel") || !strings.Contains(err.Error(), "tmux") {
+		t.Fatalf("Load() error = %v, want tmux session-file rejection", err)
+	}
+}
+
 func TestLoadRejectsUnknownKey(t *testing.T) {
 	_, _, err := Load(writeConfig(t, "version: 1\nunknown: true\n"))
 	if err == nil || !strings.Contains(err.Error(), "unknown") {

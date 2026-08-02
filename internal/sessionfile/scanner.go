@@ -66,11 +66,23 @@ type Scanner struct {
 	afterPersist func(SessionObservation) error
 }
 
+// ResolveEpisode shares the scanner sidecar's episode registry with the
+// coordinator and scrape job path.
+func (s *Scanner) ResolveEpisode(observation SessionObservation) (Episode, bool, error) {
+	registry, err := NewEpisodeRegistry(s.statePath)
+	if err != nil {
+		return Episode{}, false, err
+	}
+	return registry.Resolve(observation)
+}
+
 type sidecar struct {
 	Version        int                   `json:"version"`
 	Files          map[string]fileCursor `json:"files"`
 	Pending        []SessionObservation  `json:"pending"`
 	SeenRequestIDs map[string]bool       `json:"seen_request_ids"`
+	Episodes       []episodeRecord       `json:"episodes"`
+	Committed      map[string]string     `json:"committed"`
 }
 
 type fileCursor struct {
@@ -341,7 +353,7 @@ func unlock(file *os.File) {
 func (s *Scanner) readSidecar() (sidecar, error) {
 	data, err := os.ReadFile(s.sidecarPath())
 	if os.IsNotExist(err) {
-		return sidecar{Version: sidecarVersion, Files: map[string]fileCursor{}, SeenRequestIDs: map[string]bool{}}, nil
+		return sidecar{Version: sidecarVersion, Files: map[string]fileCursor{}, SeenRequestIDs: map[string]bool{}, Committed: map[string]string{}}, nil
 	}
 	if err != nil {
 		return sidecar{}, fmt.Errorf("read sessionfile sidecar: %w", err)
@@ -359,7 +371,87 @@ func (s *Scanner) readSidecar() (sidecar, error) {
 	if state.SeenRequestIDs == nil {
 		state.SeenRequestIDs = map[string]bool{}
 	}
+	if state.Committed == nil {
+		state.Committed = map[string]string{}
+	}
 	return state, nil
+}
+
+// Pending returns observations durably accepted by Scan but not yet committed
+// to a job store.
+func (s *Scanner) Pending() ([]SessionObservation, error) {
+	lock, err := s.lock()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock(lock)
+	state, err := s.readSidecar()
+	if err != nil {
+		return nil, err
+	}
+	return append([]SessionObservation(nil), state.Pending...), nil
+}
+
+// CommitPending records the sidecar COMMITTED state after the job store has
+// durably accepted the corresponding job, then removes it from PENDING.
+func (s *Scanner) CommitPending(requestID, episodeID string) error {
+	lock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(lock)
+	state, err := s.readSidecar()
+	if err != nil {
+		return err
+	}
+	remaining := state.Pending[:0]
+	found := false
+	for _, observation := range state.Pending {
+		if observation.RequestID == requestID {
+			found = true
+			state.Committed[requestID] = episodeID
+			continue
+		}
+		remaining = append(remaining, observation)
+	}
+	if !found {
+		return nil
+	}
+	state.Pending = remaining
+	return s.writeSidecar(state)
+}
+
+// ReconcilePending commits pending observations whose episode is already
+// represented by a durable job. Pending observations without such a job stay
+// pending and will be retried on the next coordinator cycle.
+func (s *Scanner) ReconcilePending(episodeIDs map[string]struct{}) error {
+	lock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(lock)
+	state, err := s.readSidecar()
+	if err != nil {
+		return err
+	}
+	remaining := state.Pending[:0]
+	changed := false
+	for _, observation := range state.Pending {
+		episode, ok := nearestEpisode(state.Episodes, observation)
+		if ok {
+			if _, exists := episodeIDs[episode.ID]; exists {
+				state.Committed[observation.RequestID] = episode.ID
+				changed = true
+				continue
+			}
+		}
+		remaining = append(remaining, observation)
+	}
+	if !changed {
+		return nil
+	}
+	state.Pending = remaining
+	return s.writeSidecar(state)
 }
 
 func (s *Scanner) writeSidecar(state sidecar) error {

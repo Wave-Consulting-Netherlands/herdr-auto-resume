@@ -208,6 +208,34 @@ func TestScanCrashAfterPendingPersistAdvancesCursorOnRetry(t *testing.T) {
 	}
 }
 
+func TestPendingObservationReconcilesAgainstCommittedEpisodeWithoutDroppingUnmatched(t *testing.T) {
+	root := t.TempDir()
+	path := sessionPath(t, root, "77777777-7777-4777-8777-777777777777")
+	writeRecord(t, path, mustRecord(t, "77777777-7777-4777-8777-777777777777", "req-pending", false))
+	scanner := mustScanner(t, root)
+	if got, err := scanner.Scan(); err != nil || len(got) != 1 {
+		t.Fatalf("scan = %#v, %v", got, err)
+	}
+	registry, err := NewEpisodeRegistry(filepath.Join(root, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	episode, duplicate, err := registry.Resolve((func() SessionObservation {
+		pending, _ := scanner.Pending()
+		return pending[0]
+	})())
+	if err != nil || duplicate {
+		t.Fatalf("episode resolve = %#v, duplicate=%v, err=%v", episode, duplicate, err)
+	}
+	if err := scanner.ReconcilePending(map[string]struct{}{episode.ID: {}}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := scanner.Pending()
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("reconciled pending = %#v, %v; want committed removal", pending, err)
+	}
+}
+
 func mustScanner(t *testing.T, root string) *Scanner {
 	t.Helper()
 	return mustScannerWithState(t, root, filepath.Join(root, "state.json"))
