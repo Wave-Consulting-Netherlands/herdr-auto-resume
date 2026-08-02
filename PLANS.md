@@ -294,9 +294,8 @@ Decisions (revised after harden round 1 — 12 findings, all accepted; see PLAN-
   NOT computable — tmux runtime, or a herdr pane with no `agent_session` yet — the scrape
   path keeps today's pane+evidence dedup unchanged and cross-channel dedup simply does not
   apply (legacy fallback, tested). Relative resets ("try again in 5 hours") produce
-  different epochs per observer; episode equality therefore uses a canonicalized resetAt
-  (5-minute bucket), with a test for the same relative banner observed minutes apart on the
-  two channels. **Durability (192h jobs, v0.2.0 writers):** the episode dedup registry lives
+  different epochs per observer; episode equality therefore uses tolerance matching per
+  D-P8-22. **Durability (192h jobs, v0.2.0 writers):** the episode dedup registry lives
   in the scan sidecar (which old binaries never touch), keyed
   provider+sessionID+resetBucket; the Job's episode field is a convenience mirror only — a
   v0.2.0 read-modify-write cycle dropping it must not break dedup, and a test proves that
@@ -345,6 +344,27 @@ Decisions (revised after harden round 1 — 12 findings, all accepted; see PLAN-
   routine telemetry, NOT an exhaustion signal — the predicate must come from a real record).
   `revive`: after a live dead-session drill. Features whose gate has not passed stay off in
   shipped units.
+- **D-P8-21 Sidecar concurrency contract.** The sidecar is shared mutable state between the
+  watcher and the `revive` process, so atomic rename alone is not enough. Contract: every
+  sidecar mutation is a read-modify-write under an exclusive flock on `<state>.scan.lock`
+  (same discipline as the store's transactional `.lock`); fixed lock ordering everywhere —
+  sidecar lock first, then the store `.lock`, never the reverse; writes that span both files
+  (pending observation → job) go PENDING(sidecar) → job(store) → COMMITTED(sidecar), and
+  startup reconciles PENDING-without-job (retry) and job-without-COMMITTED (mark committed)
+  so a crash between the two writes converges instead of double-creating. Tests: concurrent
+  watcher+revive mutation, lost-update (two readers, both write), crash at each seam.
+- **D-P8-22 Episode equality uses tolerance matching, not buckets.** A 5-minute floor has a
+  boundary cliff: observations seconds apart can straddle it, and the same relative banner
+  observed minutes apart derives different epochs regardless of bucket size. Replaced: two
+  observations are the same episode iff same provider+sessionID and |resetAtA − resetAtB| ≤
+  10 minutes; the registry stores the first-seen resetAt per episode and matches new
+  observations by nearest-within-tolerance. Boundary tests replace bucket tests (4:59:59 vs
+  5:00:01 apart; same relative banner observed 3 minutes apart on both channels).
+- **D-P8-23 Session-identity features require a session-identity runtime.** Config
+  validation rejects `session_file_channel`, `admit_session_matches`, and
+  `answer_limit_menu` (its persisted-attempt key needs a session) when runtime is tmux, at
+  startup, with an error naming the flag and the reason. Tmux keeps today's scrape-only
+  behavior; no silent degradation.
 - **D-P8-19 Scanner cursors live in a versioned SIDECAR, not the state file.**
   `manager.go` saves fresh `File{Version, Jobs}` literals — any additive cursor field would be
   silently erased on the next job save, and a v0.2.0 rollback would drop it without tripping
@@ -369,8 +389,8 @@ Steps (TDD; gate per commit; phases are independently shippable):
   acceptance test is that BOTH failure events yield observations with correct session, cwd,
   and reset (16:30Z).
 - **D4.2 (Phase A)** Episode identity per revised D-P8-13: registry in the scan sidecar,
-  convenience mirror on Job, canonicalized reset buckets, legacy fallback where the key is
-  not computable. Tests: delayed-file-after-scrape, scrape-after-file, tmux no-session
+  convenience mirror on Job, tolerance-based episode matching (D-P8-22), legacy fallback where the key is
+  not computable, sidecar mutations under the D-P8-21 lock contract. Tests: delayed-file-after-scrape, scrape-after-file, tmux no-session
   fallback, relative-reset observed at different times, and the v0.2.0 read-modify-write
   round trip (old writer drops the Job field; dedup must survive via the sidecar).
 - **D4.3 (Phase A)** Coordinator wiring: observations resolved in the event loop against a
