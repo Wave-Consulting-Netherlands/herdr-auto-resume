@@ -566,6 +566,22 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     719k-token session from 1d 9h earlier, recorded ATTACHED{pane w18:p1} in the sidecar, and
     a second invocation correctly refused with the double-attach veto. 544 tests, -race.
 
+- 2026-08-02, competitive review: `mo-arvan/herdr-claude-auto-retry` (herdr plugin registry,
+  ~1500 lines JS, 76 tests, CI) does our core job. Source read, not just the README:
+  - Their approach: scrape-only detection (broad regex battery incl. transient 429/5xx),
+    per-pane monitor processes, registry lock files with pid-liveness + 60s staleness,
+    recovery = `esc` then retry text then `enter`.
+  - Ahead of us: herdr `[[events]]` hooks pick up new agent panes at creation (BACKLOG 15);
+    transient-failure class with exponential backoff (BACKLOG 16); one-command plugin install
+    with no daemon or config.
+  - Behind us: blind `esc` menu dismissal with no read-back (we require question + cursor on
+    "Stop and wait"); NO resume verification anywhere in the source; no durable job store, so
+    a restart mid-wait loses the pending resume; scrape-only, so both of our 2026-08-01
+    failure modes (limit never on screen, pane gone) remain open for them; Claude only.
+  - Conclusion: reach vs correctness. Two gaps filed as BACKLOG 15/16, both additive. The
+    plugin-packaging question (D-P7-3) is worth revisiting after v0.3.0 as a distribution
+    decision — that registry is where users actually discover this class of tool.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in

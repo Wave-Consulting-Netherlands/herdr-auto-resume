@@ -25,6 +25,24 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
 10. **Default transport flip after soak.** Keep --transport cli as the default until the
     explicit socket-mode soak and live drills are clean; then make the default flip a small,
     separately reviewed change.
+15. **Event-hook pane pickup (from mo-arvan/herdr-claude-auto-retry, reviewed 2026-08-02).**
+    That plugin registers herdr `[[events]]` hooks on agent-detected and picks up new agent
+    panes at creation, so coverage never depends on config or on a limit having fired. Our
+    Phase B admission only triggers on a limit observation, so a brand-new pane is uncovered
+    until it hits one — and static `monitoring.panes` needed three manual edits in two days.
+    Adopt the same signal: subscribe to herdr agent-detected events (socket transport already
+    has the subscription machinery) and admit matching agent panes under the existing
+    consistency and self-pane gates. Keep it opt-in and per-episode-logged like D-P8-14; the
+    review's authorization-boundary objection still applies — an agent label alone is not a
+    licence to inject, so admitted-by-event panes must still pass every resume gate.
+16. **Transient API failure backoff (same source).** A category we do not handle at all:
+    429s, 5xx, "overloaded", "temporarily limiting requests", "api error: connection". They
+    classify these separately from usage limits and retry with exponential backoff
+    (60s base, 300s cap, doubling). Ours ignores them entirely — a transient stall is not a
+    reset-time limit, so no job is created and the pane simply sits. Add a transient class to
+    detection with its own bounded retry policy, explicitly distinct from reset-bearing
+    limits, defaulting off until drilled. Note their retry is unverified fire-and-forget;
+    ours must keep the verification and single-flight guarantees.
 13. **Real limits produced no job (2026-08-01; DIAGNOSED 2026-08-02, fix pending; PLANS.md
     SD-D3/D4).** JSONL evidence corrected the initial report: failure #1 was session ce7bb791
     in pane wW:p1 (psft_run_script) — monitored by NO watcher, a coverage-model gap, not a
