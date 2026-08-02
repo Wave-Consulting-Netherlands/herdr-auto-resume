@@ -79,9 +79,15 @@ func TestOperatorHappyPathPersistsAttachedAfterSpawn(t *testing.T) {
 	if err := op.Run("11111111-1111-4111-8111-111", &output); err != nil {
 		t.Fatal(err)
 	}
-	if spawner.creates != 1 || len(spawner.runs) != 1 || strings.Join(spawner.runs[0], " ") != `pane-1 sh -c cd "$1" && exec claude --resume "$2" sh /tmp/revive `+reviveSessionID {
+	if spawner.creates != 1 || len(spawner.runs) != 1 || len(spawner.runs[0]) != 2 {
 		t.Fatalf("unexpected spawn calls: %#v", spawner)
 	}
+	launcher := spawner.runs[0][1]
+	if !strings.HasSuffix(launcher, "revive-launch-"+reviveSessionID+".sh") {
+		t.Fatalf("unexpected launcher path: %q", launcher)
+	}
+	// The launcher is removed after Run returns; its contract is pinned by
+	// TestWriteLauncherQuotesFileSourcedValues instead of a re-read here.
 	if !strings.Contains(output.String(), "no continue was sent") {
 		t.Fatalf("missing explicit no-continue output: %q", output.String())
 	}
@@ -252,3 +258,24 @@ type errorSpawner struct{ err error }
 
 func (s *errorSpawner) CreateWorkspace(string, string) (Workspace, error) { return Workspace{}, s.err }
 func (s *errorSpawner) RunPane(string, ...string) error                   { return s.err }
+
+func TestWriteLauncherQuotesFileSourcedValues(t *testing.T) {
+	dir := t.TempDir()
+	path, err := writeLauncher(dir+"/state.json", "11111111-1111-4111-8111-111111111111", "/tmp/it's a dir")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(data)
+	want := "cd -- '/tmp/it'\\''s a dir' && exec claude --resume '11111111-1111-4111-8111-111111111111'"
+	if !strings.Contains(script, want) {
+		t.Fatalf("launcher script %q missing %q", script, want)
+	}
+	info, _ := os.Stat(path)
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("launcher mode = %v, want 0700", info.Mode().Perm())
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -154,14 +155,19 @@ func (o *Operator) Run(prefix string, output io.Writer) error {
 	if workspace.PaneID == "" {
 		return errors.New("create revive workspace returned no pane id")
 	}
-	// herdr 0.7.5: `workspace create --cwd` records the cwd in the envelope but
-	// the pane shell still opens in the server's startup cwd (verified live),
-	// and `claude --resume` resolves sessions per-cwd. Enter the session's cwd
-	// explicitly, passing cwd and session id as positional shell parameters so
-	// file-sourced values are data, never shell-interpolated.
-	if err := o.config.Spawner.RunPane(workspace.PaneID,
-		"sh", "-c", `cd "$1" && exec claude --resume "$2"`, "sh",
-		session.CWD, session.SessionID); err != nil {
+	// Two herdr 0.7.5 quirks, both found by live drills: `workspace create
+	// --cwd` records the cwd in the envelope but the pane shell still opens in
+	// the server's startup cwd, and `pane run` joins its arguments through the
+	// pane shell WITHOUT quoting, so any multi-word argument is shredded
+	// (`--resume` then arrives valueless and opens the picker). A single-word
+	// launcher script sidesteps both: cwd and session id are embedded
+	// shell-quoted, and the pane runs exactly one argv word.
+	launcher, err := writeLauncher(o.config.Scanner.StatePath(), session.SessionID, session.CWD)
+	if err != nil {
+		return fmt.Errorf("write revive launcher: %w", err)
+	}
+	defer os.Remove(launcher)
+	if err := o.config.Spawner.RunPane(workspace.PaneID, launcher); err != nil {
 		return fmt.Errorf("start Claude in revive pane: %w", err)
 	}
 	pane, err := o.waitForAttachment(session.SessionID)
@@ -328,4 +334,20 @@ func (l *SessionLease) Release() {
 	_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
 	_ = l.file.Close()
 	l.file = nil
+}
+
+// shellQuote wraps a file-sourced value for safe embedding in a POSIX shell
+// script: single quotes, with embedded single quotes escaped.
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+// writeLauncher emits the single-word launch script revive hands to pane run.
+func writeLauncher(statePath, sessionID, cwd string) (string, error) {
+	path := filepath.Join(filepath.Dir(statePath), "revive-launch-"+sessionID+".sh")
+	script := "#!/bin/sh\ncd -- " + shellQuote(cwd) + " && exec claude --resume " + shellQuote(sessionID) + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		return "", err
+	}
+	return path, nil
 }
