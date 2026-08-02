@@ -511,6 +511,18 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     next REAL limit observed through the enabled channel on production, which is also the
     D-P8-11 SD-closing evidence. Rollback = remove one config line.
 
+- 2026-08-02, Phase B (targeted admission) implemented and LIVE on production:
+  - D4.4 committed as b410e8f (503 tests, -race): monitoring.admit_session_matches, default
+    off, requires session_file_channel + session-identity runtime + persistent state file;
+    exact-one-pane match with agent/cwd consistency; per-episode admission logging;
+    admission does not survive restart (fresh observation re-admits).
+  - Production: config gained admit_session_matches: true (user-driven); unit restarted on
+    0.2.0-diag3 (b410e8f); panes=4 verified, doctor PASS. Same enable-before-drill rationale
+    as Phase A: the live gate is the next real limit in an unmonitored pane.
+  - Coverage model now: the four configured Claude panes are watched statically; ANY new
+    workspace whose session hits a limit is observed by the file channel and its pane
+    admitted per-episode automatically. The soak stays isolated on v0.2.0.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
