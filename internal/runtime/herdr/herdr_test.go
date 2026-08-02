@@ -190,6 +190,21 @@ func TestSelfPaneIDReadsOwnEnvironment(t *testing.T) {
 	}
 }
 
+func TestCreateWorkspaceDecodesLiveRootPaneEnvelope(t *testing.T) {
+	// Verbatim shape from herdr 0.7.5 `workspace create` (captured live
+	// 2026-08-02): the initial pane arrives as root_pane, not workspace.panes.
+	adapter := NewWithExec(Options{}, func(args ...string) ([]byte, error) {
+		return []byte(`{"id":"cli:workspace:create","result":{"root_pane":{"agent_status":"unknown","cwd":"/home/ubuntu/dev/f1game","pane_id":"w11:p1","tab_id":"w11:t1","workspace_id":"w11"},"tab":{"tab_id":"w11:t1","workspace_id":"w11"},"type":"workspace_created","workspace":{"active_tab_id":"w11:t1","label":"herdr-auto-resume-revive","workspace_id":"w11"}}}`), nil
+	})
+	workspace, err := adapter.CreateWorkspace("herdr-auto-resume-revive", "/home/ubuntu/dev/f1game")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.WorkspaceID != "w11" || workspace.PaneID != "w11:p1" {
+		t.Fatalf("unexpected workspace from live envelope: %#v", workspace)
+	}
+}
+
 func TestReviveSpawnerUsesWorkspaceAndPaneRunCommands(t *testing.T) {
 	var calls [][]string
 	adapter := NewWithExec(Options{}, func(args ...string) ([]byte, error) {

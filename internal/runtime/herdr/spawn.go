@@ -9,8 +9,11 @@ import (
 type reviveWorkspaceResult struct {
 	WorkspaceID string      `json:"workspace_id"`
 	PaneID      string      `json:"pane_id"`
-	Workspace   reviveSpace `json:"workspace"`
-	Panes       []paneInfo  `json:"panes"`
+	// RootPane is where herdr 0.7.5 actually reports the initial pane
+	// (verified live: workspace_created carries root_pane.pane_id).
+	RootPane  paneInfo    `json:"root_pane"`
+	Workspace reviveSpace `json:"workspace"`
+	Panes     []paneInfo  `json:"panes"`
 }
 
 type reviveSpace struct {
@@ -39,6 +42,9 @@ func (a *Adapter) CreateWorkspace(label, cwd string) (revive.Workspace, error) {
 		workspaceID = result.Workspace.ID
 	}
 	paneID := result.PaneID
+	if paneID == "" {
+		paneID = result.RootPane.PaneID
+	}
 	if paneID == "" {
 		paneID = result.Workspace.PaneID
 	}
