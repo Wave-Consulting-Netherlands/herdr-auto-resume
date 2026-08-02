@@ -17,7 +17,7 @@ func writeCommandState(t *testing.T) string {
 	path := t.TempDir() + "/state.json"
 	st := store.NewJSONStore(path)
 	if err := st.Save(store.File{Version: 1, Jobs: []store.Job{
-		{ID: "abcdefgh-1", PaneID: "w1:p1", TerminalID: "term-1", State: store.StateWaiting, ResetAtUTC: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC), ResumeAtUTC: time.Date(2026, 7, 31, 12, 1, 0, 0, time.UTC), Attempts: 0},
+		{ID: "abcdefgh-1", PaneID: "w1:p1", TerminalID: "term-1", Episode: "claude:session:123", Source: "session-file", State: store.StateWaiting, ResetAtUTC: time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC), ResumeAtUTC: time.Date(2026, 7, 31, 12, 1, 0, 0, time.UTC), Attempts: 0},
 		{ID: "ijklmnop-2", PaneID: "w1:p2", State: store.StateResumed, ResetAtUTC: time.Date(2026, 7, 31, 11, 0, 0, 0, time.UTC), ResumeAtUTC: time.Date(2026, 7, 31, 11, 1, 0, 0, time.UTC), Attempts: 1},
 	}}); err != nil {
 		t.Fatal(err)
@@ -69,6 +69,9 @@ func TestInspectUniquePrefixAndAmbiguity(t *testing.T) {
 	if decoded.TerminalID != "term-1" || !strings.Contains(out.String(), `"terminal_id": "term-1"`) {
 		t.Fatalf("inspect output = %q, decoded = %#v", out.String(), decoded)
 	}
+	if decoded.Episode != "claude:session:123" || decoded.Source != "session-file" || !strings.Contains(out.String(), `"source": "session-file"`) {
+		t.Fatalf("inspect episode/source = %#v, output = %q", decoded, out.String())
+	}
 	ambiguous := t.TempDir() + "/ambiguous.json"
 	if err := store.NewJSONStore(ambiguous).Save(store.File{Version: 1, Jobs: []store.Job{{ID: "same-a"}, {ID: "same-b"}}}); err != nil {
 		t.Fatal(err)
@@ -100,6 +103,32 @@ func TestCLIJobDispatch(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if got := runCLI([]string{"status", "--state-file", path}, &out, &errOut); got != 0 {
 		t.Fatalf("runCLI status exit = %d, stderr=%q", got, errOut.String())
+	}
+}
+
+func TestJobCommandsSurfaceFutureStateVersion(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, tc := range []struct {
+		name string
+		verb string
+		args []string
+	}{
+		{name: "status", verb: "status"},
+		{name: "inspect", verb: "inspect", args: []string{"job"}},
+		{name: "cancel", verb: "cancel", args: []string{"job"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			if err := os.WriteFile(path, []byte(`{"version":2,"jobs":[]}`), 0600); err != nil {
+				t.Fatal(err)
+			}
+			args := append([]string{tc.verb}, tc.args...)
+			args = append(args, "--state-file", path)
+			var out, errOut bytes.Buffer
+			if got := jobCommand(args, &out, &errOut); got != 1 || !strings.Contains(errOut.String(), "error: load state:") || !strings.Contains(errOut.String(), "version 2") || !strings.Contains(errOut.String(), "supported version 1") {
+				t.Fatalf("exit=%d stdout=%q stderr=%q; want surfaced future-version error", got, out.String(), errOut.String())
+			}
+		})
 	}
 }
 

@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -29,11 +32,368 @@ func TestParseRunFlagsRequiresExplicitPane(t *testing.T) {
 	}
 }
 
-func TestParseRunFlagsDefaultsToCLITransport(t *testing.T) {
+func TestParseRunFlagsTransportResolutionMatrix(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cases := []struct {
+		name        string
+		args        []string
+		config      string
+		want        string
+		wantErr     string
+		wantWarning string
+	}{
+		{name: "default herdr", args: []string{"--pane", "w1:p1"}, want: "socket"},
+		{name: "default herdr session", args: []string{"--pane", "w1:p1", "--session", "s1"}, want: "cli", wantWarning: "--session"},
+		{name: "default tmux", args: []string{"--pane", "w1:p1", "--runtime", "tmux"}, want: "cli", wantWarning: "--runtime"},
+		{name: "default tmux session", args: []string{"--pane", "w1:p1", "--runtime", "tmux", "--session", "s1"}, want: "cli", wantWarning: "--runtime"},
+		{name: "yaml herdr cli", config: "runtime:\n  type: herdr\n  transport: cli\n", args: []string{"--pane", "w1:p1"}, want: "cli"},
+		{name: "yaml herdr socket", config: "runtime:\n  type: herdr\n  transport: socket\n", args: []string{"--pane", "w1:p1"}, want: "socket"},
+		{name: "yaml herdr cli session", config: "runtime:\n  type: herdr\n  transport: cli\n", args: []string{"--pane", "w1:p1", "--session", "s1"}, want: "cli"},
+		{name: "yaml tmux cli", config: "runtime:\n  type: tmux\n  transport: cli\n", args: []string{"--pane", "w1:p1"}, want: "cli"},
+		{name: "yaml tmux socket", config: "runtime:\n  type: tmux\n  transport: socket\n", args: []string{"--pane", "w1:p1"}, wantErr: "runtime.transport socket requires runtime.type herdr"},
+		{name: "flag herdr cli", args: []string{"--pane", "w1:p1", "--transport", "cli"}, want: "cli"},
+		{name: "flag herdr socket", args: []string{"--pane", "w1:p1", "--transport", "socket"}, want: "socket"},
+		{name: "flag socket session", args: []string{"--pane", "w1:p1", "--transport", "socket", "--session", "s1"}, wantErr: "--session is unsupported"},
+		{name: "flag socket tmux", args: []string{"--pane", "w1:p1", "--transport", "socket", "--runtime", "tmux"}, wantErr: "requires --runtime herdr"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := ""
+			if tc.config != "" {
+				configPath = filepath.Join(t.TempDir(), "config.yaml")
+				if err := os.WriteFile(configPath, []byte("version: 1\n"+tc.config), 0600); err != nil {
+					t.Fatal(err)
+				}
+				tc.args = append([]string{"--config", configPath}, tc.args...)
+			}
+			var stderr bytes.Buffer
+			cfg, err := parseRunFlags(tc.args, &stderr)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, stderr=%q; want %q", err, stderr.String(), tc.wantErr)
+				}
+				return
+			}
+			if err != nil || cfg.Transport != tc.want {
+				t.Fatalf("transport = %q, err = %v, stderr=%q; want %q", cfg.Transport, err, stderr.String(), tc.want)
+			}
+			if tc.wantWarning != "" && !strings.Contains(stderr.String(), tc.wantWarning) {
+				t.Fatalf("stderr = %q, want warning naming %q", stderr.String(), tc.wantWarning)
+			}
+			if tc.wantWarning == "" && strings.Contains(stderr.String(), "warning:") {
+				t.Fatalf("stderr = %q, want no fallback warning", stderr.String())
+			}
+		})
+	}
+}
+
+func TestParseRunFlagsDefaultsToSocketTransport(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var stderr bytes.Buffer
 	cfg, err := parseRunFlags([]string{"--pane", "w1:p1"}, &stderr)
-	if err != nil || cfg.Transport != "cli" {
-		t.Fatalf("transport = %q, err = %v; want cli default", cfg.Transport, err)
+	if err != nil || cfg.Transport != "socket" {
+		t.Fatalf("transport = %q, err = %v; want socket default", cfg.Transport, err)
+	}
+}
+
+func TestParseRunFlagsWaitForPanesDefaultsOffAndHonorsFlagAndYAML(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stderr bytes.Buffer
+	cfg, err := parseRunFlags([]string{"--pane", "w1:p1"}, &stderr)
+	if err != nil {
+		t.Fatalf("default parse: %v", err)
+	}
+	if cfg.WaitForPanes {
+		t.Fatal("WaitForPanes = true by default, want false")
+	}
+	cfg, err = parseRunFlags([]string{"--pane", "w1:p1", "--wait-for-panes"}, &stderr)
+	if err != nil || !cfg.WaitForPanes {
+		t.Fatalf("flag parse cfg=%#v err=%v, want enabled", cfg, err)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("version: 1\nmonitoring:\n  panes: [w1:p1]\n  wait_for_panes: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = parseRunFlags([]string{"--config", configPath}, &stderr)
+	if err != nil || !cfg.WaitForPanes {
+		t.Fatalf("YAML parse cfg=%#v err=%v, want enabled", cfg, err)
+	}
+	cfg, err = parseRunFlags([]string{"--config", configPath, "--wait-for-panes=false"}, &stderr)
+	if err != nil || cfg.WaitForPanes {
+		t.Fatalf("explicit false cfg=%#v err=%v, want disabled", cfg, err)
+	}
+}
+
+func TestParseRunFlagsSessionFileChannelFlagAndYAML(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stderr bytes.Buffer
+	cfg, err := parseRunFlags([]string{"--pane", "w1:p1", "--session-file-channel"}, &stderr)
+	if err != nil || !cfg.SessionFileChannel {
+		t.Fatalf("flag cfg=%#v err=%v, want enabled", cfg, err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nproviders:\n  session_file_channel: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = parseRunFlags([]string{"--config", path, "--pane", "w1:p1"}, &stderr)
+	if err != nil || !cfg.SessionFileChannel {
+		t.Fatalf("YAML cfg=%#v err=%v, want enabled", cfg, err)
+	}
+}
+
+func TestParseRunFlagsAdmissionFlagAndYAML(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stderr bytes.Buffer
+	cfg, err := parseRunFlags([]string{"--pane", "w1:p1", "--session-file-channel", "--admit-session-matches"}, &stderr)
+	if err != nil || !cfg.AdmitSessionMatches {
+		t.Fatalf("flag cfg=%#v err=%v, want admission enabled", cfg, err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nproviders:\n  session_file_channel: true\nmonitoring:\n  admit_session_matches: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = parseRunFlags([]string{"--config", path, "--pane", "w1:p1"}, &stderr)
+	if err != nil || !cfg.AdmitSessionMatches {
+		t.Fatalf("YAML cfg=%#v err=%v, want admission enabled", cfg, err)
+	}
+}
+
+func TestParseRunFlagsAnswerLimitMenuFlagAndYAML(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stderr bytes.Buffer
+	cfg, err := parseRunFlags([]string{"--pane", "w1:p1"}, &stderr)
+	if err != nil || cfg.AnswerLimitMenu {
+		t.Fatalf("default cfg=%#v err=%v, want answer_limit_menu disabled", cfg, err)
+	}
+	cfg, err = parseRunFlags([]string{"--pane", "w1:p1", "--answer-limit-menu"}, &stderr)
+	if err != nil || !cfg.AnswerLimitMenu {
+		t.Fatalf("flag cfg=%#v err=%v, want answer_limit_menu enabled", cfg, err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nresume:\n  answer_limit_menu: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = parseRunFlags([]string{"--config", path, "--pane", "w1:p1"}, &stderr)
+	if err != nil || !cfg.AnswerLimitMenu {
+		t.Fatalf("YAML cfg=%#v err=%v, want answer_limit_menu enabled", cfg, err)
+	}
+}
+
+func TestParseRunFlagsRejectsAnswerLimitMenuForTmuxOrStateOff(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, args := range [][]string{
+		{"--pane", "w1:p1", "--answer-limit-menu", "--runtime", "tmux"},
+		{"--pane", "w1:p1", "--answer-limit-menu", "--state-file", "off"},
+	} {
+		var stderr bytes.Buffer
+		_, err := parseRunFlags(args, &stderr)
+		if err == nil || !strings.Contains(err.Error(), "answer_limit_menu") {
+			t.Fatalf("args=%v error=%v stderr=%q, want answer_limit_menu rejection", args, err, stderr.String())
+		}
+	}
+}
+
+func TestParseRunFlagsRejectsAdmissionValidationMatrix(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, tc := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{name: "channel off", args: []string{"--pane", "w1:p1", "--admit-session-matches"}, want: []string{"admit_session_matches", "session_file_channel"}},
+		{name: "tmux", args: []string{"--pane", "w1:p1", "--session-file-channel", "--admit-session-matches", "--runtime", "tmux"}, want: []string{"admit_session_matches", "tmux"}},
+		{name: "state off", args: []string{"--pane", "w1:p1", "--session-file-channel", "--admit-session-matches", "--state-file", "off"}, want: []string{"admit_session_matches", "state-file"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			_, err := parseRunFlags(tc.args, &stderr)
+			if err == nil {
+				t.Fatalf("args=%v accepted, want validation error", tc.args)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error=%v, want substring %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestParseRunFlagsRejectsSessionFileChannelWithoutPersistentStateOrOnTmux(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, args := range [][]string{
+		{"--pane", "w1:p1", "--session-file-channel", "--state-file", "off"},
+		{"--pane", "w1:p1", "--session-file-channel", "--runtime", "tmux"},
+	} {
+		var stderr bytes.Buffer
+		_, err := parseRunFlags(args, &stderr)
+		if err == nil || !strings.Contains(err.Error(), "session_file_channel") {
+			t.Fatalf("args=%v error=%v stderr=%q, want session_file_channel rejection", args, err, stderr.String())
+		}
+	}
+}
+
+func TestRunCommandWaitForPanesOffKeepsStartupExitContract(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HERDR_PANE_ID", "")
+	for _, tc := range []struct {
+		name string
+		mode string
+		want string
+	}{
+		{name: "list error", mode: "error", want: "Error: list panes:"},
+		{name: "zero matches", mode: "empty", want: "Error: none of the requested panes were found"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := filepath.Join(t.TempDir(), "herdr")
+			body := "#!/bin/sh\n"
+			if tc.mode == "error" {
+				body += "echo 'list failed' >&2\nexit 1\n"
+			} else {
+				body += "echo '{\"result\":{\"panes\":[]}}'\n"
+			}
+			if err := os.WriteFile(script, []byte(body), 0700); err != nil {
+				t.Fatal(err)
+			}
+			var stderr bytes.Buffer
+			got := runCommand([]string{"--transport", "cli", "--pane", "w1:p1", "--herdr-bin", script, "--state-file", "off"}, nil, &stderr)
+			if got != 1 || !strings.Contains(stderr.String(), tc.want) {
+				t.Fatalf("exit=%d stderr=%q, want exit 1 and %q", got, stderr.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestListPanesStartupOffPreservesFailFastErrors(t *testing.T) {
+	fake := &runtime.Fake{Errs: map[string]error{"ListPanes": errors.New("connection refused")}}
+	_, err := listPanesStartup(context.Background(), fake, []string{"w1:p1"}, "", false, io.Discard)
+	if err == nil || err.Error() != "list panes: connection refused" {
+		t.Fatalf("error = %v, want byte-identical list error", err)
+	}
+	fake.Errs = nil
+	fake.PanesList = nil
+	_, err = listPanesStartup(context.Background(), fake, []string{"w1:p1"}, "", false, io.Discard)
+	if err == nil || err.Error() != "none of the requested panes were found" {
+		t.Fatalf("error = %v, want byte-identical empty-match error", err)
+	}
+}
+
+func TestWaitForPanesRetriesReachabilityAndLogsStateChanges(t *testing.T) {
+	fake := &runtime.Fake{
+		PanesList: []runtime.Pane{{ID: "w1:p1"}},
+		Errs:      map[string]error{"ListPanes": syscall.ECONNREFUSED},
+	}
+	var log bytes.Buffer
+	waits := 0
+	got, err := waitForPanes(context.Background(), fake, []string{"w1:p1"}, "", &log, func(ctx context.Context, _ time.Duration) error {
+		waits++
+		fake.Errs["ListPanes"] = nil
+		return nil
+	})
+	if err != nil || !reflect.DeepEqual(got, fake.PanesList) {
+		t.Fatalf("panes=%#v err=%v, want recovered pane", got, err)
+	}
+	if waits != 1 {
+		t.Fatalf("wait calls = %d, want 1", waits)
+	}
+	if strings.Count(log.String(), "waiting for panes") != 1 || strings.Count(log.String(), "panes available") != 1 {
+		t.Fatalf("log=%q, want one retry-state and one recovery message", log.String())
+	}
+}
+
+func TestWaitForPanesRetriesAbsentSocketTimeoutEOFAndEmptyMatches(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "connection refused", err: syscall.ECONNREFUSED},
+		{name: "absent socket", err: os.ErrNotExist},
+		{name: "timeout", err: context.DeadlineExceeded},
+		{name: "mid-request eof", err: io.ErrUnexpectedEOF},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &runtime.Fake{PanesList: []runtime.Pane{{ID: "w1:p1"}}, Errs: map[string]error{"ListPanes": tc.err}}
+			calls := 0
+			got, err := waitForPanes(context.Background(), fake, []string{"w1:p1"}, "", io.Discard, func(context.Context, time.Duration) error {
+				calls++
+				fake.Errs["ListPanes"] = nil
+				return nil
+			})
+			if err != nil || len(got) != 1 || calls != 1 {
+				t.Fatalf("panes=%#v err=%v waits=%d, want one retry and recovery", got, err, calls)
+			}
+		})
+	}
+
+	fake := &runtime.Fake{}
+	waits := 0
+	got, err := waitForPanes(context.Background(), fake, []string{"w1:p1"}, "", io.Discard, func(context.Context, time.Duration) error {
+		waits++
+		fake.PanesList = []runtime.Pane{{ID: "w1:p1"}}
+		return nil
+	})
+	if err != nil || len(got) != 1 || waits != 1 {
+		t.Fatalf("empty-match recovery panes=%#v err=%v waits=%d", got, err, waits)
+	}
+}
+
+func TestWaitForPanesDoesNotRetryPermanentFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{name: "protocol mismatch", err: herdradapter.HerdrError{Code: "protocol_mismatch", Message: "unsupported protocol"}},
+		{name: "malformed response", err: errors.New("decode herdr response: invalid character")},
+		{name: "permission denial", err: os.ErrPermission},
+		{name: "configuration error", err: errors.New("socket path is not absolute")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &runtime.Fake{Errs: map[string]error{"ListPanes": tc.err}}
+			waits := 0
+			_, err := waitForPanes(context.Background(), fake, []string{"w1:p1"}, "", io.Discard, func(context.Context, time.Duration) error {
+				waits++
+				return nil
+			})
+			if err == nil || !errors.Is(err, tc.err) || waits != 0 {
+				t.Fatalf("err=%v waits=%d, want permanent error and no retry", err, waits)
+			}
+		})
+	}
+}
+
+func TestWaitForPanesStopsWhenContextIsCancelled(t *testing.T) {
+	fake := &runtime.Fake{Errs: map[string]error{"ListPanes": syscall.ECONNREFUSED}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_, err := waitForPanes(ctx, fake, []string{"w1:p1"}, "", io.Discard, func(ctx context.Context, _ time.Duration) error {
+		cancel()
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+}
+
+func TestRuntimeForRunRejectsSyntacticallyInvalidSocketPaths(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "empty", path: "", want: "socket path is empty"},
+		{name: "relative", path: "herdr.sock", want: "not absolute"},
+		{name: "too long", path: "/tmp/" + strings.Repeat("x", 110), want: "unix limit"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := runtimeForRun(runConfig{Runtime: "herdr", Transport: "socket", Socket: tc.path, SocketExplicit: true})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -190,6 +550,7 @@ func TestRecycleDueRequiresTriggerAndSixtySecondBound(t *testing.T) {
 }
 
 func TestParseRunFlagsAcceptsRepeatedPanesAndOptions(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var stderr bytes.Buffer
 	cfg, err := parseRunFlags([]string{
 		"--runtime", "tmux", "--pane", "w1:p1", "--pane", "w2:p1",
@@ -265,6 +626,7 @@ func TestRunCommandFailsOnHeldRunLockBeforeRuntimeConstruction(t *testing.T) {
 }
 
 func TestRunCommandStateFileOffDoesNotCreateRunLock(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	var stderr bytes.Buffer
 	if got := runCommand([]string{"--pane", "w1:p1", "--state-file", "off", "--herdr-bin", "/missing/herdr"}, nil, &stderr); got != 1 {

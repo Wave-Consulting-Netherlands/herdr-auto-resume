@@ -42,6 +42,7 @@ func (c *Coordinator) RunLoopWithCadence(ctx context.Context, detectionTicks, st
 				continue
 			}
 			c.SetPanes(panes)
+			c.ProcessSessionFile(panes, c.clock())
 			c.Poll()
 			if postPoll != nil {
 				postPoll(c.clock())

@@ -1,0 +1,53 @@
+  - BM25 + vector + RRF hybrid retrieval — a concrete recipe to improve search in /home/ubuntu/dev/agentmemory, which currently leans on Letta's retrieval.
+  - The L0→L1→L2→L3 distillation ladder — a cleaner articulation of the layering our memory stack does implicitly. Worth stealing the vocabulary.
+  - Skill extraction with versions + validation rules — maps directly onto our living rules/skills docs in /home/ubuntu/.config/coding-agents/.
+
+  Recommendation
+
+  Skip adoption. If you want the ideas, the cheap move is a read-only pass over MemoryCore's L1/L2 distillation prompts and the CodeGraph builder, feeding a BACKLOG
+  item for agentmemory. I'd delegate that to Codex read-only — say the word and I'll scope it.
+
+  If you ever do want to try it hands-on: standalone Hub only, no proxy, on an isolated host, never routed through Traefik/Authelia, and only after #673 merges.
+
+  Want the mining pass, or an HTML version of this review for the library?
+
+✻ Worked for 2m 51s
+
+❯ html for review
+
+● Skill(typesetter)
+  ⎿  Successfully loaded skill
+
+  Read 2 files, listed 2 directories, ran 1 shell command
+
+● Write(~/dev/audits/tencentdb-agent-memory-review.html)
+  ⎿  Wrote 347 lines to ../audits/tencentdb-agent-memory-review.html
+       1 <!DOCTYPE html>
+       2 <html lang="en">
+       3 <head>
+       4 <meta charset="UTF-8">
+       5 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+       6 <title>TencentDB Agent Memory: a build-or-buy review</title>
+       7 <style>
+       8   /* ============================================================
+       9      TYPESETTER DESIGN SYSTEM — do not restyle, only fill content.
+      10      Palette: warm paper, dark ink, blueprint teal, workshop amber.
+     … +371 lines
+  ⎿  Allowed by auto mode classifier
+
+  Ran 1 shell command
+
+● Done. /home/ubuntu/dev/audits/tencentdb-agent-memory-review.html
+
+  Single file, no external requests, CSS byte-identical to the typesetter template. Seven sections: what the project is, the four blockers (proxy integration, the
+  open critical advisory, maturity signals, overlap with what we already run), the four ideas worth lifting, and the recommendation.
+
+  Saved alongside the existing reviews in /home/ubuntu/dev/audits/ rather than a new folder. Open it with xdg-open
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   What do you want to do?
+
+   ❯ 1. Stop and wait for limit to reset
+     2. Upgrade your plan
+     3. Upgrade to Team plan
+
+   Enter to confirm · Esc to cancel

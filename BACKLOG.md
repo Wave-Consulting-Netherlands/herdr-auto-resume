@@ -25,6 +25,18 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
 10. **Default transport flip after soak.** Keep --transport cli as the default until the
     explicit socket-mode soak and live drills are clean; then make the default flip a small,
     separately reviewed change.
+13. **Real limits produced no job (2026-08-01; DIAGNOSED 2026-08-02, fix pending; PLANS.md
+    SD-D3/D4).** JSONL evidence corrected the initial report: failure #1 was session ce7bb791
+    in pane wW:p1 (psft_run_script) — monitored by NO watcher, a coverage-model gap, not a
+    code defect. Failure #2 was session 829d1239 in wA:p1 — watcher healthy, banner parses
+    Actionable=true, so it was swallowed post-detection (menu-visible / not-auto / silent
+    read error / read-window); the deployed diag build names the reason on the next
+    occurrence. Fix direction: session-file detection channel + pane correlation via herdr
+    `agent_session` (D4, needs sign-off).
+14. **Every non-action on a limited pane is silent (PLANS.md D-P8-10).** Menu visible, reset
+    unparsed, provider unresolved, pane not enabled, horizon exceeded — all exit without a
+    trace, which is what made item 13 undiagnosable. Needs one log line per evidence hash
+    naming pane and reason.
 12. **Pane enablement is decided once, at startup (found 2026-08-01, Phase 8 step-5 rehearsal;
     scheduled as PLANS.md D-P8-9 in v0.3.0).** `runcmd.go` runs `Poll() → EnableAll() → Poll()`
     once, and `EnableAll` skips panes whose provider has not resolved yet, leaving

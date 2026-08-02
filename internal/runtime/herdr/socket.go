@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,6 +17,8 @@ import (
 )
 
 const maxSocketFrame = 4 << 20
+
+const maxUnixSocketPathBytes = 108
 
 type SocketOptions struct {
 	Path        string
@@ -57,6 +60,40 @@ func NewSocket(options SocketOptions) *Socket {
 		options.ReadSource = "detection"
 	}
 	return &Socket{options: options}
+}
+
+// ResolveSocketPath applies the default and tilde expansion without probing
+// the socket. A valid path may be absent during tolerant startup.
+func ResolveSocketPath(path string) (string, error) {
+	if path == "" {
+		return defaultSocketPath()
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("expand socket path: %w", err)
+		}
+		if path == "~" {
+			return home, nil
+		}
+		return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+	}
+	return path, nil
+}
+
+// ValidateSocketPath checks syntax only. ENOENT for a valid path remains a
+// retryable runtime reachability failure.
+func ValidateSocketPath(path string) error {
+	if path == "" {
+		return errors.New("socket path is empty")
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("socket path %q is not absolute", path)
+	}
+	if len([]byte(path)) >= maxUnixSocketPathBytes {
+		return fmt.Errorf("socket path exceeds %d-byte unix limit", maxUnixSocketPathBytes-1)
+	}
+	return nil
 }
 
 func defaultSocketPath() (string, error) {
@@ -238,7 +275,7 @@ func responseIDMatches(raw json.RawMessage, want uint64) bool {
 func panesFromInfo(infos []paneInfo) []runtimeapi.Pane {
 	panes := make([]runtimeapi.Pane, 0, len(infos))
 	for _, pane := range infos {
-		panes = append(panes, runtimeapi.Pane{ID: pane.PaneID, TerminalID: pane.TerminalID, WorkspaceID: pane.WorkspaceID, Title: pane.TerminalTitle, Agent: pane.Agent})
+		panes = append(panes, runtimeapi.Pane{ID: pane.PaneID, TerminalID: pane.TerminalID, WorkspaceID: pane.WorkspaceID, Title: pane.TerminalTitle, CWD: pane.CWD, Agent: pane.Agent, AgentSessionID: pane.AgentSession.Value})
 	}
 	return panes
 }

@@ -450,6 +450,122 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     at 13:45:19Z, attempts=1 → verification saw cleared evidence → RESUMED. Socket transport,
     released v0.2.0 binary, throwaway state file. Rehearsal is explicitly not soak evidence.
 
+- 2026-08-01, **real-world detection failure reported (BACKLOG 13, milestone SD):**
+  - Two Claude sessions hit usage limits and were not resumed: `wA:p1` (production watcher,
+    cli transport) and `wS:p1` (soak watcher, socket transport). Both panes were in their
+    watcher's list at the time. User confirms a plain limit banner, no options menu.
+  - Neither `state.json` nor `soak-state.json` has ever existed, so no job was created for
+    either event — this is a detection/enablement failure, not a resume failure, and the tool
+    has not been observed completing a real-world cycle in production, only in drills.
+  - Ruled out: the menu fail-closed path (`MenuVisible=true` forces `Actionable=false`, which
+    would have explained it, but the banner was plain); panes not being monitored.
+  - Not determined: the failing path writes no job, no state, and no log line, and both panes'
+    text is gone. Candidates left open in PLANS.md D3 rather than guessed at.
+  - Actions: `scripts/limit-capture.sh` (414b8cc) running detached for ground truth; PLANS.md
+    gains blocking milestone SD, plus D-P8-10 (silence is a defect), D-P8-11 (the flip is
+    gated on a real resume, not drill evidence), D-P8-12 (instrument production only, leave
+    the soak on v0.2.0).
+
+- 2026-08-01, SD-D2 deployed to production (D-P8-10/D-P8-12):
+  - Diagnostic logging landed as 20a109d (462 tests, -race): one line per evidence hash
+    naming pane/provider/reason whenever a limited pane yields no job.
+  - Built `0.2.0-diag (commit 20a109d)` to the DISTINCT path ~/.local/bin/herdr-auto-resume-diag
+    and pointed only the production unit at it (unit comment says how to revert). The soak
+    unit and its binary are untouched; soak pid 884025 still running since 13:48:27 UTC.
+  - The next real limit on wA:p1 now either creates a job or names its reason in the journal,
+    with scripts/limit-capture.sh holding the verbatim screen.
+
+- 2026-08-02, SD-D3 diagnosis from evidence (Claude session JSONLs, prompted by comparing
+  saaranshM/unsnooze):
+  - Claude Code writes structured `"error":"rate_limit"` entries (429, banner text, sessionId,
+    cwd, timestamp) into `~/.claude/projects/**/*.jsonl`. Ground truth for both 2026-08-01
+    failures was on disk all along; the tool never looks there.
+  - **Failure #1 SOLVED: never monitored.** 15:10:48Z, cwd psft_run_script, session ce7bb791,
+    pane wW:p1 — in no watcher's pane list (production: [wA:p1]; soak: wR/wS/wV). Strict
+    opt-in pane coverage plus ephemeral workspaces means new workspaces are unprotected by
+    default. Coverage-model gap, not a code defect.
+  - **Failure #2 NARROWED: swallowed after detection.** 15:14:56Z, wA:p1, session 829d1239
+    ("resets 4:30pm (UTC)"). The production watcher was healthy the whole window (status
+    ticks 15:00-16:30, 0 restarts) and the exact banner text parses Actionable=true at high
+    confidence. So the drop happened between pane read and job creation: menu-visible
+    fail-closed (the July fixture shows the modern UI auto-opens /rate-limit-options),
+    not-auto (D-P8-9), a silent read error, or the banner outside the read window. v0.2.0
+    logs none of these; the deployed diag build names each. Next occurrence is diagnosable
+    by design.
+  - **D-P8-6 spike answered early, and better than hoped:** `herdr pane list` exposes
+    `agent_session` UUIDs for BOTH providers (wA→829d1239, wS→0bc1b8a7, wW→ce7bb791,
+    wR→019fbc14 codex). Pane→session-file mapping is a herdr API lookup, no heuristics.
+  - Strategic conclusion recorded in PLANS: a session-file/hook channel (unsnooze's model)
+    would have caught both failures regardless of screen state, and session-identity resume
+    (`claude --resume <id>`) removes the dead/unmonitored-pane class entirely.
+
+- 2026-08-02, Phase A (session-file channel) LIVE on production (user-approved
+  enable-before-drill):
+  - D4.0-D4.3 merged (20e9dc2, 9ac216e, 064c8e2; 487 tests -race). Startup guards verified
+    live: channel+--state-file off and channel+tmux both rejected with named reasons.
+  - `providers.session_file_channel: true` added to the production config; unit restarted on
+    `0.2.0-diag2 (064c8e2)`. Scanner sidecar lock present at state.json.scan.lock; soak
+    untouched on v0.2.0.
+  - Deviation from D-P8-18 recorded: an honest synthetic drill would require appending fake
+    records to real Claude session files — refused. The Phase A live gate is therefore the
+    next REAL limit observed through the enabled channel on production, which is also the
+    D-P8-11 SD-closing evidence. Rollback = remove one config line.
+
+- 2026-08-02, Phase B (targeted admission) implemented and LIVE on production:
+  - D4.4 committed as b410e8f (503 tests, -race): monitoring.admit_session_matches, default
+    off, requires session_file_channel + session-identity runtime + persistent state file;
+    exact-one-pane match with agent/cwd consistency; per-episode admission logging;
+    admission does not survive restart (fresh observation re-admits).
+  - Production: config gained admit_session_matches: true (user-driven); unit restarted on
+    0.2.0-diag3 (b410e8f); panes=4 verified, doctor PASS. Same enable-before-drill rationale
+    as Phase A: the live gate is the next real limit in an unmonitored pane.
+  - Coverage model now: the four configured Claude panes are watched statically; ANY new
+    workspace whose session hits a limit is observed by the file channel and its pane
+    admitted per-episode automatically. The soak stays isolated on v0.2.0.
+
+- 2026-08-02, **SD CLOSED — first real-world resume wave (D-P8-11 gate passed 4×):**
+  - ~10:00 UTC limit wave hit six Claude sessions simultaneously. Production watcher
+    (0.2.0-diag3): wW, wS, wX, wY all RESUMED automatically with attempts=1 — the tool's
+    first real end-to-end cycles. Jobs carried reset 10:00Z, resume 10:01Z, high confidence.
+  - **Phase A and Phase B live gates both passed in the same event:** wZ:p1 (TencentDB) and
+    w0:p1 (book-of-secret-knowledge) were workspaces created AFTER deployment, in no config;
+    the session-file channel observed their limits and admission added them automatically
+    (journal: "session-file admission: admitted pane=wZ:p1 …"). wS was admitted the same way
+    (only in the soak's static list). Jobs were created for all six.
+  - wZ and w0 popped the interactive menu → MANUAL_REQUIRED by design (Phase C not yet
+    implemented). Menus answered manually (~14:17 UTC, Enter on "Stop and wait", cursor
+    position re-verified before each send); both sessions returned to done/idle. Menu screens
+    captured as Phase C fixtures — NEW variant: options are Stop and wait / Upgrade your
+    plan / Upgrade to Team plan (no "extra usage").
+  - Assessment: detection via session files, correlation, admission, scheduling, injection,
+    and verification all worked on real limits. The remaining gap in the wave was exactly and
+    only the menu — Phase C's case, now with real fixtures.
+
+- 2026-08-02, Phase C (menu answering) LIVE on production: D4.5 committed as e207f35
+  (525 tests, -race); `resume.answer_limit_menu: true` added to production config; unit
+  restarted on 0.2.0-diag4 (e207f35); doctor PASS, panes=4. Same enable-before-drill
+  rationale as A/B; live gate = the next real interactive limit menu. Had today's 10:00 UTC
+  wave run with this enabled, all six sessions would have resumed with zero keystrokes.
+
+- 2026-08-02, Phase D (`revive`) implemented AND live-drilled; three bugs the unit suite
+  could not see, all found by driving the real system:
+  - D4.6 landed as e894ea2; live drills then found (1) herdr reports the new pane as
+    `root_pane`, not `workspace.panes` — the test had used a synthetic envelope; (2)
+    `workspace create --cwd` does not set the pane shell's cwd AND `pane run` joins args
+    through the shell unquoted, so `--resume` arrived valueless and opened the picker —
+    fixed with a single-word launcher carrying shell-quoted values (105672c); (3) **a real
+    lost-update race** (1774364): `Scan` read the sidecar once and rewrote that snapshot per
+    file, erasing a concurrent process's write. Reproduced live — revive's ATTACHING intent
+    was clobbered by the running watcher, so CompleteRevive found nothing. Every write was
+    locked; the read was not inside the same lock. This is exactly what D-P8-21 specified and
+    the implementation had missed. All sidecar mutations now go through mutate():
+    lock -> fresh read -> apply -> write.
+  - Note for future deploys: the race needs BOTH processes on the fixed build — the first
+    re-drill still failed because the running watcher was the older binary.
+  - Clean end-to-end drill after the fix: `revive a3df2d62` created workspace w18, attached a
+    719k-token session from 1d 9h earlier, recorded ATTACHED{pane w18:p1} in the sidecar, and
+    a second invocation correctly refused with the double-attach veto. 544 tests, -race.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
