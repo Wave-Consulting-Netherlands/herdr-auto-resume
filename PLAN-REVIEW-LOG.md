@@ -148,3 +148,39 @@ All 12 accepted; 4 were re-verified against code/data before accepting (F1 shape
 - F8/F9 → cursors moved to a versioned sidecar with EOF+bounded-lookback bootstrap and intent-before-side-effect ordering (D-P8-19). F10 → strict discovery + sidechain rejection + exactly-one-pane rule (D-P8-20). F11 → per-feature live gates (D-P8-18). F1 → Codex channel explicitly BLOCKED on a real exhausted fixture (D4.7).
 
 Nothing was rejected.
+
+## Round 2 — Codex
+
+The restructuring resolves most prior findings. F2, F4–F6, F8, and F10–F12 are genuinely addressed; F1 is safely gated but leaves contradictory prose; F3, F7, and F9 remain incomplete.
+
+1. **Phase A has no actual enable/disable mechanism.** D-P8-18 says the Claude channel stays off until its live gate, but only targeted admission and menu answering receive config flags. Also, `<state>.scan.json`, durable intents, and the job sink are undefined when the supported `--state-file off` mode is used.  
+Fix: Add a default-off session-file-channel flag and reject it—and `revive`—unless a real persistent state path is configured.
+
+2. **Unmatched observations can still be lost.** D4.3 says zero matches are merely logged; if that counts as durable acceptance, the cursor advances and a temporarily missing/lagging `agent_session` is never retried. Conversely, the two-hour bootstrap can schedule a recovered live session from stale evidence.  
+Fix: Persist unmatched observations as pending, retry complete snapshots until a defined expiry, and specify freshness/reset-expiry rules before job creation.
+
+3. **The shared episode key is not universally computable or stable.** Tmux scrape events have no session ID, and relative resets in [ParseReset](/home/ubuntu/dev/Herdr-auto-resume/internal/detection/resetspec.go:58) produce different epochs when the file and screen channels observe them at different times. Therefore “both channels compute provider+sessionID+resetAt” is false.  
+Fix: Define an explicit legacy/tmux fallback and canonicalize relative-reset episodes; test tmux, missing session IDs, and differently timed relative-reset observations.
+
+4. **`revive` still lacks the promised crash-safe ATTACHING protocol.** D-P8-16 mentions ATTACHING only as a foundation for later automation, while D4.6 tests leases but never requires persisting intent before spawn or reconciling a crash after spawn; a released lease plus delayed pane metadata can still duplicate the attach.  
+Fix: Make durable ATTACHING→ATTACHED/job transitions part of D4.6 and test crashes immediately before and after pane creation.
+
+5. **The episode-key rollback argument is unsound.** Jobs can wait up to 192 hours, so “jobs are short-lived” is false, and a v0.2 reader-only fixture does not test that an old writer drops the new field during its next save.  
+Fix: Preserve canonical episode identity in an old-writer-safe field/sidecar and test a v0.2-style read-modify-write round trip, not merely decoding.
+
+6. **The Codex source of truth remains contradictory.** The opening “verified shape” still asserts primary=300/secondary=10080, while D-P8-18 correctly records the August primary=10080/secondary=null shape; Risk 5 also still says Codex lacks `agent_session`.  
+Fix: Replace the stale shape claim and explicitly supersede D-P8-6/Risk 5 so implementers have one authoritative blocked-until-real-exhaustion contract.
+
+VERDICT: REVISE
+### Claude's response
+
+All six accepted.
+
+- F1 → `providers.session_file_channel: false` default; channel, sidecar, and revive refuse `--state-file off` with a clear error.
+- F2 → zero-match observations persist as pending and retry until min(resetAt+verify_timeout, observedAt+24h); stale-reset rule (resetAt more than margin in the past never creates a job) kills the bootstrap-replay hazard; cursor advance = durably persisted, never matched-or-dropped.
+- F3 → episode key applies only where computable (herdr scrape attaches agent_session); tmux/no-session keeps legacy pane+evidence dedup; relative resets canonicalized to 5-minute buckets with a two-channel timing test.
+- F4 → ATTACHING intent-before-spawn, startup reconciliation, and crash-before/after-spawn tests moved INTO D4.6.
+- F5 → conceded: 192h jobs are not short-lived. Episode registry moved to the scan sidecar old binaries never touch; Job field demoted to a mirror; v0.2.0 read-modify-write round-trip test required.
+- F6 → stale Codex shape claim replaced with the vintage-variance statement; D-P8-6 spike framing and Risk 5 explicitly superseded.
+
+Nothing rejected.

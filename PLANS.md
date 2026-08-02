@@ -267,9 +267,14 @@ Verified data shapes this plan is built on (checked live 2026-08-02, not assumed
   reset still goes through ParseReset, but with a deterministic timezone tag and a machine
   observation timestamp. 74 such records exist on this host; both 2026-08-01 failures are in
   them.
-- Codex rollout files `~/.codex/sessions/YYYY/MM/DD/rollout-*-<sessionId>.jsonl`: carry true
-  epochs — `"rate_limits":{primary:{resets_at:<unix>,window_minutes:300},secondary:{…,10080}}`
-  (closes the BACKLOG 6 spike question).
+- Codex rollout files `~/.codex/sessions/YYYY/MM/DD/rollout-*-<sessionId>.jsonl`: carry
+  `rate_limits` blocks with true `resets_at` epochs, BUT the shape varies by vintage
+  (Feb files: primary window 300m + secondary 10080m; Aug files: primary 10080m,
+  secondary null) and these records are routine telemetry — `resets_at` presence is NOT an
+  exhaustion signal. The exhaustion predicate must come from a real exhausted record
+  (D-P8-18); until one is captured the Codex channel is blocked. This supersedes D-P8-6's
+  spike framing and Risk 5 (herdr DOES expose `agent_session` for codex panes — verified
+  2026-08-02).
 - `herdr pane list` / socket snapshot expose `agent_session.value` = the session UUID for both
   providers — pane↔session correlation is an API lookup.
 - The rate-limit menu fixture shows the cursor defaulting to `❯ 1. Stop and wait for limit to
@@ -284,8 +289,22 @@ Decisions (revised after harden round 1 — 12 findings, all accepted; see PLAN-
   resolved against a fresh pane snapshot inside the coordinator's single event loop, becoming
   a job only for the exact live pane whose `agent_session` matches, with session/cwd/provider
   consistency checks. **Episode identity is provider+sessionID+resetAt(epoch)** and is shared
-  with the scrape channel: the job carries the episode key, and both channels dedupe against
-  it — no cross-channel re-arm after RESUMED. Job records `source: session-file|scrape`.
+  with the scrape channel where computable: the herdr scrape path attaches the pane's
+  `agent_session` to its events, so both channels dedupe on the same key. Where the key is
+  NOT computable — tmux runtime, or a herdr pane with no `agent_session` yet — the scrape
+  path keeps today's pane+evidence dedup unchanged and cross-channel dedup simply does not
+  apply (legacy fallback, tested). Relative resets ("try again in 5 hours") produce
+  different epochs per observer; episode equality therefore uses a canonicalized resetAt
+  (5-minute bucket), with a test for the same relative banner observed minutes apart on the
+  two channels. **Durability (192h jobs, v0.2.0 writers):** the episode dedup registry lives
+  in the scan sidecar (which old binaries never touch), keyed
+  provider+sessionID+resetBucket; the Job's episode field is a convenience mirror only — a
+  v0.2.0 read-modify-write cycle dropping it must not break dedup, and a test proves that
+  round trip. Job records `source: session-file|scrape`.
+  **The channel itself is a gated feature:** `providers.session_file_channel: false` default
+  (flag + YAML key). The channel, its sidecar, and `revive` all REQUIRE a persistent state
+  path — with `--state-file off` they refuse to start with a clear error rather than running
+  memory-only.
 - **D-P8-14 Targeted admission, NOT blanket discovery.** `discover_agent_panes` as originally
   specified was an authorization expansion disguised as opt-in (an agent label is not an
   input-injection boundary). Replaced: a pane outside `monitoring.panes` may be admitted ONLY
@@ -349,20 +368,34 @@ Steps (TDD; gate per commit; phases are independently shippable):
   SessionObservation output. Fixtures are the real sanitized 2026-08-01 records; the
   acceptance test is that BOTH failure events yield observations with correct session, cwd,
   and reset (16:30Z).
-- **D4.2 (Phase A)** Episode identity: episode key on Job (additive, jobs are short-lived so
-  in-record field is safe — verify against v0.2.0 reader with a fixture), both channels
-  computing it, cross-channel dedup tests incl. delayed-file-after-scrape and
-  scrape-after-file.
+- **D4.2 (Phase A)** Episode identity per revised D-P8-13: registry in the scan sidecar,
+  convenience mirror on Job, canonicalized reset buckets, legacy fallback where the key is
+  not computable. Tests: delayed-file-after-scrape, scrape-after-file, tmux no-session
+  fallback, relative-reset observed at different times, and the v0.2.0 read-modify-write
+  round trip (old writer drops the Job field; dedup must survive via the sidecar).
 - **D4.3 (Phase A)** Coordinator wiring: observations resolved in the event loop against a
-  fresh snapshot; monitored-pane match → job via existing sink; consistency checks; no pane
-  match → logged observation only (until later phases). Live drill, then enable Phase A in
+  fresh snapshot; monitored-pane match → job via existing sink; consistency checks.
+  **Zero matches is NOT terminal:** the observation persists as pending in the sidecar and
+  is retried against fresh snapshots until expiry (herdr populates `agent_session`
+  asynchronously — a lagging label must not lose the event). Expiry and freshness rules:
+  a pending observation expires at min(resetAt + verify_timeout, observedAt + 24h); no job
+  is ever created for an episode whose resetAt is already more than `margin` in the past
+  (stale bootstrap evidence from the 2h lookback must not resume a recovered session).
+  Cursor advance = observation durably persisted (accepted or pending), never
+  matched-or-dropped. Tests: lagging agent_session then match; expiry; stale-reset
+  rejection; crash between persist and cursor advance. Live drill, then enable Phase A in
   production (D-P8-12 pattern).
 - **D4.4 (Phase B)** `admit_session_matches` per D-P8-14 with its live gate.
 - **D4.5 (Phase C)** Menu answering per D-P8-15 (default off), tests on the committed fixture
   plus adversarial variants (cursor on option 2, unrelated menu, missing question line,
   restart-no-reanswer), live gate before any unit enables it.
-- **D4.6 (Phase D)** `revive` verb per D-P8-16 with lease tests (concurrent revive, existing
-  pane appears between check and spawn under the lease, stale lease recovery).
+- **D4.6 (Phase D)** `revive` verb per D-P8-16, with the crash-safe attach protocol IN this
+  step, not deferred: persist an ATTACHING intent (session, timestamp, lease) BEFORE spawning;
+  transition to ATTACHED/job on success; on startup, reconcile any dangling ATTACHING record
+  against a fresh unfiltered snapshot before honoring new revives. Tests: concurrent revive;
+  pane appears between check and spawn under the lease; stale lease recovery; crash
+  immediately BEFORE spawn (intent present, no pane) and immediately AFTER spawn (pane
+  present, no job) — both must reconcile without a duplicate attach.
 - **D4.7** Codex scanner — BLOCKED until a real exhausted rollout fixture exists; then as
   D4.1 for Codex with epoch resets.
 - **D4.8** SD closes per D-P8-11 on the first real end-to-end resume through any gated-on
