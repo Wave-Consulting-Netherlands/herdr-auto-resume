@@ -142,12 +142,7 @@ func sessionCWD(path, sessionID string) (string, error) {
 
 // ReviveIntents returns a copy of the durable revive records.
 func (s *Scanner) ReviveIntents() ([]ReviveIntent, error) {
-	lock, err := s.lock()
-	if err != nil {
-		return nil, err
-	}
-	defer unlock(lock)
-	state, err := s.readSidecar()
+	state, err := s.snapshot()
 	if err != nil {
 		return nil, err
 	}
@@ -164,62 +159,41 @@ func (s *Scanner) BeginRevive(intent ReviveIntent) error {
 	if intent.SessionID == "" || intent.State != ReviveAttaching {
 		return errors.New("revive intent requires a session and ATTACHING state")
 	}
-	lock, err := s.lock()
-	if err != nil {
-		return err
-	}
-	defer unlock(lock)
-	state, err := s.readSidecar()
-	if err != nil {
-		return err
-	}
-	if existing, ok := state.Revives[intent.SessionID]; ok && existing.State != ReviveAttached {
-		return fmt.Errorf("revive intent already exists for session %s in state %s", intent.SessionID, existing.State)
-	}
-	state.Revives[intent.SessionID] = intent
-	return s.writeSidecar(state)
+	return s.mutate(func(state *sidecar) (bool, error) {
+		if existing, ok := state.Revives[intent.SessionID]; ok && existing.State != ReviveAttached {
+			return false, fmt.Errorf("revive intent already exists for session %s in state %s", intent.SessionID, existing.State)
+		}
+		state.Revives[intent.SessionID] = intent
+		return true, nil
+	})
 }
 
 // CompleteRevive transitions ATTACHING to ATTACHED after the new pane is
 // visible with the expected agent session.
 func (s *Scanner) CompleteRevive(sessionID, paneID, workspaceID string) error {
-	lock, err := s.lock()
-	if err != nil {
-		return err
-	}
-	defer unlock(lock)
-	state, err := s.readSidecar()
-	if err != nil {
-		return err
-	}
-	intent, ok := state.Revives[sessionID]
-	if !ok {
-		return fmt.Errorf("revive intent for session %s is missing", sessionID)
-	}
-	intent.State = ReviveAttached
-	intent.PaneID = paneID
-	intent.WorkspaceID = workspaceID
-	state.Revives[sessionID] = intent
-	return s.writeSidecar(state)
+	return s.mutate(func(state *sidecar) (bool, error) {
+		intent, ok := state.Revives[sessionID]
+		if !ok {
+			return false, fmt.Errorf("revive intent for session %s is missing", sessionID)
+		}
+		intent.State = ReviveAttached
+		intent.PaneID = paneID
+		intent.WorkspaceID = workspaceID
+		state.Revives[sessionID] = intent
+		return true, nil
+	})
 }
 
 // ClearRevive removes an ATTACHING intent after reconciliation confirms that
 // no pane carries the session.
 func (s *Scanner) ClearRevive(sessionID string) error {
-	lock, err := s.lock()
-	if err != nil {
-		return err
-	}
-	defer unlock(lock)
-	state, err := s.readSidecar()
-	if err != nil {
-		return err
-	}
-	if _, ok := state.Revives[sessionID]; !ok {
-		return nil
-	}
-	delete(state.Revives, sessionID)
-	return s.writeSidecar(state)
+	return s.mutate(func(state *sidecar) (bool, error) {
+		if _, ok := state.Revives[sessionID]; !ok {
+			return false, nil
+		}
+		delete(state.Revives, sessionID)
+		return true, nil
+	})
 }
 
 type sidecar struct {
@@ -293,16 +267,6 @@ func New(config Config) (*Scanner, error) {
 // first written to the sidecar pending list; a request ID already present in
 // that durable list is not returned again.
 func (s *Scanner) Scan() ([]SessionObservation, error) {
-	lock, err := s.lock()
-	if err != nil {
-		return nil, err
-	}
-	defer unlock(lock)
-
-	state, err := s.readSidecar()
-	if err != nil {
-		return nil, err
-	}
 	paths, err := s.discover()
 	if err != nil {
 		return nil, err
@@ -319,6 +283,10 @@ func (s *Scanner) Scan() ([]SessionObservation, error) {
 		identity, ok := fileIdentity(info)
 		if !ok {
 			continue
+		}
+		state, err := s.snapshot()
+		if err != nil {
+			return nil, err
 		}
 		cursor, exists := state.Files[path]
 		start := int64(0)
@@ -343,13 +311,20 @@ func (s *Scanner) Scan() ([]SessionObservation, error) {
 			if !ok || (bootstrap && observation.ObservedAt.Before(s.now().Add(-s.lookback))) {
 				continue
 			}
-			if state.SeenRequestIDs[observation.RequestID] {
-				continue
-			}
-			state.Pending = append(state.Pending, observation)
-			state.SeenRequestIDs[observation.RequestID] = true
-			if err := s.writeSidecar(state); err != nil {
+			accepted := false
+			if err := s.mutate(func(state *sidecar) (bool, error) {
+				if state.SeenRequestIDs[observation.RequestID] {
+					return false, nil
+				}
+				state.Pending = append(state.Pending, observation)
+				state.SeenRequestIDs[observation.RequestID] = true
+				accepted = true
+				return true, nil
+			}); err != nil {
 				return nil, err
+			}
+			if !accepted {
+				continue
 			}
 			if s.afterPersist != nil {
 				if err := s.afterPersist(observation); err != nil {
@@ -358,8 +333,15 @@ func (s *Scanner) Scan() ([]SessionObservation, error) {
 			}
 			observations = append(observations, observation)
 		}
-		state.Files[path] = fileCursor{Device: identity.Device, Inode: identity.Inode, Offset: end, PrefixHash: prefixHash(data, end)}
-		if err := s.writeSidecar(state); err != nil {
+		desired := fileCursor{Device: identity.Device, Inode: identity.Inode, Offset: end, PrefixHash: prefixHash(data, end)}
+		if err := s.mutate(func(state *sidecar) (bool, error) {
+			current, exists := state.Files[path]
+			if exists && current.Device == desired.Device && current.Inode == desired.Inode && current.Offset >= desired.Offset {
+				return false, nil
+			}
+			state.Files[path] = desired
+			return true, nil
+		}); err != nil {
 			return nil, err
 		}
 	}
@@ -497,6 +479,35 @@ func unlock(file *os.File) {
 	_ = file.Close()
 }
 
+// mutate is the sidecar's transaction boundary. The callback is invoked with
+// freshly read state while the exclusive flock is held; only the delta it
+// applies is written back. Callers must not retain the state after return.
+func (s *Scanner) mutate(fn func(*sidecar) (changed bool, err error)) error {
+	lock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(lock)
+	state, err := s.readSidecar()
+	if err != nil {
+		return err
+	}
+	changed, err := fn(&state)
+	if err != nil || !changed {
+		return err
+	}
+	return s.writeSidecar(state)
+}
+
+func (s *Scanner) snapshot() (sidecar, error) {
+	lock, err := s.lock()
+	if err != nil {
+		return sidecar{}, err
+	}
+	defer unlock(lock)
+	return s.readSidecar()
+}
+
 func (s *Scanner) readSidecar() (sidecar, error) {
 	data, err := os.ReadFile(s.sidecarPath())
 	if os.IsNotExist(err) {
@@ -530,12 +541,7 @@ func (s *Scanner) readSidecar() (sidecar, error) {
 // Pending returns observations durably accepted by Scan but not yet committed
 // to a job store.
 func (s *Scanner) Pending() ([]SessionObservation, error) {
-	lock, err := s.lock()
-	if err != nil {
-		return nil, err
-	}
-	defer unlock(lock)
-	state, err := s.readSidecar()
+	state, err := s.snapshot()
 	if err != nil {
 		return nil, err
 	}
@@ -545,63 +551,49 @@ func (s *Scanner) Pending() ([]SessionObservation, error) {
 // CommitPending records the sidecar COMMITTED state after the job store has
 // durably accepted the corresponding job, then removes it from PENDING.
 func (s *Scanner) CommitPending(requestID, episodeID string) error {
-	lock, err := s.lock()
-	if err != nil {
-		return err
-	}
-	defer unlock(lock)
-	state, err := s.readSidecar()
-	if err != nil {
-		return err
-	}
-	remaining := state.Pending[:0]
-	found := false
-	for _, observation := range state.Pending {
-		if observation.RequestID == requestID {
-			found = true
-			state.Committed[requestID] = episodeID
-			continue
+	return s.mutate(func(state *sidecar) (bool, error) {
+		remaining := state.Pending[:0]
+		found := false
+		for _, observation := range state.Pending {
+			if observation.RequestID == requestID {
+				found = true
+				state.Committed[requestID] = episodeID
+				continue
+			}
+			remaining = append(remaining, observation)
 		}
-		remaining = append(remaining, observation)
-	}
-	if !found {
-		return nil
-	}
-	state.Pending = remaining
-	return s.writeSidecar(state)
+		if !found {
+			return false, nil
+		}
+		state.Pending = remaining
+		return true, nil
+	})
 }
 
 // ReconcilePending commits pending observations whose episode is already
 // represented by a durable job. Pending observations without such a job stay
 // pending and will be retried on the next coordinator cycle.
 func (s *Scanner) ReconcilePending(episodeIDs map[string]struct{}) error {
-	lock, err := s.lock()
-	if err != nil {
-		return err
-	}
-	defer unlock(lock)
-	state, err := s.readSidecar()
-	if err != nil {
-		return err
-	}
-	remaining := state.Pending[:0]
-	changed := false
-	for _, observation := range state.Pending {
-		episode, ok := nearestEpisode(state.Episodes, observation)
-		if ok {
-			if _, exists := episodeIDs[episode.ID]; exists {
-				state.Committed[observation.RequestID] = episode.ID
-				changed = true
-				continue
+	return s.mutate(func(state *sidecar) (bool, error) {
+		remaining := state.Pending[:0]
+		changed := false
+		for _, observation := range state.Pending {
+			episode, ok := nearestEpisode(state.Episodes, observation)
+			if ok {
+				if _, exists := episodeIDs[episode.ID]; exists {
+					state.Committed[observation.RequestID] = episode.ID
+					changed = true
+					continue
+				}
 			}
+			remaining = append(remaining, observation)
 		}
-		remaining = append(remaining, observation)
-	}
-	if !changed {
-		return nil
-	}
-	state.Pending = remaining
-	return s.writeSidecar(state)
+		if !changed {
+			return false, nil
+		}
+		state.Pending = remaining
+		return true, nil
+	})
 }
 
 func (s *Scanner) writeSidecar(state sidecar) error {

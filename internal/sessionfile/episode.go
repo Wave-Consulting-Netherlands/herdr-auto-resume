@@ -58,29 +58,27 @@ func (r *EpisodeRegistry) Resolve(observation SessionObservation) (Episode, bool
 		return Episode{}, false, errors.New("episode requires provider, session, and reset time")
 	}
 	accessor := &Scanner{statePath: r.statePath}
-	lock, err := accessor.lock()
+	var episode Episode
+	duplicate := false
+	err := accessor.mutate(func(state *sidecar) (bool, error) {
+		if existing, ok := nearestEpisode(state.Episodes, observation); ok {
+			episode = existing
+			duplicate = true
+			return false, nil
+		}
+		episode = Episode{
+			ID:           episodeID(observation.Provider, observation.SessionID, observation.ResetAt),
+			Provider:     observation.Provider,
+			SessionID:    observation.SessionID,
+			FirstResetAt: observation.ResetAt.UTC(),
+		}
+		state.Episodes = append(state.Episodes, episodeRecord{ID: episode.ID, Provider: episode.Provider, SessionID: episode.SessionID, FirstResetAt: episode.FirstResetAt})
+		return true, nil
+	})
 	if err != nil {
 		return Episode{}, false, err
 	}
-	defer unlock(lock)
-	state, err := accessor.readSidecar()
-	if err != nil {
-		return Episode{}, false, err
-	}
-	if episode, ok := nearestEpisode(state.Episodes, observation); ok {
-		return episode, true, nil
-	}
-	episode := Episode{
-		ID:           episodeID(observation.Provider, observation.SessionID, observation.ResetAt),
-		Provider:     observation.Provider,
-		SessionID:    observation.SessionID,
-		FirstResetAt: observation.ResetAt.UTC(),
-	}
-	state.Episodes = append(state.Episodes, episodeRecord{ID: episode.ID, Provider: episode.Provider, SessionID: episode.SessionID, FirstResetAt: episode.FirstResetAt})
-	if err := accessor.writeSidecar(state); err != nil {
-		return Episode{}, false, err
-	}
-	return episode, false, nil
+	return episode, duplicate, nil
 }
 
 // Lookup returns an existing episode without creating one.

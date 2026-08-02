@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 )
@@ -205,6 +206,53 @@ func TestScanCrashAfterPendingPersistAdvancesCursorOnRetry(t *testing.T) {
 	}
 	if state.Files[path].Offset == 0 {
 		t.Fatal("retry did not advance cursor after observing the already-persisted request")
+	}
+}
+
+func TestScanPreservesForeignReviveMutationBetweenPendingAndCursorWrites(t *testing.T) {
+	root := t.TempDir()
+	firstID := "88888888-8888-4888-8888-888888888888"
+	secondID := "99999999-9999-4999-8999-999999999999"
+	firstPath := sessionPath(t, root, firstID)
+	secondPath := sessionPath(t, root, secondID)
+	writeRecord(t, firstPath, mustRecord(t, firstID, "req-first-concurrent", false))
+	writeRecord(t, secondPath, mustRecord(t, secondID, "req-second-concurrent", false))
+	statePath := filepath.Join(root, "state.json")
+	scannerA := mustScannerWithState(t, root, statePath)
+	scannerB := mustScannerWithState(t, root, statePath)
+	intent := ReviveIntent{SessionID: firstID, Timestamp: scannerNow, LeasePID: os.Getpid(), State: ReviveAttaching}
+	var once sync.Once
+	scannerA.afterPersist = func(SessionObservation) error {
+		var foreignErr error
+		once.Do(func() {
+			done := make(chan error, 1)
+			go func() { done <- scannerB.BeginRevive(intent) }()
+			select {
+			case foreignErr = <-done:
+			case <-time.After(500 * time.Millisecond):
+				foreignErr = errors.New("foreign sidecar mutation was blocked during scan")
+			}
+		})
+		return foreignErr
+	}
+	if _, err := scannerA.Scan(); err != nil {
+		t.Fatal(err)
+	}
+	if err := scannerB.CompleteRevive(firstID, "pane-after-scan", "workspace-after-scan"); err != nil {
+		t.Fatalf("complete revive after concurrent scan: %v", err)
+	}
+	sidecar, err := scannerB.readSidecar()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sidecar.Revives[firstID].State != ReviveAttached || sidecar.Revives[firstID].PaneID != "pane-after-scan" {
+		t.Fatalf("foreign revive mutation was lost: %#v", sidecar.Revives)
+	}
+	if !sidecar.SeenRequestIDs["req-first-concurrent"] || !sidecar.SeenRequestIDs["req-second-concurrent"] || len(sidecar.Pending) != 2 {
+		t.Fatalf("scan pending/seen deltas were lost: pending=%#v seen=%#v", sidecar.Pending, sidecar.SeenRequestIDs)
+	}
+	if sidecar.Files[firstPath].Offset == 0 || sidecar.Files[secondPath].Offset == 0 {
+		t.Fatalf("scan cursor deltas were lost: %#v", sidecar.Files)
 	}
 }
 
