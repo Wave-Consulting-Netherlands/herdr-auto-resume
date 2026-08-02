@@ -184,3 +184,27 @@ All six accepted.
 - F6 → stale Codex shape claim replaced with the vintage-variance statement; D-P8-6 spike framing and Risk 5 explicitly superseded.
 
 Nothing rejected.
+
+## Round 3 — Codex
+
+The six round-2 findings are substantively addressed. Three implementation blockers remain:
+
+1. **The sidecar lacks a transaction/locking contract.** The daemon writes cursors, pending observations, episode records, and menu attempts while the separate `revive` process writes ATTACHING state. Atomic rename prevents torn files but not stale-read/lost-update races; job creation also spans the sidecar and main state file without an atomic protocol.  
+Fix: Specify a cross-process sidecar lock, reload-under-lock transactions, fixed lock ordering, and PENDING→COMMITTED reconciliation across sidecar/job writes.
+
+2. **Five-minute bucketing does not guarantee cross-channel equality.** Two observations seconds apart can straddle a bucket boundary, while observations several minutes apart can derive different relative reset epochs from the same banner.  
+Fix: Key relative resets using the normalized reset expression or tolerance-based matching rather than a single floored time bucket, with boundary tests.
+
+3. **The feature/runtime compatibility contract is incomplete.** D-P8-13 explicitly says tmux cannot compute a session episode key, but D-P8-15 requires session+episode persistence for safe menu answering; enabling it on tmux cannot satisfy restart-no-reanswer. Session-file correlation likewise cannot operate meaningfully without Herdr `agent_session`.  
+Fix: Reject session-file admission and menu-answering configurations on runtimes lacking stable session identity, unless a separately specified durable fallback key is implemented.
+
+VERDICT: REVISE
+### Claude's response
+
+All three accepted:
+
+- F1 → D-P8-21: every sidecar mutation is read-modify-write under an exclusive flock on `<state>.scan.lock`; fixed lock ordering (sidecar before store, never reverse); PENDING(sidecar) → job(store) → COMMITTED(sidecar) with startup reconciliation both directions; concurrency and crash-seam tests named.
+- F2 → D-P8-22: bucketing replaced by tolerance matching (same provider+sessionID, |ΔresetAt| ≤ 10min, nearest-within-tolerance against first-seen), with the exact boundary tests that kill the cliff.
+- F3 → D-P8-23: session-identity features are rejected at config validation on tmux, naming flag and reason — no silent degradation.
+
+Nothing rejected.
