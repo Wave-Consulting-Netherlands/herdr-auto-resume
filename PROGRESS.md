@@ -499,6 +499,18 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     would have caught both failures regardless of screen state, and session-identity resume
     (`claude --resume <id>`) removes the dead/unmonitored-pane class entirely.
 
+- 2026-08-02, Phase A (session-file channel) LIVE on production (user-approved
+  enable-before-drill):
+  - D4.0-D4.3 merged (20e9dc2, 9ac216e, 064c8e2; 487 tests -race). Startup guards verified
+    live: channel+--state-file off and channel+tmux both rejected with named reasons.
+  - `providers.session_file_channel: true` added to the production config; unit restarted on
+    `0.2.0-diag2 (064c8e2)`. Scanner sidecar lock present at state.json.scan.lock; soak
+    untouched on v0.2.0.
+  - Deviation from D-P8-18 recorded: an honest synthetic drill would require appending fake
+    records to real Claude session files — refused. The Phase A live gate is therefore the
+    next REAL limit observed through the enabled channel on production, which is also the
+    D-P8-11 SD-closing evidence. Rollback = remove one config line.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
