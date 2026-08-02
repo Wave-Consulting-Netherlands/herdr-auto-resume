@@ -25,6 +25,27 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
 10. **Default transport flip after soak.** Keep --transport cli as the default until the
     explicit socket-mode soak and live drills are clean; then make the default flip a small,
     separately reviewed change.
+17. **Audit the herdr agent API against our hand-rolled equivalents (2026-08-02).** Protocol 17
+    exposes agent-level surface we never enumerated — we subscribed to `pane.output_matched`
+    and stopped. Concretely, each of these has a hand-built counterpart in this repo:
+    - `pane.agent_status_changed` pushes `idle|working|blocked|done`. **Both menu-parked panes
+      today reported `blocked`** — herdr will tell us a pane is stuck instead of us inferring
+      it from screen text on a 30s ticker. Candidate primary trigger, scraping as fallback.
+    - `pane.agent_detected` — the creation-time signal BACKLOG 15 needs; already reachable
+      through our existing subscription machinery, so that item is smaller than estimated.
+    - `agent.prompt` / `agent.send-keys` — supported prompt submission above raw keystrokes;
+      we hand-roll Esc→text→Enter in the provider ResumeAction.
+    - `agent.wait --until <status>` — native "wait for state" primitive; our verification
+      polls and diffs pane text instead.
+    - `agent.start` — sanctioned way to start an agent in an existing pane; Phase D revive
+      instead shells out via a launcher script invented after two failed drills.
+    - `agent.explain` — "explain agent detection state", i.e. a debugger for exactly the class
+      of mystery that cost a day on 2026-08-01.
+    Not a defect: everything works. But detection could plausibly be event-driven with
+    scraping as the fallback rather than the reverse. Caveats to keep: no event carries a
+    RESET TIME (parsing stays), and none cover the session-file cases (limit with no pane,
+    closed workspace), so the file channel remains the authority. Do this as a post-v0.3.0
+    refactor with drills per replacement, not a rewrite.
 15. **Event-hook pane pickup (from mo-arvan/herdr-claude-auto-retry, reviewed 2026-08-02).**
     That plugin registers herdr `[[events]]` hooks on agent-detected and picks up new agent
     panes at creation, so coverage never depends on config or on a limit having fired. Our
