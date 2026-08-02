@@ -523,6 +523,24 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     workspace whose session hits a limit is observed by the file channel and its pane
     admitted per-episode automatically. The soak stays isolated on v0.2.0.
 
+- 2026-08-02, **SD CLOSED — first real-world resume wave (D-P8-11 gate passed 4×):**
+  - ~10:00 UTC limit wave hit six Claude sessions simultaneously. Production watcher
+    (0.2.0-diag3): wW, wS, wX, wY all RESUMED automatically with attempts=1 — the tool's
+    first real end-to-end cycles. Jobs carried reset 10:00Z, resume 10:01Z, high confidence.
+  - **Phase A and Phase B live gates both passed in the same event:** wZ:p1 (TencentDB) and
+    w0:p1 (book-of-secret-knowledge) were workspaces created AFTER deployment, in no config;
+    the session-file channel observed their limits and admission added them automatically
+    (journal: "session-file admission: admitted pane=wZ:p1 …"). wS was admitted the same way
+    (only in the soak's static list). Jobs were created for all six.
+  - wZ and w0 popped the interactive menu → MANUAL_REQUIRED by design (Phase C not yet
+    implemented). Menus answered manually (~14:17 UTC, Enter on "Stop and wait", cursor
+    position re-verified before each send); both sessions returned to done/idle. Menu screens
+    captured as Phase C fixtures — NEW variant: options are Stop and wait / Upgrade your
+    plan / Upgrade to Team plan (no "extra usage").
+  - Assessment: detection via session files, correlation, admission, scheduling, injection,
+    and verification all worked on real limits. The remaining gap in the wave was exactly and
+    only the menu — Phase C's case, now with real fixtures.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
