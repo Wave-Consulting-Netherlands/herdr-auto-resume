@@ -61,6 +61,8 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 			return detectCommand(args[1:], stdout, stderr)
 		case "status", "inspect", "cancel":
 			return jobCommand(args, stdout, stderr)
+		case "revive":
+			return reviveCommand(args, stdout, stderr)
 		case "version":
 			fmt.Fprintln(stdout, versionOutput())
 			return 0

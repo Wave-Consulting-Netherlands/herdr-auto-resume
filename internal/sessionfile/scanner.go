@@ -24,6 +24,8 @@ import (
 
 const (
 	ProviderClaude  = "claude"
+	ReviveAttaching = "ATTACHING"
+	ReviveAttached  = "ATTACHED"
 	sidecarVersion  = 1
 	defaultLookback = 2 * time.Hour
 )
@@ -41,6 +43,24 @@ type SessionObservation struct {
 	ResetRaw   string    `json:"reset_raw"`
 	ResetAt    time.Time `json:"reset_at"`
 	RequestID  string    `json:"request_id"`
+}
+
+// SessionInfo identifies a Claude session file that can be resumed by the
+// operator command.
+type SessionInfo struct {
+	SessionID string
+	CWD       string
+}
+
+// ReviveIntent is the crash-recovery record for the one-shot revive command.
+// It lives in the shared scan sidecar so all mutations use the scanner flock.
+type ReviveIntent struct {
+	SessionID   string    `json:"session_id"`
+	Timestamp   time.Time `json:"timestamp"`
+	LeasePID    int       `json:"lease_pid"`
+	State       string    `json:"state"`
+	PaneID      string    `json:"pane_id,omitempty"`
+	WorkspaceID string    `json:"workspace_id,omitempty"`
 }
 
 // Config controls scanner discovery and persistence. RootDir is the Claude
@@ -76,13 +96,140 @@ func (s *Scanner) ResolveEpisode(observation SessionObservation) (Episode, bool,
 	return registry.Resolve(observation)
 }
 
+// RootDir and StatePath expose immutable scanner roots to the operator layer.
+func (s *Scanner) RootDir() string   { return s.rootDir }
+func (s *Scanner) StatePath() string { return s.statePath }
+
+// DiscoverSessions returns valid top-level Claude session files matching the
+// prefix. An empty prefix returns every candidate in stable order.
+func (s *Scanner) DiscoverSessions(prefix string) ([]SessionInfo, error) {
+	paths, err := s.discover()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]SessionInfo, 0)
+	for _, path := range paths {
+		id := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+		if prefix != "" && !strings.HasPrefix(id, prefix) {
+			continue
+		}
+		cwd, err := sessionCWD(path, id)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, SessionInfo{SessionID: id, CWD: cwd})
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].SessionID < result[j].SessionID })
+	return result, nil
+}
+
+func sessionCWD(path, sessionID string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read Claude session %s: %w", sessionID, err)
+	}
+	for _, line := range splitLines(data) {
+		var record struct {
+			SessionID string `json:"sessionId"`
+			CWD       string `json:"cwd"`
+		}
+		if json.Unmarshal(bytes.TrimSpace(line), &record) == nil && record.SessionID == sessionID && record.CWD != "" {
+			return record.CWD, nil
+		}
+	}
+	return "", nil
+}
+
+// ReviveIntents returns a copy of the durable revive records.
+func (s *Scanner) ReviveIntents() ([]ReviveIntent, error) {
+	lock, err := s.lock()
+	if err != nil {
+		return nil, err
+	}
+	defer unlock(lock)
+	state, err := s.readSidecar()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]ReviveIntent, 0, len(state.Revives))
+	for _, intent := range state.Revives {
+		result = append(result, intent)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].SessionID < result[j].SessionID })
+	return result, nil
+}
+
+// BeginRevive durably records ATTACHING before any process is spawned.
+func (s *Scanner) BeginRevive(intent ReviveIntent) error {
+	if intent.SessionID == "" || intent.State != ReviveAttaching {
+		return errors.New("revive intent requires a session and ATTACHING state")
+	}
+	lock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(lock)
+	state, err := s.readSidecar()
+	if err != nil {
+		return err
+	}
+	if existing, ok := state.Revives[intent.SessionID]; ok && existing.State != ReviveAttached {
+		return fmt.Errorf("revive intent already exists for session %s in state %s", intent.SessionID, existing.State)
+	}
+	state.Revives[intent.SessionID] = intent
+	return s.writeSidecar(state)
+}
+
+// CompleteRevive transitions ATTACHING to ATTACHED after the new pane is
+// visible with the expected agent session.
+func (s *Scanner) CompleteRevive(sessionID, paneID, workspaceID string) error {
+	lock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(lock)
+	state, err := s.readSidecar()
+	if err != nil {
+		return err
+	}
+	intent, ok := state.Revives[sessionID]
+	if !ok {
+		return fmt.Errorf("revive intent for session %s is missing", sessionID)
+	}
+	intent.State = ReviveAttached
+	intent.PaneID = paneID
+	intent.WorkspaceID = workspaceID
+	state.Revives[sessionID] = intent
+	return s.writeSidecar(state)
+}
+
+// ClearRevive removes an ATTACHING intent after reconciliation confirms that
+// no pane carries the session.
+func (s *Scanner) ClearRevive(sessionID string) error {
+	lock, err := s.lock()
+	if err != nil {
+		return err
+	}
+	defer unlock(lock)
+	state, err := s.readSidecar()
+	if err != nil {
+		return err
+	}
+	if _, ok := state.Revives[sessionID]; !ok {
+		return nil
+	}
+	delete(state.Revives, sessionID)
+	return s.writeSidecar(state)
+}
+
 type sidecar struct {
-	Version        int                   `json:"version"`
-	Files          map[string]fileCursor `json:"files"`
-	Pending        []SessionObservation  `json:"pending"`
-	SeenRequestIDs map[string]bool       `json:"seen_request_ids"`
-	Episodes       []episodeRecord       `json:"episodes"`
-	Committed      map[string]string     `json:"committed"`
+	Version        int                     `json:"version"`
+	Files          map[string]fileCursor   `json:"files"`
+	Pending        []SessionObservation    `json:"pending"`
+	SeenRequestIDs map[string]bool         `json:"seen_request_ids"`
+	Episodes       []episodeRecord         `json:"episodes"`
+	Committed      map[string]string       `json:"committed"`
+	Revives        map[string]ReviveIntent `json:"revives"`
 }
 
 type fileCursor struct {
@@ -353,7 +500,7 @@ func unlock(file *os.File) {
 func (s *Scanner) readSidecar() (sidecar, error) {
 	data, err := os.ReadFile(s.sidecarPath())
 	if os.IsNotExist(err) {
-		return sidecar{Version: sidecarVersion, Files: map[string]fileCursor{}, SeenRequestIDs: map[string]bool{}, Committed: map[string]string{}}, nil
+		return sidecar{Version: sidecarVersion, Files: map[string]fileCursor{}, SeenRequestIDs: map[string]bool{}, Committed: map[string]string{}, Revives: map[string]ReviveIntent{}}, nil
 	}
 	if err != nil {
 		return sidecar{}, fmt.Errorf("read sessionfile sidecar: %w", err)
@@ -373,6 +520,9 @@ func (s *Scanner) readSidecar() (sidecar, error) {
 	}
 	if state.Committed == nil {
 		state.Committed = map[string]string{}
+	}
+	if state.Revives == nil {
+		state.Revives = map[string]ReviveIntent{}
 	}
 	return state, nil
 }
