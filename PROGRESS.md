@@ -541,6 +541,12 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     and verification all worked on real limits. The remaining gap in the wave was exactly and
     only the menu — Phase C's case, now with real fixtures.
 
+- 2026-08-02, Phase C (menu answering) LIVE on production: D4.5 committed as e207f35
+  (525 tests, -race); `resume.answer_limit_menu: true` added to production config; unit
+  restarted on 0.2.0-diag4 (e207f35); doctor PASS, panes=4. Same enable-before-drill
+  rationale as A/B; live gate = the next real interactive limit menu. Had today's 10:00 UTC
+  wave run with this enabled, all six sessions would have resumed with zero keystrokes.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
