@@ -73,6 +73,22 @@ func TestLoadParsesWaitForPanes(t *testing.T) {
 	}
 }
 
+func TestLoadParsesAnswerLimitMenu(t *testing.T) {
+	path := writeConfig(t, "version: 1\nresume:\n  answer_limit_menu: true\n")
+	cfg, found, err := Load(path)
+	if err != nil || !found || !cfg.Has("resume.answer_limit_menu") || !cfg.Resume.AnswerLimitMenu {
+		t.Fatalf("cfg=%#v found=%v err=%v, want answer_limit_menu enabled", cfg, found, err)
+	}
+}
+
+func TestLoadRejectsAnswerLimitMenuForTmux(t *testing.T) {
+	path := writeConfig(t, "version: 1\nruntime:\n  type: tmux\nresume:\n  answer_limit_menu: true\n")
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "answer_limit_menu") || !strings.Contains(err.Error(), "tmux") {
+		t.Fatalf("Load() error = %v, want tmux menu-answer rejection", err)
+	}
+}
+
 func TestLoadParsesSessionFileChannel(t *testing.T) {
 	path := writeConfig(t, "version: 1\nproviders:\n  session_file_channel: true\n")
 	cfg, found, err := Load(path)

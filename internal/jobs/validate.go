@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
@@ -87,6 +88,24 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		finish(store.StateManualRequired, "working directory changed", true)
 		return
 	}
+	if m.cfg.AnswerLimitMenu && current.Name() == "claude" && looksLikeLimitMenu(content) {
+		if result, handled := m.answerLimitMenu(index, job, candidate, now); handled {
+			for _, persisted := range m.file.Jobs {
+				if persisted.ID == job.ID {
+					job.MenuAttempt = persisted.MenuAttempt
+					break
+				}
+			}
+			job.State = store.StateManualRequired
+			job.LastValidation = result
+			_ = m.updateJob(index, job)
+			return
+		}
+		// An interactive-looking menu that fails the strict guard remains
+		// manual; it must never fall through to the normal resume action.
+		finish(store.StateManualRequired, "menu-visible: terminal menu failed strict answer guard", true)
+		return
+	}
 	if ok, reason := current.SafeToResume(content, now); !ok {
 		finish(store.StateManualRequired, reason, true)
 		return
@@ -95,6 +114,51 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 	if m.updateJob(index, job) {
 		m.beginResume(index, job, now, current)
 	}
+}
+
+func (m *Manager) answerLimitMenu(index int, job store.Job, pane runtime.Pane, now time.Time) (string, bool) {
+	if job.MenuAttempt != nil {
+		return "menu answer already attempted", true
+	}
+	if pane.AgentSessionID == "" || job.Episode == "" {
+		m.logf("job=%s menu answer refused: missing session or episode identity", job.ID)
+		return "", false
+	}
+	fresh, err := m.rt.ReadPane(job.PaneID, m.cfg.ReadLines)
+	if err != nil || !safeStopAndWaitMenu(fresh) {
+		return "", false
+	}
+	attempt := &store.MenuAttempt{
+		SessionID: pane.AgentSessionID, EpisodeID: job.Episode,
+		PaneID: pane.ID, AttemptedAt: now.UTC(),
+	}
+	recorded, err := m.recordMenuAttempt(job.ID, attempt)
+	if err != nil {
+		return "menu answer persistence failed", true
+	}
+	if !recorded {
+		return "menu answer already attempted", true
+	}
+	if m.cfg.DryRun {
+		m.logf("job=%s pane=%s menu answer dry-run; no key sent", job.ID, pane.ID)
+		return "menu answer dry-run; no key sent", true
+	}
+
+	// TOCTOU caveat: Herdr has no revision-conditional send. The pane can
+	// change between this guarded read and the unconditional Enter, which is
+	// why this feature is default-off and strictly single-shot.
+	if err := m.rt.SendKeys(job.PaneID, "enter"); err != nil {
+		m.logf("job=%s pane=%s menu answer send failed: %v", job.ID, pane.ID, err)
+		return "menu answer send failed", true
+	}
+	m.sleep(100 * time.Millisecond)
+	after, readErr := m.rt.ReadPane(job.PaneID, m.cfg.ReadLines)
+	outcome := "menu still present"
+	if readErr == nil && !detection.HasRateLimitMenu(after) {
+		outcome = "menu gone"
+	}
+	m.logf("job=%s pane=%s menu answer outcome: %s", job.ID, pane.ID, outcome)
+	return "menu answer sent; " + outcome, true
 }
 
 func (m *Manager) verify(index int, job store.Job, now time.Time) {

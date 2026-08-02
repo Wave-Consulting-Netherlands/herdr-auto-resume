@@ -27,12 +27,13 @@ type LimitEvent = coordinator.LimitEvent
 
 // Config controls scheduling and validation.
 type Config struct {
-	Provider      string
-	Margin        time.Duration
-	MaxHorizon    time.Duration
-	VerifyTimeout time.Duration
-	ReadLines     int
-	DryRun        bool
+	Provider        string
+	Margin          time.Duration
+	MaxHorizon      time.Duration
+	VerifyTimeout   time.Duration
+	ReadLines       int
+	DryRun          bool
+	AnswerLimitMenu bool
 }
 
 type Option func(*Manager)
@@ -206,6 +207,43 @@ func (m *Manager) HandleLimit(event LimitEvent) bool {
 		return false
 	}
 	return owned
+}
+
+// recordMenuAttempt durably claims the single menu action under the existing
+// store lock. A second watcher that observes the same episode loses the claim
+// before either process can send a key.
+func (m *Manager) recordMenuAttempt(jobID string, attempt *store.MenuAttempt) (bool, error) {
+	recorded := false
+	err := store.WithLock(m.store, func() error {
+		loaded, err := m.store.Load()
+		if err != nil {
+			return err
+		}
+		normalizeFile(&loaded)
+		for i := range loaded.Jobs {
+			if loaded.Jobs[i].ID != jobID {
+				continue
+			}
+			if loaded.Jobs[i].MenuAttempt != nil || loaded.Jobs[i].State != store.StateValidating {
+				m.file = loaded
+				m.noteModTime()
+				return nil
+			}
+			loaded.Jobs[i].MenuAttempt = attempt
+			if err := m.store.Save(loaded); err != nil {
+				return err
+			}
+			m.file = loaded
+			m.noteModTime()
+			recorded = true
+			return nil
+		}
+		return nil
+	})
+	if err != nil {
+		m.logf("menu attempt for job %s: %v", jobID, err)
+	}
+	return recorded, err
 }
 
 func (m *Manager) handleLimitLocked(event LimitEvent) bool {

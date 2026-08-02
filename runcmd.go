@@ -59,6 +59,7 @@ type runConfig struct {
 	Providers           string
 	SessionFileChannel  bool
 	AdmitSessionMatches bool
+	AnswerLimitMenu     bool
 	ClaudePrompt        string
 	CodexPrompt         string
 }
@@ -101,6 +102,7 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	fs.StringVar(&cfg.Providers, "providers", "claude,codex", "enabled providers: claude,codex")
 	fs.BoolVar(&cfg.SessionFileChannel, "session-file-channel", false, "read Claude session files and correlate rate-limit observations")
 	fs.BoolVar(&cfg.AdmitSessionMatches, "admit-session-matches", false, "admit an unmonitored pane named by a session-file observation")
+	fs.BoolVar(&cfg.AnswerLimitMenu, "answer-limit-menu", false, "select Claude's safe stop-and-wait limit-menu option")
 	fs.StringVar(&cfg.ClaudePrompt, "claude-prompt", claude.New("").ResumeAction().Text, "Claude continuation prompt")
 	fs.StringVar(&cfg.CodexPrompt, "codex-prompt", codex.New("").ResumeAction().Text, "Codex continuation prompt")
 	if err := fs.Parse(args); err != nil {
@@ -174,6 +176,18 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	}
 	if cfg.SessionFileChannel && resolveStatePath(cfg) == "off" {
 		err := errors.New("providers.session_file_channel requires a persistent --state-file")
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.AnswerLimitMenu && cfg.Runtime == "tmux" {
+		err := errors.New("resume.answer_limit_menu requires a session-identity runtime; runtime.type tmux has no agent session")
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.AnswerLimitMenu && resolveStatePath(cfg) == "off" {
+		err := errors.New("resume.answer_limit_menu requires a persistent --state-file")
 		fmt.Fprintln(stderr, "error:", err)
 		fs.Usage()
 		return runConfig{}, err
@@ -271,6 +285,9 @@ func mergeRunConfig(defaults runConfig, file appconfig.Config) runConfig {
 	if file.Has("monitoring.admit_session_matches") {
 		merged.AdmitSessionMatches = file.Monitoring.AdmitSessionMatches
 	}
+	if file.Has("resume.answer_limit_menu") {
+		merged.AnswerLimitMenu = file.Resume.AnswerLimitMenu
+	}
 	if file.Has("providers.claude_prompt") {
 		merged.ClaudePrompt = file.Providers.ClaudePrompt
 	}
@@ -326,6 +343,8 @@ func applyExplicitRunFlags(dst, parsed *runConfig, panes *stringList, fs *flag.F
 			dst.SessionFileChannel = parsed.SessionFileChannel
 		case "admit-session-matches":
 			dst.AdmitSessionMatches = parsed.AdmitSessionMatches
+		case "answer-limit-menu":
+			dst.AnswerLimitMenu = parsed.AnswerLimitMenu
 		case "claude-prompt":
 			dst.ClaudePrompt = parsed.ClaudePrompt
 		case "codex-prompt":
@@ -675,6 +694,8 @@ func runCommand(args []string, _, stderr io.Writer) int {
 				fmt.Fprintf(stderr, "Error: initialize session-file scanner: %v\n", err)
 				return 1
 			}
+		}
+		if cfg.SessionFileChannel || cfg.AnswerLimitMenu {
 			episodeRegistry, err = sessionfile.NewEpisodeRegistry(statePath)
 			if err != nil {
 				fmt.Fprintf(stderr, "Error: initialize episode registry: %v\n", err)
@@ -682,12 +703,13 @@ func runCommand(args []string, _, stderr io.Writer) int {
 			}
 		}
 		manager = jobs.New(rt, st, jobs.Config{
-			Provider:      "claude",
-			Margin:        cfg.Margin,
-			MaxHorizon:    cfg.MaxWait,
-			VerifyTimeout: cfg.VerifyTimeout,
-			ReadLines:     cfg.Lines,
-			DryRun:        cfg.DryRun,
+			Provider:        "claude",
+			Margin:          cfg.Margin,
+			MaxHorizon:      cfg.MaxWait,
+			VerifyTimeout:   cfg.VerifyTimeout,
+			ReadLines:       cfg.Lines,
+			DryRun:          cfg.DryRun,
+			AnswerLimitMenu: cfg.AnswerLimitMenu,
 		}, jobs.WithLogWriter(stderr), jobs.WithProviders(registry), jobs.WithEpisodeRegistry(episodeRegistry))
 		if err := manager.Reconcile(); err != nil {
 			fmt.Fprintf(stderr, "Error: reconcile state: %v\n", err)

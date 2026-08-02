@@ -31,34 +31,44 @@ func (s JobState) Terminal() bool {
 
 // Job is a durable scheduled continuation and its validation/attempt evidence.
 type Job struct {
-	ID                string    `json:"id"`
-	Provider          string    `json:"provider"`
-	PaneID            string    `json:"pane_id"`
-	TerminalID        string    `json:"terminal_id,omitempty"`
-	Workspace         string    `json:"workspace"`
-	Agent             string    `json:"agent"`
-	ProcCommand       string    `json:"proc_command"`
-	WorkingDir        string    `json:"working_dir"`
-	DetectedAt        time.Time `json:"detected_at"`
-	RawReset          string    `json:"raw_reset"`
-	ResetKind         string    `json:"reset_kind,omitempty"`
-	ResetTimezone     string    `json:"reset_timezone,omitempty"`
-	Confidence        string    `json:"confidence,omitempty"`
-	ResetAtUTC        time.Time `json:"reset_at_utc"`
-	ResumeAtUTC       time.Time `json:"resume_at_utc"`
-	MarginSecs        int64     `json:"margin_secs"`
-	State             JobState  `json:"state"`
-	Attempts          int       `json:"attempts"`
-	AttemptID         string    `json:"attempt_id"`
-	AttemptAtUTC      time.Time `json:"attempt_at_utc"`
-	VerifyDeadlineUTC time.Time `json:"verify_deadline_utc"`
-	LastValidation    string    `json:"last_validation"`
-	LastError         string    `json:"last_error"`
-	EvidenceHash      string    `json:"evidence_hash"`
-	EvidenceAtUTC     time.Time `json:"evidence_at_utc"`
-	DryRun            bool      `json:"dry_run"`
-	Episode           string    `json:"episode,omitempty"`
-	Source            string    `json:"source,omitempty"`
+	ID                string       `json:"id"`
+	Provider          string       `json:"provider"`
+	PaneID            string       `json:"pane_id"`
+	TerminalID        string       `json:"terminal_id,omitempty"`
+	Workspace         string       `json:"workspace"`
+	Agent             string       `json:"agent"`
+	ProcCommand       string       `json:"proc_command"`
+	WorkingDir        string       `json:"working_dir"`
+	DetectedAt        time.Time    `json:"detected_at"`
+	RawReset          string       `json:"raw_reset"`
+	ResetKind         string       `json:"reset_kind,omitempty"`
+	ResetTimezone     string       `json:"reset_timezone,omitempty"`
+	Confidence        string       `json:"confidence,omitempty"`
+	ResetAtUTC        time.Time    `json:"reset_at_utc"`
+	ResumeAtUTC       time.Time    `json:"resume_at_utc"`
+	MarginSecs        int64        `json:"margin_secs"`
+	State             JobState     `json:"state"`
+	Attempts          int          `json:"attempts"`
+	AttemptID         string       `json:"attempt_id"`
+	AttemptAtUTC      time.Time    `json:"attempt_at_utc"`
+	VerifyDeadlineUTC time.Time    `json:"verify_deadline_utc"`
+	LastValidation    string       `json:"last_validation"`
+	LastError         string       `json:"last_error"`
+	EvidenceHash      string       `json:"evidence_hash"`
+	EvidenceAtUTC     time.Time    `json:"evidence_at_utc"`
+	DryRun            bool         `json:"dry_run"`
+	Episode           string       `json:"episode,omitempty"`
+	Source            string       `json:"source,omitempty"`
+	MenuAttempt       *MenuAttempt `json:"menu_attempt,omitempty"`
+}
+
+// MenuAttempt records the one persisted, single-shot answer allowed for an
+// interactive Claude limit menu episode.
+type MenuAttempt struct {
+	SessionID   string    `json:"session_id"`
+	EpisodeID   string    `json:"episode_id"`
+	PaneID      string    `json:"pane_id"`
+	AttemptedAt time.Time `json:"attempted_at"`
 }
 
 // File is the complete on-disk state document.

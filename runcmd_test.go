@@ -158,6 +158,41 @@ func TestParseRunFlagsAdmissionFlagAndYAML(t *testing.T) {
 	}
 }
 
+func TestParseRunFlagsAnswerLimitMenuFlagAndYAML(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stderr bytes.Buffer
+	cfg, err := parseRunFlags([]string{"--pane", "w1:p1"}, &stderr)
+	if err != nil || cfg.AnswerLimitMenu {
+		t.Fatalf("default cfg=%#v err=%v, want answer_limit_menu disabled", cfg, err)
+	}
+	cfg, err = parseRunFlags([]string{"--pane", "w1:p1", "--answer-limit-menu"}, &stderr)
+	if err != nil || !cfg.AnswerLimitMenu {
+		t.Fatalf("flag cfg=%#v err=%v, want answer_limit_menu enabled", cfg, err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\nresume:\n  answer_limit_menu: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = parseRunFlags([]string{"--config", path, "--pane", "w1:p1"}, &stderr)
+	if err != nil || !cfg.AnswerLimitMenu {
+		t.Fatalf("YAML cfg=%#v err=%v, want answer_limit_menu enabled", cfg, err)
+	}
+}
+
+func TestParseRunFlagsRejectsAnswerLimitMenuForTmuxOrStateOff(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	for _, args := range [][]string{
+		{"--pane", "w1:p1", "--answer-limit-menu", "--runtime", "tmux"},
+		{"--pane", "w1:p1", "--answer-limit-menu", "--state-file", "off"},
+	} {
+		var stderr bytes.Buffer
+		_, err := parseRunFlags(args, &stderr)
+		if err == nil || !strings.Contains(err.Error(), "answer_limit_menu") {
+			t.Fatalf("args=%v error=%v stderr=%q, want answer_limit_menu rejection", args, err, stderr.String())
+		}
+	}
+}
+
 func TestParseRunFlagsRejectsAdmissionValidationMatrix(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	for _, tc := range []struct {
@@ -185,6 +220,7 @@ func TestParseRunFlagsRejectsAdmissionValidationMatrix(t *testing.T) {
 }
 
 func TestParseRunFlagsRejectsSessionFileChannelWithoutPersistentStateOrOnTmux(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	for _, args := range [][]string{
 		{"--pane", "w1:p1", "--session-file-channel", "--state-file", "off"},
 		{"--pane", "w1:p1", "--session-file-channel", "--runtime", "tmux"},

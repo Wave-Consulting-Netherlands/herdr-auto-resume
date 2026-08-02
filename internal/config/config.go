@@ -43,9 +43,10 @@ type MonitoringConfig struct {
 }
 
 type ResumeConfig struct {
-	Margin        time.Duration
-	MaxWait       time.Duration
-	VerifyTimeout time.Duration
+	Margin          time.Duration
+	MaxWait         time.Duration
+	VerifyTimeout   time.Duration
+	AnswerLimitMenu bool
 }
 
 type ProvidersConfig struct {
@@ -85,9 +86,10 @@ type rawMonitoringConfig struct {
 }
 
 type rawResumeConfig struct {
-	Margin        string `yaml:"margin"`
-	MaxWait       string `yaml:"max_wait"`
-	VerifyTimeout string `yaml:"verify_timeout"`
+	Margin          string `yaml:"margin"`
+	MaxWait         string `yaml:"max_wait"`
+	VerifyTimeout   string `yaml:"verify_timeout"`
+	AnswerLimitMenu *bool  `yaml:"answer_limit_menu"`
 }
 
 type rawProvidersConfig struct {
@@ -180,6 +182,7 @@ func Load(path string) (Config, bool, error) {
 	mark("resume.margin", raw.Resume.Margin != "")
 	mark("resume.max_wait", raw.Resume.MaxWait != "")
 	mark("resume.verify_timeout", raw.Resume.VerifyTimeout != "")
+	mark("resume.answer_limit_menu", raw.Resume.AnswerLimitMenu != nil)
 	mark("providers.enabled", raw.Providers.Enabled != nil)
 	mark("providers.claude_prompt", raw.Providers.ClaudePrompt != "")
 	mark("providers.codex_prompt", raw.Providers.CodexPrompt != "")
@@ -199,6 +202,9 @@ func Load(path string) (Config, bool, error) {
 	}
 	if raw.Monitoring.AdmitSessionMatches != nil {
 		parsed.Monitoring.AdmitSessionMatches = *raw.Monitoring.AdmitSessionMatches
+	}
+	if raw.Resume.AnswerLimitMenu != nil {
+		parsed.Resume.AnswerLimitMenu = *raw.Resume.AnswerLimitMenu
 	}
 	if raw.Monitoring.Interval != "" {
 		parsed.Monitoring.Interval, err = time.ParseDuration(raw.Monitoring.Interval)
