@@ -240,14 +240,28 @@ is read-only and does not disturb the soak), but **S2 does not begin until SD cl
   whenever a limited pane yields no job. Ship on the `phase-8-flip` branch, build, and deploy
   to the PRODUCTION unit only (D-P8-12). Tests: each non-action reason logs exactly once;
   repeated polls of identical evidence do not re-log; changed evidence logs again.
-- **D3. Diagnose from evidence, not reconstruction.** On the next real limit, correlate the
-  capture with the production journal. Candidate causes to discriminate — do not assume one:
-  banner wording outside the committed fixtures; reset expression parsed as zero (silently
-  drops the job); the banner absent from the read window when polled; pane never enabled
-  (D-P8-9, proven live); provider hint mismatch. Record the finding here before fixing.
-- **D4. Fix with a regression test built FROM the captured pane text**, committed as a fixture
-  so the real screen becomes permanent coverage. Then prove a real cycle end to end
-  (D-P8-11).
+- **D3. Diagnose from evidence — RESOLVED 2026-08-02 from Claude session JSONLs**
+  (`~/.claude/projects/**/*.jsonl` carry structured rate_limit entries with sessionId, cwd,
+  banner, timestamp; found by studying saaranshM/unsnooze):
+  - Failure #1 (15:10:48Z, session ce7bb791, pane wW:p1, psft_run_script): **never
+    monitored** — the pane was in no watcher's list. Coverage-model gap: strict opt-in panes
+    plus ephemeral workspaces leave every new workspace unprotected by default.
+  - Failure #2 (15:14:56Z, session 829d1239, pane wA:p1): **swallowed after detection** —
+    watcher healthy all window, banner text parses Actionable=true/high, so the drop is
+    menu-visible, not-auto, silent read error, or read-window; v0.2.0 cannot say which, the
+    deployed diag build names each. Closed as far as pre-diag evidence allows.
+  - Bonus: `herdr pane list` `agent_session` maps panes to session UUIDs for both providers —
+    the D-P8-6 spike's "unique pane→rollout mapping" exists as a first-class API lookup.
+- **D4 (reframed). The fix is a second, authoritative detection channel — not a regex patch.**
+  Screen scraping missed both failures for different reasons; session files miss neither.
+  Design (adapted from unsnooze to our architecture): watch the provider session files for
+  rate_limit entries, correlate to panes via `agent_session`, and feed the existing job
+  pipeline — banner scraping stays as the fallback channel, the job state machine, gates,
+  and verification stay unchanged. Sessions whose pane is gone or unmonitored become
+  detectable; resume for those can use `claude --resume <id>` in a fresh pane (scoped
+  separately). This supersedes the old D4 wording; the regression fixture from the captured
+  banner still gets committed. Scope and milestone placement need explicit user sign-off
+  before implementation — it is a material widening of SD.
 
 ### S2 — v0.3.0: the flip (only after S1 is clean AND SD is closed)
 

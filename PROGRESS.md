@@ -475,6 +475,30 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
   - The next real limit on wA:p1 now either creates a job or names its reason in the journal,
     with scripts/limit-capture.sh holding the verbatim screen.
 
+- 2026-08-02, SD-D3 diagnosis from evidence (Claude session JSONLs, prompted by comparing
+  saaranshM/unsnooze):
+  - Claude Code writes structured `"error":"rate_limit"` entries (429, banner text, sessionId,
+    cwd, timestamp) into `~/.claude/projects/**/*.jsonl`. Ground truth for both 2026-08-01
+    failures was on disk all along; the tool never looks there.
+  - **Failure #1 SOLVED: never monitored.** 15:10:48Z, cwd psft_run_script, session ce7bb791,
+    pane wW:p1 — in no watcher's pane list (production: [wA:p1]; soak: wR/wS/wV). Strict
+    opt-in pane coverage plus ephemeral workspaces means new workspaces are unprotected by
+    default. Coverage-model gap, not a code defect.
+  - **Failure #2 NARROWED: swallowed after detection.** 15:14:56Z, wA:p1, session 829d1239
+    ("resets 4:30pm (UTC)"). The production watcher was healthy the whole window (status
+    ticks 15:00-16:30, 0 restarts) and the exact banner text parses Actionable=true at high
+    confidence. So the drop happened between pane read and job creation: menu-visible
+    fail-closed (the July fixture shows the modern UI auto-opens /rate-limit-options),
+    not-auto (D-P8-9), a silent read error, or the banner outside the read window. v0.2.0
+    logs none of these; the deployed diag build names each. Next occurrence is diagnosable
+    by design.
+  - **D-P8-6 spike answered early, and better than hoped:** `herdr pane list` exposes
+    `agent_session` UUIDs for BOTH providers (wA→829d1239, wS→0bc1b8a7, wW→ce7bb791,
+    wR→019fbc14 codex). Pane→session-file mapping is a herdr API lookup, no heuristics.
+  - Strategic conclusion recorded in PLANS: a session-file/hook channel (unsnooze's model)
+    would have caught both failures regardless of screen state, and session-identity resume
+    (`claude --resume <id>`) removes the dead/unmonitored-pane class entirely.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
