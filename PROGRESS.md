@@ -547,6 +547,25 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
   rationale as A/B; live gate = the next real interactive limit menu. Had today's 10:00 UTC
   wave run with this enabled, all six sessions would have resumed with zero keystrokes.
 
+- 2026-08-02, Phase D (`revive`) implemented AND live-drilled; three bugs the unit suite
+  could not see, all found by driving the real system:
+  - D4.6 landed as e894ea2; live drills then found (1) herdr reports the new pane as
+    `root_pane`, not `workspace.panes` — the test had used a synthetic envelope; (2)
+    `workspace create --cwd` does not set the pane shell's cwd AND `pane run` joins args
+    through the shell unquoted, so `--resume` arrived valueless and opened the picker —
+    fixed with a single-word launcher carrying shell-quoted values (105672c); (3) **a real
+    lost-update race** (1774364): `Scan` read the sidecar once and rewrote that snapshot per
+    file, erasing a concurrent process's write. Reproduced live — revive's ATTACHING intent
+    was clobbered by the running watcher, so CompleteRevive found nothing. Every write was
+    locked; the read was not inside the same lock. This is exactly what D-P8-21 specified and
+    the implementation had missed. All sidecar mutations now go through mutate():
+    lock -> fresh read -> apply -> write.
+  - Note for future deploys: the race needs BOTH processes on the fixed build — the first
+    re-drill still failed because the running watcher was the older binary.
+  - Clean end-to-end drill after the fix: `revive a3df2d62` created workspace w18, attached a
+    719k-token session from 1d 9h earlier, recorded ATTACHED{pane w18:p1} in the sidecar, and
+    a second invocation correctly refused with the double-attach veto. 544 tests, -race.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
