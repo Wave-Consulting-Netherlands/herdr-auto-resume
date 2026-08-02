@@ -208,3 +208,12 @@ All three accepted:
 - F3 → D-P8-23: session-identity features are rejected at config validation on tmux, naming flag and reason — no silent degradation.
 
 Nothing rejected.
+
+## Round 4 — Codex
+
+The revised plan closes all prior implementation blockers. Sidecar transactions, episode matching, runtime validation, crash recovery, and feature gates now have implementable contracts and test coverage. Remaining risks are explicit, default-off, and live-gated.
+
+VERDICT: APPROVED
+### Resolution
+
+Converged at round 4 of 5: 12 → 6 → 3 → 0 findings, 21 total, all accepted, none rejected. The plan that survived is materially different from the one submitted: phased default-off shipping, targeted admission instead of blanket discovery, an operator verb instead of automatic dead-session spawn, sidecar-based durability with a locking contract, tolerance-based episode identity, and per-feature live gates. Implementation begins at D4.0 per the user's standing instruction.
