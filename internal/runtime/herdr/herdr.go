@@ -119,7 +119,7 @@ func (a *Adapter) ListPanes() ([]runtimeapi.Pane, error) {
 	}
 	panes := make([]runtimeapi.Pane, 0, len(result.Panes))
 	for _, pane := range result.Panes {
-		panes = append(panes, runtimeapi.Pane{ID: pane.PaneID, TerminalID: pane.TerminalID, WorkspaceID: pane.WorkspaceID, Title: pane.TerminalTitle, Agent: pane.Agent})
+		panes = append(panes, runtimeapi.Pane{ID: pane.PaneID, TerminalID: pane.TerminalID, WorkspaceID: pane.WorkspaceID, Title: pane.TerminalTitle, Agent: pane.Agent, AgentSessionID: pane.AgentSession.Value})
 	}
 	return panes, nil
 }

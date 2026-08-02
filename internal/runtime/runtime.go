@@ -5,6 +5,7 @@ type Pane struct {
 	ID, TerminalID, WorkspaceID, Title string
 	Left, Top, Width, Height           int
 	Agent                              string
+	AgentSessionID                     string
 }
 
 // ProcessInfo describes the foreground process associated with a pane.
