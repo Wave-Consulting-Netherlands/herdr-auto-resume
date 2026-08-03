@@ -592,6 +592,16 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
   (Process note: the drill ran 2h23m late — the orchestrator has no autonomous wake-up and
   had not armed a timer for 13:48. Longer aging, no effect on validity.)
 
+- 2026-08-03, **S1 CLOSED — soak drill PASSED through the 50h-aged socket connection:**
+  - Criterion (c): trigger 16:12:14Z → detection over the aged event stream → durable WAITING
+    job `cdc0f5e1` in soak-state.json (reset 16:14:00Z, resume 16:15:00Z) → exactly one
+    resume at 16:15 (attempts=1) → `last_validation: "resume verified"`, no error →
+    RESUMED; harness printed DRILL-RESUMED-OK 16:15:27Z, banner cleared.
+  - With (a) and (b) frozen beforehand, **all three D-P8-1 criteria pass**. BACKLOG 10's
+    condition — "explicit socket-mode soak and live drills clean" — is met on a v0.2.0 binary
+    untouched for the whole window.
+  - S1 and SD are both closed; S2 (socket default flip, step 14 docs, v0.3.0) is unblocked.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
