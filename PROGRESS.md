@@ -582,6 +582,16 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     plugin-packaging question (D-P7-3) is worth revisiting after v0.3.0 as a distribution
     decision — that registry is where users actually discover this class of tool.
 
+- 2026-08-03 16:12 UTC, **S1 criterion (b) FROZEN before the drill** (D-P8-1): journal for the
+  window 2026-08-01 13:48:27 → 2026-08-03 16:12:00 contains only the 6 startup/shutdown lines
+  from the step-6 restart plus 302 consecutive `status: panes=3` ticks. **Zero socket,
+  reconnect, or subscription errors.** Criterion (a): single process, uptime 2d 02:23:31,
+  NRestarts=0 — 50h 23m against a 48h requirement. Any reconnect entries appearing after this
+  timestamp belong to the deliberate step-9 drill window and are judged on recovery, not
+  absence.
+  (Process note: the drill ran 2h23m late — the orchestrator has no autonomous wake-up and
+  had not armed a timer for 13:48. Longer aging, no effect on validity.)
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
