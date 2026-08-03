@@ -65,6 +65,9 @@ func (s *JSONStore) Load() (File, error) {
 
 	var state File
 	if err := json.Unmarshal(data, &state); err == nil {
+		if state.Version > 1 {
+			return File{}, fmt.Errorf("state file version %d is newer than supported version 1", state.Version)
+		}
 		if state.Version == 0 {
 			state.Version = 1
 		}

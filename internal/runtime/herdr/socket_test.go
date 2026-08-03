@@ -109,15 +109,31 @@ func testSocket(t *testing.T, h *socketHarness) *Socket {
 	return NewSocket(SocketOptions{Path: h.path(), DialTimeout: time.Second, OpTimeout: time.Second})
 }
 
+func socketFixtureResult(t *testing.T, name string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile("testdata/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Result map[string]any `json:"result"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	return envelope.Result
+}
+
 func TestSocketRuntimeMethodsUseOneRequestPerConnectionAndExactParams(t *testing.T) {
+	paneList := socketFixtureResult(t, "socket_pane_list.json")
 	h := newSocketHarness(t, func(req socketRequest) any {
 		switch req.Method {
 		case "ping":
 			return socketResponse(req.ID, map[string]any{"type": "pong", "version": "0.7.5", "protocol": 17})
 		case "session.snapshot":
-			return socketResponse(req.ID, map[string]any{"type": "snapshot", "snapshot": map[string]any{"panes": []any{map[string]any{"pane_id": "p1", "terminal_id": "term-1", "terminal_title": "Claude", "agent": "claude"}}}})
+			return socketResponse(req.ID, map[string]any{"type": "snapshot", "snapshot": paneList})
 		case "pane.list":
-			return socketResponse(req.ID, map[string]any{"type": "pane_list", "panes": []any{map[string]any{"pane_id": "p1", "terminal_id": "term-1", "terminal_title": "Claude", "agent": "claude"}}})
+			return socketResponse(req.ID, paneList)
 		case "pane.read":
 			return socketResponse(req.ID, map[string]any{"type": "pane_read", "read": map[string]any{"text": "screen", "revision": 3}})
 		case "pane.process_info":
@@ -135,7 +151,7 @@ func TestSocketRuntimeMethodsUseOneRequestPerConnectionAndExactParams(t *testing
 		t.Fatalf("SelfPaneID() = %q, %v; socket transport must not read HERDR_*", got, err)
 	}
 	panes, err := client.ListPanes()
-	if err != nil || !reflect.DeepEqual(panes, []runtimeapi.Pane{{ID: "p1", TerminalID: "term-1", Title: "Claude", Agent: "claude"}}) {
+	if err != nil || !reflect.DeepEqual(panes, []runtimeapi.Pane{{ID: "p1", TerminalID: "term-1", Title: "Claude", CWD: "/work", Agent: "claude", AgentSessionID: "829d1239-1560-476e-8744-e0c4df8b2b8c"}, {ID: "p2", TerminalID: "term-2"}}) {
 		t.Fatalf("ListPanes() = %#v, %v", panes, err)
 	}
 	if got, err := client.ReadPane("p1", 17); err != nil || got != "screen" {
@@ -158,7 +174,7 @@ func TestSocketRuntimeMethodsUseOneRequestPerConnectionAndExactParams(t *testing
 		t.Fatalf("Ping() = %#v, %v", pong, err)
 	}
 	snapshot, err := client.Snapshot()
-	if err != nil || len(snapshot.Panes) != 1 || snapshot.Panes[0].TerminalID != "term-1" {
+	if err != nil || len(snapshot.Panes) != 2 || snapshot.Panes[0].TerminalID != "term-1" || snapshot.Panes[0].CWD != "/work" || snapshot.Panes[0].AgentSessionID != "829d1239-1560-476e-8744-e0c4df8b2b8c" || snapshot.Panes[1].AgentSessionID != "" {
 		t.Fatalf("Snapshot() = %#v, %v", snapshot, err)
 	}
 

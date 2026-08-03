@@ -3,8 +3,10 @@ package runtime
 // Pane describes a runtime pane's identity, title, geometry, and agent.
 type Pane struct {
 	ID, TerminalID, WorkspaceID, Title string
+	CWD                                string
 	Left, Top, Width, Height           int
 	Agent                              string
+	AgentSessionID                     string
 }
 
 // ProcessInfo describes the foreground process associated with a pane.

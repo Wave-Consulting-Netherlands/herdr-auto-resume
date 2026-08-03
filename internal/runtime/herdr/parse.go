@@ -56,15 +56,20 @@ type paneListResult struct {
 }
 
 type paneInfo struct {
-	PaneID        string `json:"pane_id"`
-	TerminalID    string `json:"terminal_id"`
-	WorkspaceID   string `json:"workspace_id"`
-	TabID         string `json:"tab_id"`
-	Agent         string `json:"agent"`
-	AgentStatus   string `json:"agent_status"`
-	Revision      int64  `json:"revision"`
-	CWD           string `json:"cwd"`
-	TerminalTitle string `json:"terminal_title"`
+	PaneID        string           `json:"pane_id"`
+	TerminalID    string           `json:"terminal_id"`
+	WorkspaceID   string           `json:"workspace_id"`
+	TabID         string           `json:"tab_id"`
+	Agent         string           `json:"agent"`
+	AgentStatus   string           `json:"agent_status"`
+	Revision      int64            `json:"revision"`
+	CWD           string           `json:"cwd"`
+	TerminalTitle string           `json:"terminal_title"`
+	AgentSession  agentSessionInfo `json:"agent_session"`
+}
+
+type agentSessionInfo struct {
+	Value string `json:"value"`
 }
 
 type pongResult struct {

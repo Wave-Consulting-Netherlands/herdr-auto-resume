@@ -15,6 +15,18 @@ func validate(cfg Config) error {
 	if cfg.Runtime.Transport == "socket" && cfg.Runtime.Type == "tmux" {
 		return fmt.Errorf("runtime.transport socket requires runtime.type herdr")
 	}
+	if cfg.Monitoring.AdmitSessionMatches && cfg.Runtime.Type == "tmux" {
+		return fmt.Errorf("monitoring.admit_session_matches requires a session-identity runtime; runtime.type tmux has no agent session")
+	}
+	if cfg.Providers.SessionFileChannel && cfg.Runtime.Type == "tmux" {
+		return fmt.Errorf("providers.session_file_channel requires a session-identity runtime; runtime.type tmux has no agent session")
+	}
+	if cfg.Monitoring.AdmitSessionMatches && !cfg.Providers.SessionFileChannel {
+		return fmt.Errorf("monitoring.admit_session_matches requires providers.session_file_channel")
+	}
+	if cfg.Resume.AnswerLimitMenu && cfg.Runtime.Type == "tmux" {
+		return fmt.Errorf("resume.answer_limit_menu requires a session-identity runtime; runtime.type tmux has no agent session")
+	}
 	if cfg.Monitoring.Interval < 0 {
 		return fmt.Errorf("monitoring.interval must be positive")
 	}

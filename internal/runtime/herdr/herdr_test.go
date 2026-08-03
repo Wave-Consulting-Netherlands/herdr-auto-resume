@@ -3,6 +3,7 @@ package herdr
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -51,8 +52,11 @@ func TestListPanesDecodesEnvelopeAndBuildsArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListPanes: %v", err)
 	}
-	if len(panes) != 6 || panes[0] != (runtimeapi.Pane{ID: "w1:p1", TerminalID: "term_000000000000000", WorkspaceID: "w1", Title: "project shell", Agent: "claude"}) {
+	if len(panes) != 6 || panes[0] != (runtimeapi.Pane{ID: "w1:p1", TerminalID: "term_000000000000000", WorkspaceID: "w1", Title: "project shell", CWD: "/home/user/project", Agent: "claude", AgentSessionID: "ce7bb791-f92c-4edb-b795-08a4fff2b778"}) {
 		t.Fatalf("panes = %#v", panes)
+	}
+	if panes[1].AgentSessionID != "" {
+		t.Fatalf("pane without agent_session = %#v", panes[1])
 	}
 	if want := []string{"pane", "list", "--workspace", "workspace-1", "--session", "session-1"}; !reflect.DeepEqual(r.args[0], want) {
 		t.Fatalf("argv = %#v, want %#v", r.args[0], want)
@@ -186,6 +190,48 @@ func TestSelfPaneIDReadsOwnEnvironment(t *testing.T) {
 	}
 }
 
+func TestCreateWorkspaceDecodesLiveRootPaneEnvelope(t *testing.T) {
+	// Verbatim shape from herdr 0.7.5 `workspace create` (captured live
+	// 2026-08-02): the initial pane arrives as root_pane, not workspace.panes.
+	adapter := NewWithExec(Options{}, func(args ...string) ([]byte, error) {
+		return []byte(`{"id":"cli:workspace:create","result":{"root_pane":{"agent_status":"unknown","cwd":"/home/ubuntu/dev/f1game","pane_id":"w11:p1","tab_id":"w11:t1","workspace_id":"w11"},"tab":{"tab_id":"w11:t1","workspace_id":"w11"},"type":"workspace_created","workspace":{"active_tab_id":"w11:t1","label":"herdr-auto-resume-revive","workspace_id":"w11"}}}`), nil
+	})
+	workspace, err := adapter.CreateWorkspace("herdr-auto-resume-revive", "/home/ubuntu/dev/f1game")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.WorkspaceID != "w11" || workspace.PaneID != "w11:p1" {
+		t.Fatalf("unexpected workspace from live envelope: %#v", workspace)
+	}
+}
+
+func TestReviveSpawnerUsesWorkspaceAndPaneRunCommands(t *testing.T) {
+	var calls [][]string
+	adapter := NewWithExec(Options{}, func(args ...string) ([]byte, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(calls) == 1 {
+			return []byte(`{"result":{"workspace":{"workspace_id":"ws-1","panes":[{"pane_id":"pane-1"}]}}}`), nil
+		}
+		return []byte(`{"result":{}}`), nil
+	})
+	workspace, err := adapter.CreateWorkspace("herdr-auto-resume-revive", "/tmp/revive")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workspace.WorkspaceID != "ws-1" || workspace.PaneID != "pane-1" {
+		t.Fatalf("unexpected workspace: %#v", workspace)
+	}
+	if err := adapter.RunPane(workspace.PaneID, "claude", "--resume", "11111111-1111-4111-8111-111111111111"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(calls[0], " "), "workspace create --label herdr-auto-resume-revive --cwd /tmp/revive"; got != want {
+		t.Fatalf("create args = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(calls[1], " "), "pane run pane-1 claude --resume 11111111-1111-4111-8111-111111111111"; got != want {
+		t.Fatalf("run args = %q, want %q", got, want)
+	}
+}
+
 func TestChildEnvironmentScrubsHerdrVariables(t *testing.T) {
 	input := []string{"PATH=/bin", "HERDR_SOCKET_PATH=/unsafe.sock", "HERDR_PANE_ID=w1:p1", "HERDR_ENV=ci", "OTHER=value"}
 	got := scrubEnvironment(input, "/safe.sock")
@@ -194,6 +240,29 @@ func TestChildEnvironmentScrubsHerdrVariables(t *testing.T) {
 	}
 	if got := scrubEnvironment(input, ""); !reflect.DeepEqual(got, []string{"PATH=/bin", "OTHER=value"}) {
 		t.Fatalf("scrubbed env without socket = %#v", got)
+	}
+}
+
+func TestReviveSpawnRunnerScrubsInheritedHerdrEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "herdr-fake")
+	capture := filepath.Join(dir, "capture")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$REVIVE_CAPTURE\"\nenv >> \"$REVIVE_CAPTURE\"\n"
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("REVIVE_CAPTURE", capture)
+	t.Setenv("HERDR_SOCKET_PATH", "/unsafe.sock")
+	if _, err := productionRunner(Options{Bin: bin, SocketPath: "/safe.sock"})("pane", "run", "p1", "claude", "--resume", "session"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, "HERDR_SOCKET_PATH=/unsafe.sock") || !strings.Contains(text, "HERDR_SOCKET_PATH=/safe.sock") {
+		t.Fatalf("spawn environment was not scrubbed: %q", text)
 	}
 }
 

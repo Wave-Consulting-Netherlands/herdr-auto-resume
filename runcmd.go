@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	runtimeapi "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	herdradapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/herdr"
 	tmuxadapter "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime/tmux"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/sessionfile"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
 
@@ -36,24 +38,30 @@ func (s *stringList) Set(value string) error {
 }
 
 type runConfig struct {
-	Runtime       string
-	Transport     string
-	Panes         []string
-	Interval      time.Duration
-	Lines         int
-	DryRun        bool
-	TestPattern   string
-	HerdrBin      string
-	Socket        string
-	Session       string
-	Workspace     string
-	StateFile     string
-	Margin        time.Duration
-	MaxWait       time.Duration
-	VerifyTimeout time.Duration
-	Providers     string
-	ClaudePrompt  string
-	CodexPrompt   string
+	Runtime             string
+	Transport           string
+	TransportExplicit   bool
+	SocketExplicit      bool
+	Panes               []string
+	Interval            time.Duration
+	Lines               int
+	DryRun              bool
+	TestPattern         string
+	HerdrBin            string
+	Socket              string
+	Session             string
+	Workspace           string
+	StateFile           string
+	Margin              time.Duration
+	MaxWait             time.Duration
+	VerifyTimeout       time.Duration
+	WaitForPanes        bool
+	Providers           string
+	SessionFileChannel  bool
+	AdmitSessionMatches bool
+	AnswerLimitMenu     bool
+	ClaudePrompt        string
+	CodexPrompt         string
 }
 
 const herdrDetectionMatchRegex = `(?i)(?:limit\s+reached|rate\s+limit|usage\s+limit|out\s+of\s+(?:extra\s+)?usage|try\s+again\s+in|you['’]ve\s+hit\s+your|out\s+of\s+credits|spend\s+cap)`
@@ -67,7 +75,7 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	}
 	var panes stringList
 	defaults := runConfig{
-		Runtime: "herdr", Transport: "cli", Interval: 3 * time.Second, Lines: 200,
+		Runtime: "herdr", Interval: 3 * time.Second, Lines: 200,
 		HerdrBin: "herdr", StateFile: "auto", Margin: time.Minute,
 		MaxWait: 192 * time.Hour, VerifyTimeout: 90 * time.Second,
 		Providers: "claude,codex", ClaudePrompt: claude.New("").ResumeAction().Text,
@@ -76,10 +84,11 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	cfg := defaults
 	configPath := fs.String("config", appconfig.DefaultPath(), "configuration file path")
 	fs.StringVar(&cfg.Runtime, "runtime", "herdr", "runtime adapter: tmux or herdr")
-	fs.StringVar(&cfg.Transport, "transport", "cli", "herdr transport: cli or socket")
+	fs.StringVar(&cfg.Transport, "transport", "", "herdr transport: cli or socket")
 	fs.Var(&panes, "pane", "pane ID to monitor (repeatable; required)")
 	fs.DurationVar(&cfg.Interval, "interval", 3*time.Second, "poll interval")
 	fs.IntVar(&cfg.Lines, "lines", 200, "number of recent pane lines to read")
+	fs.BoolVar(&cfg.WaitForPanes, "wait-for-panes", false, "wait for requested panes and transient runtime reachability")
 	fs.BoolVar(&cfg.DryRun, "dry-run", false, "record automatic continuations without sending them")
 	fs.StringVar(&cfg.TestPattern, "test-pattern", "", "trigger auto-continue when this string is found")
 	fs.StringVar(&cfg.HerdrBin, "herdr-bin", "herdr", "herdr binary path")
@@ -91,6 +100,9 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	fs.DurationVar(&cfg.MaxWait, "max-wait", 192*time.Hour, "maximum scheduled wait horizon")
 	fs.DurationVar(&cfg.VerifyTimeout, "verify-timeout", 90*time.Second, "resume verification timeout")
 	fs.StringVar(&cfg.Providers, "providers", "claude,codex", "enabled providers: claude,codex")
+	fs.BoolVar(&cfg.SessionFileChannel, "session-file-channel", false, "read Claude session files and correlate rate-limit observations")
+	fs.BoolVar(&cfg.AdmitSessionMatches, "admit-session-matches", false, "admit an unmonitored pane named by a session-file observation")
+	fs.BoolVar(&cfg.AnswerLimitMenu, "answer-limit-menu", false, "select Claude's safe stop-and-wait limit-menu option")
 	fs.StringVar(&cfg.ClaudePrompt, "claude-prompt", claude.New("").ResumeAction().Text, "Claude continuation prompt")
 	fs.StringVar(&cfg.CodexPrompt, "codex-prompt", codex.New("").ResumeAction().Text, "Codex continuation prompt")
 	if err := fs.Parse(args); err != nil {
@@ -119,6 +131,13 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	parsedCfg := cfg
 	cfg = mergeRunConfig(defaults, fileConfig)
 	applyExplicitRunFlags(&cfg, &parsedCfg, &panes, fs)
+	resolvedTransport, transportErr := resolveTransportDefault(cfg.Runtime, cfg.Transport, cfg.Session, cfg.TransportExplicit, stderr)
+	if transportErr != nil {
+		fmt.Fprintln(stderr, "error:", transportErr)
+		fs.Usage()
+		return runConfig{}, transportErr
+	}
+	cfg.Transport = resolvedTransport
 	if len(cfg.Panes) == 0 {
 		err := errors.New("at least one --pane is required")
 		fmt.Fprintln(stderr, "error:", err)
@@ -127,6 +146,48 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	}
 	if cfg.Runtime != "herdr" && cfg.Runtime != "tmux" {
 		err := fmt.Errorf("unsupported runtime %q", cfg.Runtime)
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.AdmitSessionMatches && !cfg.SessionFileChannel {
+		err := errors.New("monitoring.admit_session_matches requires providers.session_file_channel")
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.AdmitSessionMatches && cfg.Runtime == "tmux" {
+		err := errors.New("monitoring.admit_session_matches requires a session-identity runtime; runtime.type tmux has no agent session")
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.AdmitSessionMatches && resolveStatePath(cfg) == "off" {
+		err := errors.New("monitoring.admit_session_matches requires a persistent --state-file")
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.SessionFileChannel && cfg.Runtime == "tmux" {
+		err := errors.New("providers.session_file_channel requires a session-identity runtime; runtime.type tmux has no agent session")
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.SessionFileChannel && resolveStatePath(cfg) == "off" {
+		err := errors.New("providers.session_file_channel requires a persistent --state-file")
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.AnswerLimitMenu && cfg.Runtime == "tmux" {
+		err := errors.New("resume.answer_limit_menu requires a session-identity runtime; runtime.type tmux has no agent session")
+		fmt.Fprintln(stderr, "error:", err)
+		fs.Usage()
+		return runConfig{}, err
+	}
+	if cfg.AnswerLimitMenu && resolveStatePath(cfg) == "off" {
+		err := errors.New("resume.answer_limit_menu requires a persistent --state-file")
 		fmt.Fprintln(stderr, "error:", err)
 		fs.Usage()
 		return runConfig{}, err
@@ -182,12 +243,14 @@ func mergeRunConfig(defaults runConfig, file appconfig.Config) runConfig {
 	}
 	if file.Has("runtime.transport") {
 		merged.Transport = file.Runtime.Transport
+		merged.TransportExplicit = true
 	}
 	if file.Has("runtime.herdr_bin") {
 		merged.HerdrBin = file.Runtime.HerdrBin
 	}
 	if file.Has("runtime.socket") {
 		merged.Socket = file.Runtime.Socket
+		merged.SocketExplicit = true
 	}
 	if file.Has("runtime.workspace") {
 		merged.Workspace = file.Runtime.Workspace
@@ -201,6 +264,9 @@ func mergeRunConfig(defaults runConfig, file appconfig.Config) runConfig {
 	if file.Has("monitoring.lines") {
 		merged.Lines = file.Monitoring.Lines
 	}
+	if file.Has("monitoring.wait_for_panes") {
+		merged.WaitForPanes = file.Monitoring.WaitForPanes
+	}
 	if file.Has("resume.margin") {
 		merged.Margin = file.Resume.Margin
 	}
@@ -212,6 +278,15 @@ func mergeRunConfig(defaults runConfig, file appconfig.Config) runConfig {
 	}
 	if file.Has("providers.enabled") {
 		merged.Providers = strings.Join(file.Providers.Enabled, ",")
+	}
+	if file.Has("providers.session_file_channel") {
+		merged.SessionFileChannel = file.Providers.SessionFileChannel
+	}
+	if file.Has("monitoring.admit_session_matches") {
+		merged.AdmitSessionMatches = file.Monitoring.AdmitSessionMatches
+	}
+	if file.Has("resume.answer_limit_menu") {
+		merged.AnswerLimitMenu = file.Resume.AnswerLimitMenu
 	}
 	if file.Has("providers.claude_prompt") {
 		merged.ClaudePrompt = file.Providers.ClaudePrompt
@@ -232,12 +307,15 @@ func applyExplicitRunFlags(dst, parsed *runConfig, panes *stringList, fs *flag.F
 			dst.Runtime = parsed.Runtime
 		case "transport":
 			dst.Transport = parsed.Transport
+			dst.TransportExplicit = true
 		case "pane":
 			dst.Panes = append([]string(nil), (*panes)...)
 		case "interval":
 			dst.Interval = parsed.Interval
 		case "lines":
 			dst.Lines = parsed.Lines
+		case "wait-for-panes":
+			dst.WaitForPanes = parsed.WaitForPanes
 		case "dry-run":
 			dst.DryRun = parsed.DryRun
 		case "test-pattern":
@@ -246,6 +324,7 @@ func applyExplicitRunFlags(dst, parsed *runConfig, panes *stringList, fs *flag.F
 			dst.HerdrBin = parsed.HerdrBin
 		case "socket":
 			dst.Socket = parsed.Socket
+			dst.SocketExplicit = true
 		case "session":
 			dst.Session = parsed.Session
 		case "workspace":
@@ -260,6 +339,12 @@ func applyExplicitRunFlags(dst, parsed *runConfig, panes *stringList, fs *flag.F
 			dst.VerifyTimeout = parsed.VerifyTimeout
 		case "providers":
 			dst.Providers = parsed.Providers
+		case "session-file-channel":
+			dst.SessionFileChannel = parsed.SessionFileChannel
+		case "admit-session-matches":
+			dst.AdmitSessionMatches = parsed.AdmitSessionMatches
+		case "answer-limit-menu":
+			dst.AnswerLimitMenu = parsed.AnswerLimitMenu
 		case "claude-prompt":
 			dst.ClaudePrompt = parsed.ClaudePrompt
 		case "codex-prompt":
@@ -310,6 +395,10 @@ func filterPanes(panes []runtimeapi.Pane, requested []string, ownPaneID string) 
 }
 
 func filterPanesByIdentity(panes []runtimeapi.Pane, requested []string, terminalIDs map[string]struct{}, ownPaneID string) ([]runtimeapi.Pane, bool) {
+	return filterPanesByIdentityWithPaneIDs(panes, requested, terminalIDs, nil, ownPaneID)
+}
+
+func filterPanesByIdentityWithPaneIDs(panes []runtimeapi.Pane, requested []string, terminalIDs, paneIDs map[string]struct{}, ownPaneID string) ([]runtimeapi.Pane, bool) {
 	wanted := make(map[string]struct{}, len(requested))
 	for _, id := range requested {
 		wanted[id] = struct{}{}
@@ -319,7 +408,8 @@ func filterPanesByIdentity(panes []runtimeapi.Pane, requested []string, terminal
 	for _, pane := range panes {
 		_, idWanted := wanted[pane.ID]
 		_, terminalWanted := terminalIDs[pane.TerminalID]
-		if !idWanted && !terminalWanted {
+		_, paneWanted := paneIDs[pane.ID]
+		if !idWanted && !terminalWanted && !paneWanted {
 			continue
 		}
 		if ownPaneID != "" && pane.ID == ownPaneID {
@@ -331,13 +421,118 @@ func filterPanesByIdentity(panes []runtimeapi.Pane, requested []string, terminal
 	return filtered, excludedOwn
 }
 
+const paneWaitBackoff = 5 * time.Second
+
+func listPanesStartup(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, waitForPanes bool, logw io.Writer) ([]runtimeapi.Pane, error) {
+	if waitForPanes {
+		return waitForPanesUntilReady(ctx, rt, requested, ownPaneID, logw, sleepForPanes)
+	}
+	allPanes, err := rt.ListPanes()
+	if err != nil {
+		return nil, fmt.Errorf("list panes: %w", err)
+	}
+	panes, excludedOwn := filterPanes(allPanes, requested, ownPaneID)
+	if excludedOwn && logw != nil {
+		fmt.Fprintf(logw, "warning: excluding own pane %s\n", ownPaneID)
+	}
+	if len(panes) == 0 {
+		return nil, errors.New("none of the requested panes were found")
+	}
+	return panes, nil
+}
+
+func waitForPanes(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, logw io.Writer, wait func(context.Context, time.Duration) error) ([]runtimeapi.Pane, error) {
+	return waitForPanesUntilReady(ctx, rt, requested, ownPaneID, logw, wait)
+}
+
+func waitForPanesUntilReady(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, logw io.Writer, wait func(context.Context, time.Duration) error) ([]runtimeapi.Pane, error) {
+	state := ""
+	ownWarningLogged := false
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		allPanes, err := rt.ListPanes()
+		if err != nil {
+			if !retryablePaneListError(err) {
+				return nil, err
+			}
+			if state != "error" && logw != nil {
+				fmt.Fprintf(logw, "warning: waiting for panes: %v\n", err)
+			}
+			state = "error"
+		} else {
+			panes, excludedOwn := filterPanes(allPanes, requested, ownPaneID)
+			if excludedOwn && !ownWarningLogged && logw != nil {
+				fmt.Fprintf(logw, "warning: excluding own pane %s\n", ownPaneID)
+				ownWarningLogged = true
+			}
+			if len(panes) > 0 {
+				if state != "" && logw != nil {
+					fmt.Fprintln(logw, "info: panes available")
+				}
+				return panes, nil
+			}
+			if state != "empty" && logw != nil {
+				fmt.Fprintln(logw, "warning: waiting for panes: none of the requested panes were found")
+			}
+			state = "empty"
+		}
+		if err := wait(ctx, paneWaitBackoff); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func sleepForPanes(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func retryablePaneListError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "connection refused") ||
+		strings.Contains(message, "no such file or directory") ||
+		strings.Contains(message, "timed out") ||
+		strings.Contains(message, "timeout") ||
+		strings.Contains(message, "unexpected eof")
+}
+
 func runtimeForRun(cfg runConfig) (runtimeapi.Runtime, error) {
 	if cfg.Runtime == "tmux" {
 		return tmuxadapter.New()
 	}
 	if cfg.Transport == "socket" {
+		if cfg.SocketExplicit && cfg.Socket == "" {
+			return nil, errors.New("socket path is empty")
+		}
+		path, err := herdradapter.ResolveSocketPath(cfg.Socket)
+		if err != nil {
+			return nil, err
+		}
+		if err := herdradapter.ValidateSocketPath(path); err != nil {
+			return nil, err
+		}
 		return herdradapter.NewSocket(herdradapter.SocketOptions{
-			Path: cfg.Socket, Workspace: cfg.Workspace,
+			Path: path, Workspace: cfg.Workspace,
 		}), nil
 	}
 	return herdradapter.New(herdradapter.Options{
@@ -466,26 +661,22 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	selfPaneID, err := rt.SelfPaneID()
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: get own pane: %v\n", err)
 		return 1
 	}
-	allPanes, err := rt.ListPanes()
+	panes, err := listPanesStartup(ctx, rt, cfg.Panes, selfPaneID, cfg.WaitForPanes, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "Error: list panes: %v\n", err)
-		return 1
-	}
-	panes, excludedOwn := filterPanes(allPanes, cfg.Panes, selfPaneID)
-	if excludedOwn {
-		fmt.Fprintf(stderr, "warning: excluding own pane %s\n", selfPaneID)
-	}
-	if len(panes) == 0 {
-		fmt.Fprintln(stderr, "Error: none of the requested panes were found")
+		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
 	}
 	monitoredTerminalIDs := make(map[string]struct{})
+	monitoredPaneIDs := make(map[string]struct{}, len(panes))
 	for _, pane := range panes {
+		monitoredPaneIDs[pane.ID] = struct{}{}
 		if pane.TerminalID != "" {
 			monitoredTerminalIDs[pane.TerminalID] = struct{}{}
 		}
@@ -493,40 +684,68 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	fmt.Fprintf(stderr, "state path: %s\n", statePath)
 	coordOpts := make([]coordinator.Option, 0, 2)
 	var manager *jobs.Manager
+	var sessionScanner *sessionfile.Scanner
+	var episodeRegistry *sessionfile.EpisodeRegistry
 	if statePath != "off" {
 		st := store.NewJSONStore(statePath)
+		if cfg.SessionFileChannel {
+			sessionScanner, err = sessionfile.New(sessionfile.Config{StatePath: statePath})
+			if err != nil {
+				fmt.Fprintf(stderr, "Error: initialize session-file scanner: %v\n", err)
+				return 1
+			}
+		}
+		if cfg.SessionFileChannel || cfg.AnswerLimitMenu {
+			episodeRegistry, err = sessionfile.NewEpisodeRegistry(statePath)
+			if err != nil {
+				fmt.Fprintf(stderr, "Error: initialize episode registry: %v\n", err)
+				return 1
+			}
+		}
 		manager = jobs.New(rt, st, jobs.Config{
-			Provider:      "claude",
-			Margin:        cfg.Margin,
-			MaxHorizon:    cfg.MaxWait,
-			VerifyTimeout: cfg.VerifyTimeout,
-			ReadLines:     cfg.Lines,
-			DryRun:        cfg.DryRun,
-		}, jobs.WithLogWriter(stderr), jobs.WithProviders(registry))
+			Provider:        "claude",
+			Margin:          cfg.Margin,
+			MaxHorizon:      cfg.MaxWait,
+			VerifyTimeout:   cfg.VerifyTimeout,
+			ReadLines:       cfg.Lines,
+			DryRun:          cfg.DryRun,
+			AnswerLimitMenu: cfg.AnswerLimitMenu,
+		}, jobs.WithLogWriter(stderr), jobs.WithProviders(registry), jobs.WithEpisodeRegistry(episodeRegistry))
 		if err := manager.Reconcile(); err != nil {
 			fmt.Fprintf(stderr, "Error: reconcile state: %v\n", err)
 			return 1
+		}
+		if sessionScanner != nil {
+			if err := sessionScanner.ReconcilePending(manager.EpisodeIDs()); err != nil {
+				fmt.Fprintf(stderr, "Error: reconcile session-file pending observations: %v\n", err)
+				return 1
+			}
 		}
 		coordOpts = append(coordOpts,
 			coordinator.WithJobSink(manager),
 			coordinator.WithPostPoll(manager.Tick),
 		)
 	}
-	coordOpts = append(coordOpts, coordinator.WithProviders(registry))
+	if sessionScanner != nil {
+		coordOpts = append(coordOpts, coordinator.WithSessionFileSource(sessionScanner))
+	}
+	coordOpts = append(coordOpts, coordinator.WithProviders(registry), coordinator.WithLogWriter(stderr))
 
 	coord := coordinator.New(rt, coordinator.Config{
-		OwnPaneID:   selfPaneID,
-		TestPattern: cfg.TestPattern,
-		DryRun:      cfg.DryRun,
-		ReadLines:   cfg.Lines,
+		OwnPaneID:           selfPaneID,
+		TestPattern:         cfg.TestPattern,
+		DryRun:              cfg.DryRun,
+		ReadLines:           cfg.Lines,
+		SessionFileChannel:  cfg.SessionFileChannel,
+		AdmitSessionMatches: cfg.AdmitSessionMatches,
+		Margin:              cfg.Margin,
+		VerifyTimeout:       cfg.VerifyTimeout,
 	}, coordOpts...)
 	coord.SetPanes(panes)
 	coord.Poll()
 	coord.EnableAll()
 	coord.Poll()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	detectionInterval := cfg.Interval
 	if detectionInterval > 30*time.Second {
 		detectionInterval = 30 * time.Second
@@ -557,6 +776,28 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	subscribedPaneIDs := paneIDs(panes)
 	lastRecycle := time.Now()
 	var lastTrigger time.Time
+	admitPane := func(pane runtimeapi.Pane) {
+		// Admission is watcher-lifetime state only. A restart must require a
+		// fresh session-file observation before widening monitoring again.
+		monitoredPaneIDs[pane.ID] = struct{}{}
+		if pane.TerminalID != "" {
+			monitoredTerminalIDs[pane.TerminalID] = struct{}{}
+		}
+		seen := false
+		for _, subscribed := range subscribedPaneIDs {
+			if subscribed == pane.ID {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			subscribedPaneIDs = append(subscribedPaneIDs, pane.ID)
+			if eventSource != nil {
+				eventSource.UpdateSubscribedPanes(append([]string(nil), subscribedPaneIDs...))
+				lastRecycle = time.Now()
+			}
+		}
+	}
 	coord.RunLoopWithCadence(ctx, detectionTicks, statusTicker.C, func() ([]runtimeapi.Pane, error) {
 		var snapshot []runtimeapi.Pane
 		var hasSnapshot bool
@@ -587,6 +828,8 @@ func runCommand(args []string, _, stderr io.Writer) int {
 							}
 						}
 						if monitored {
+							delete(monitoredPaneIDs, event.PreviousPaneID)
+							monitoredPaneIDs[event.Pane.ID] = struct{}{}
 							if manager != nil {
 								if err := manager.ReassignPane(event.PreviousPaneID, event.Pane); err != nil {
 									fmt.Fprintf(stderr, "warning: reassign pane identity: %v\n", err)
@@ -614,7 +857,11 @@ func runCommand(args []string, _, stderr io.Writer) int {
 						lastRecycle = time.Now()
 					}
 					if hasSnapshot {
-						filtered, _ := filterPanesByIdentity(snapshot, cfg.Panes, monitoredTerminalIDs, selfPaneID)
+						coord.AdmitSessionFilePanes(snapshot, true, func(pane runtimeapi.Pane) bool {
+							_, ok := monitoredPaneIDs[pane.ID]
+							return ok
+						}, selfPaneID, admitPane, time.Now())
+						filtered, _ := filterPanesByIdentityWithPaneIDs(snapshot, cfg.Panes, monitoredTerminalIDs, monitoredPaneIDs, selfPaneID)
 						return filtered, nil
 					}
 					goto refreshFromRuntime
@@ -626,7 +873,11 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		if err != nil {
 			return nil, err
 		}
-		filtered, _ := filterPanesByIdentity(all, cfg.Panes, monitoredTerminalIDs, selfPaneID)
+		coord.AdmitSessionFilePanes(all, true, func(pane runtimeapi.Pane) bool {
+			_, ok := monitoredPaneIDs[pane.ID]
+			return ok
+		}, selfPaneID, admitPane, time.Now())
+		filtered, _ := filterPanesByIdentityWithPaneIDs(all, cfg.Panes, monitoredTerminalIDs, monitoredPaneIDs, selfPaneID)
 		return filtered, nil
 	}, managerTick(manager), stderr)
 	return 0

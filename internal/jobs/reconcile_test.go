@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +45,18 @@ func TestReconcileCorruptStoreWarnsAndContinues(t *testing.T) {
 	}
 	if len(m.Snapshot()) != 0 {
 		t.Fatalf("jobs after corrupt recovery = %#v, want empty", m.Snapshot())
+	}
+}
+
+func TestReconcileRejectsFutureStateVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(`{"version":2,"jobs":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m := New(&testRuntime{}, store.NewJSONStore(path), Config{}, WithClock(func() time.Time { return testNow }))
+	err := m.Reconcile()
+	if err == nil || !strings.Contains(err.Error(), "version 2") || !strings.Contains(err.Error(), "supported version 1") {
+		t.Fatalf("Reconcile() error = %v, want future-version rejection", err)
 	}
 }
 

@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,6 +74,46 @@ func TestJSONStoreMissingFileReturnsEmptyVersionOne(t *testing.T) {
 	}
 	if got.Version != 1 || len(got.Jobs) != 0 {
 		t.Fatalf("Load() = %#v, want empty version 1 file", got)
+	}
+}
+
+func TestJSONStoreLoadsVersionOneWithoutCoercion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(`{"version":1,"jobs":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewJSONStore(path).Load()
+	if err != nil || got.Version != 1 || len(got.Jobs) != 0 {
+		t.Fatalf("Load() = %#v, err=%v; want schema version 1", got, err)
+	}
+}
+
+func TestJSONStoreCoercesUnversionedStateToVersionOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(`{"version":0,"jobs":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewJSONStore(path).Load()
+	if err != nil || got.Version != 1 || len(got.Jobs) != 0 {
+		t.Fatalf("Load() = %#v, err=%v; want version-0 input coerced to 1", got, err)
+	}
+}
+
+func TestJSONStoreRejectsFutureSchemaVersion(t *testing.T) {
+	for _, version := range []int{2, 99} {
+		t.Run(fmt.Sprintf("version-%d", version), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			if err := os.WriteFile(path, []byte(fmt.Sprintf(`{"version":%d,"jobs":[]}`, version)), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := NewJSONStore(path).Load()
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("version %d", version)) || !strings.Contains(err.Error(), "supported version 1") {
+				t.Fatalf("Load() error = %v, want found and supported versions", err)
+			}
+			if _, statErr := os.Stat(path); statErr != nil {
+				t.Fatalf("future-version state file was altered or removed: %v", statErr)
+			}
+		})
 	}
 }
 

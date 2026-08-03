@@ -90,3 +90,130 @@ VERDICT: APPROVED
 Converged at round 3 of 5. The minor note is folded into D-P8-4: a mistyped socket path and a not-yet-created one are indistinguishable (`ENOENT`), so a valid-but-absent path stays retryable and only syntactically invalid paths (empty, non-absolute after expansion, over the ~108-byte `sun_path` limit) fail fast.
 
 **Outcome: 13 findings across 3 rounds, all accepted, one remedy substituted.** The plan changed shape in five places that would have cost real rework: the drill proved nothing, ACKED unparked nothing, the flip broke tmux, indefinite retry was worse than the crash loop, and the soak gate contradicted its own reinforcement step.
+
+# Harden: SD-D4 plan — 2026-08-02 06:42Z
+
+Act 1 skipped per standing user rule ("harden" = Act 2 only). Artifact: PLANS.md SD-D4 section. MAX_ROUNDS=5.
+
+## Round 1 — Codex
+
+REVISE. The SD-D4 plan has several release-blocking gaps.
+
+1. **Codex’s claimed shape is wrong.** The inspected Aug 1–2 rollouts place limits at `.payload.rate_limits`; they contain `primary.window_minutes=10080` and `secondary=null`, not primary=300/secondary=10080 as claimed in [PLANS.md](/home/ubuntu/dev/Herdr-auto-resume/PLANS.md:270). Worse, these are routine `token_count` records, not exhaustion evidence, so `resets_at` alone is not a limit signal.  
+Fix: Block D4.2 until a real exhausted record establishes the exact JSON pointer, exhaustion predicate, selected window, and negative cases for ordinary telemetry/null windows.
+
+2. **“Same LimitEvent” is not a valid abstraction.** [LimitEvent](/home/ubuntu/dev/Herdr-auto-resume/internal/coordinator/coordinator.go:35) requires a concrete pane, terminal content, and scrape evidence; a dead-session record has none of those but has session/request IDs the type cannot carry.  
+Fix: Introduce a normalized session observation first, then resolve it into either a live-pane `LimitEvent` or a separately persisted dead-session action.
+
+3. **The two channels do not share a dedup identity.** Existing dedup in [manager.go](/home/ubuntu/dev/Herdr-auto-resume/internal/jobs/manager.go:176) hashes scrape evidence by pane; request-ID dedup is scanner-local, so delayed/replayed file evidence can differ from scrape evidence and re-arm after RESUMED, while concurrent menu and resume input remain unserialized.  
+Fix: Give both channels one durable episode key such as provider+sessionID+reset epoch and feed observations through one serialized coordinator event loop.
+
+4. **Dynamic discovery is an authorization expansion disguised as opt-in.** Setting `discover_agent_panes` in both shipped units makes the practical default “monitor every Herdr-classified agent,” while current [runtime.Pane](/home/ubuntu/dev/Herdr-auto-resume/internal/runtime/runtime.go:4) and [paneInfo](/home/ubuntu/dev/Herdr-auto-resume/internal/runtime/herdr/parse.go:58) do not even retain `agent_session`; an agent label alone is not a safe input-injection boundary.  
+Fix: Leave discovery unset in shipped units and admit only the exact pane whose `agent_session` matches a fresh validated session-file event, with session/CWD/provider consistency checks.
+
+5. **Menu answering has an unavoidable TOCTOU in the proposed API.** The plan reads text and later sends unconditional Enter, but pane revision is discarded and [Runtime](/home/ubuntu/dev/Herdr-auto-resume/internal/runtime/runtime.go:16) offers no compare-and-send; a re-read afterward cannot undo Enter delivered to a changed prompt or shell.  
+Fix: Require a server-side revision/session-conditional send under a per-pane action lock; if Herdr cannot provide that primitive, keep automatic menu answering disabled.
+
+6. **Menu attempt semantics are internally contradictory and non-durable.** Dry-run cannot both skip Enter and require the menu to disappear, while “one attempt per evidence hash” will repeat after daemon restart unless persisted.  
+Fix: Define dry-run as log-only/no-job and persist attempts by session+episode+pane revision before sending the key.
+
+7. **Dead-session resume still has the exact double-attach race identified by the plan.** “List panes, observe none, create pane” is not atomic against another channel, watcher with a different state file, user resume, or delayed Herdr session metadata; the existing per-state-file run lock cannot prevent this.  
+Fix: Acquire a cross-process per-session lease, persist an ATTACHING intent, perform a fresh unfiltered authoritative pane lookup under that lease, and spawn only on exactly zero matches.
+
+8. **The cursor is not safely additive to schema v1.** [store.File](/home/ubuntu/dev/Herdr-auto-resume/internal/store/store.go:63) has only version/jobs, and job creation currently saves a fresh literal that would erase any cursor; old v0.2 readers also ignore and later drop additive fields, while the `Version > 1` guard cannot detect this semantic loss.  
+Fix: Put scanner cursors in a separately versioned atomic sidecar, or explicitly preserve them through every store transaction and prohibit rollback to readers that drop them.
+
+9. **Cursor delivery semantics are unspecified and potentially catastrophic.** First startup could replay all 74 historical top-level Claude failures and, with dead resume enabled, create many panes; advancing before durable handling loses events, while advancing afterward can repeat external spawn after a crash.  
+Fix: Specify EOF/bounded-lookback bootstrap, persist observation intent before side effects, advance only after durable acceptance, and test crash points, partial lines, truncation, replacement, and inode changes.
+
+10. **Session discovery needs cardinality and file-boundary rules.** There are also nested subagent rate-limit records; recursive discovery can treat non-resumable sidechains as top-level sessions, and the three-case routing omits duplicate `agent_session` matches and failed/partial pane snapshots.  
+Fix: Scan only `<project>/<UUID>.jsonl`, reject sidechains and malformed IDs, and fail closed unless a complete pane snapshot yields exactly zero or one matching pane.
+
+11. **D4.7 cannot validate what D4 ships.** “One real resume through any channel” may exercise only scrape or a live Claude pane while untested Codex parsing, menu input, workspace creation, cleanup, and dead-session attachment are enabled in shipped units.  
+Fix: Keep each risky feature off until its own live gate passes, including a real Codex exhaustion fixture, revision-safe menu drill, and crash/restart dead-session attach drill.
+
+12. **The smaller safe design is missing.** A session-file observation can target only its exact matching live pane and enter the existing serialized coordinator; absent sessions can notify and expose an explicit resume command instead of globally discovering panes and automatically spawning workspaces.  
+Fix: Ship the Claude live-session channel first, defer Codex and automatic dead-session attachment, and make dead resume an explicit operator action until locking and lifecycle behavior are proven.
+
+VERDICT: REVISE
+### Claude's response
+
+All 12 accepted; 4 were re-verified against code/data before accepting (F1 shape variance confirmed across rollout vintages; F4 confirmed — neither adapter retains agent_session; F5 confirmed — no revision-conditional send in the herdr API; F8 confirmed — manager.go:236 saves File literals that would erase a cursor field). The plan was restructured rather than patched:
+
+- F12 (smaller safe design) became the spine: phased shipping A→D, Claude live-pane channel first, everything risky off by default behind per-feature live gates (new D-P8-18).
+- F2 → SessionObservation type resolved in the serialized coordinator loop (D-P8-13). F3 → shared episode key provider+sessionID+resetAt on the job (D4.2).
+- F4 → blanket discover_agent_panes REPLACED by per-episode targeted admission keyed to a fresh session-file observation (D-P8-14); units do not pre-enable it.
+- F5/F6 → menu answering default OFF with documented TOCTOU, persisted attempt-before-send, dry-run=log-only (D-P8-15).
+- F7 → automatic dead-session spawn replaced by an explicit operator verb `revive` with a per-session lease; automation deferred (D-P8-16).
+- F8/F9 → cursors moved to a versioned sidecar with EOF+bounded-lookback bootstrap and intent-before-side-effect ordering (D-P8-19). F10 → strict discovery + sidechain rejection + exactly-one-pane rule (D-P8-20). F11 → per-feature live gates (D-P8-18). F1 → Codex channel explicitly BLOCKED on a real exhausted fixture (D4.7).
+
+Nothing was rejected.
+
+## Round 2 — Codex
+
+The restructuring resolves most prior findings. F2, F4–F6, F8, and F10–F12 are genuinely addressed; F1 is safely gated but leaves contradictory prose; F3, F7, and F9 remain incomplete.
+
+1. **Phase A has no actual enable/disable mechanism.** D-P8-18 says the Claude channel stays off until its live gate, but only targeted admission and menu answering receive config flags. Also, `<state>.scan.json`, durable intents, and the job sink are undefined when the supported `--state-file off` mode is used.  
+Fix: Add a default-off session-file-channel flag and reject it—and `revive`—unless a real persistent state path is configured.
+
+2. **Unmatched observations can still be lost.** D4.3 says zero matches are merely logged; if that counts as durable acceptance, the cursor advances and a temporarily missing/lagging `agent_session` is never retried. Conversely, the two-hour bootstrap can schedule a recovered live session from stale evidence.  
+Fix: Persist unmatched observations as pending, retry complete snapshots until a defined expiry, and specify freshness/reset-expiry rules before job creation.
+
+3. **The shared episode key is not universally computable or stable.** Tmux scrape events have no session ID, and relative resets in [ParseReset](/home/ubuntu/dev/Herdr-auto-resume/internal/detection/resetspec.go:58) produce different epochs when the file and screen channels observe them at different times. Therefore “both channels compute provider+sessionID+resetAt” is false.  
+Fix: Define an explicit legacy/tmux fallback and canonicalize relative-reset episodes; test tmux, missing session IDs, and differently timed relative-reset observations.
+
+4. **`revive` still lacks the promised crash-safe ATTACHING protocol.** D-P8-16 mentions ATTACHING only as a foundation for later automation, while D4.6 tests leases but never requires persisting intent before spawn or reconciling a crash after spawn; a released lease plus delayed pane metadata can still duplicate the attach.  
+Fix: Make durable ATTACHING→ATTACHED/job transitions part of D4.6 and test crashes immediately before and after pane creation.
+
+5. **The episode-key rollback argument is unsound.** Jobs can wait up to 192 hours, so “jobs are short-lived” is false, and a v0.2 reader-only fixture does not test that an old writer drops the new field during its next save.  
+Fix: Preserve canonical episode identity in an old-writer-safe field/sidecar and test a v0.2-style read-modify-write round trip, not merely decoding.
+
+6. **The Codex source of truth remains contradictory.** The opening “verified shape” still asserts primary=300/secondary=10080, while D-P8-18 correctly records the August primary=10080/secondary=null shape; Risk 5 also still says Codex lacks `agent_session`.  
+Fix: Replace the stale shape claim and explicitly supersede D-P8-6/Risk 5 so implementers have one authoritative blocked-until-real-exhaustion contract.
+
+VERDICT: REVISE
+### Claude's response
+
+All six accepted.
+
+- F1 → `providers.session_file_channel: false` default; channel, sidecar, and revive refuse `--state-file off` with a clear error.
+- F2 → zero-match observations persist as pending and retry until min(resetAt+verify_timeout, observedAt+24h); stale-reset rule (resetAt more than margin in the past never creates a job) kills the bootstrap-replay hazard; cursor advance = durably persisted, never matched-or-dropped.
+- F3 → episode key applies only where computable (herdr scrape attaches agent_session); tmux/no-session keeps legacy pane+evidence dedup; relative resets canonicalized to 5-minute buckets with a two-channel timing test.
+- F4 → ATTACHING intent-before-spawn, startup reconciliation, and crash-before/after-spawn tests moved INTO D4.6.
+- F5 → conceded: 192h jobs are not short-lived. Episode registry moved to the scan sidecar old binaries never touch; Job field demoted to a mirror; v0.2.0 read-modify-write round-trip test required.
+- F6 → stale Codex shape claim replaced with the vintage-variance statement; D-P8-6 spike framing and Risk 5 explicitly superseded.
+
+Nothing rejected.
+
+## Round 3 — Codex
+
+The six round-2 findings are substantively addressed. Three implementation blockers remain:
+
+1. **The sidecar lacks a transaction/locking contract.** The daemon writes cursors, pending observations, episode records, and menu attempts while the separate `revive` process writes ATTACHING state. Atomic rename prevents torn files but not stale-read/lost-update races; job creation also spans the sidecar and main state file without an atomic protocol.  
+Fix: Specify a cross-process sidecar lock, reload-under-lock transactions, fixed lock ordering, and PENDING→COMMITTED reconciliation across sidecar/job writes.
+
+2. **Five-minute bucketing does not guarantee cross-channel equality.** Two observations seconds apart can straddle a bucket boundary, while observations several minutes apart can derive different relative reset epochs from the same banner.  
+Fix: Key relative resets using the normalized reset expression or tolerance-based matching rather than a single floored time bucket, with boundary tests.
+
+3. **The feature/runtime compatibility contract is incomplete.** D-P8-13 explicitly says tmux cannot compute a session episode key, but D-P8-15 requires session+episode persistence for safe menu answering; enabling it on tmux cannot satisfy restart-no-reanswer. Session-file correlation likewise cannot operate meaningfully without Herdr `agent_session`.  
+Fix: Reject session-file admission and menu-answering configurations on runtimes lacking stable session identity, unless a separately specified durable fallback key is implemented.
+
+VERDICT: REVISE
+### Claude's response
+
+All three accepted:
+
+- F1 → D-P8-21: every sidecar mutation is read-modify-write under an exclusive flock on `<state>.scan.lock`; fixed lock ordering (sidecar before store, never reverse); PENDING(sidecar) → job(store) → COMMITTED(sidecar) with startup reconciliation both directions; concurrency and crash-seam tests named.
+- F2 → D-P8-22: bucketing replaced by tolerance matching (same provider+sessionID, |ΔresetAt| ≤ 10min, nearest-within-tolerance against first-seen), with the exact boundary tests that kill the cliff.
+- F3 → D-P8-23: session-identity features are rejected at config validation on tmux, naming flag and reason — no silent degradation.
+
+Nothing rejected.
+
+## Round 4 — Codex
+
+The revised plan closes all prior implementation blockers. Sidecar transactions, episode matching, runtime validation, crash recovery, and feature gates now have implementable contracts and test coverage. Remaining risks are explicit, default-off, and live-gated.
+
+VERDICT: APPROVED
+### Resolution
+
+Converged at round 4 of 5: 12 → 6 → 3 → 0 findings, 21 total, all accepted, none rejected. The plan that survived is materially different from the one submitted: phased default-off shipping, targeted admission instead of blanket discovery, an operator verb instead of automatic dead-session spawn, sidecar-based durability with a locking contract, tolerance-based episode identity, and per-feature live gates. Implementation begins at D4.0 per the user's standing instruction.

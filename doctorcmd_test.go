@@ -105,7 +105,7 @@ func isolateDoctorState(t *testing.T) {
 func TestDoctorReportPassesAllChecks(t *testing.T) {
 	isolateDoctorState(t)
 	var out bytes.Buffer
-	if got := runDoctorCommand(nil, &out, passingDoctorDeps()); got != 0 {
+	if got := runDoctorCommand([]string{"--transport", "cli"}, &out, passingDoctorDeps()); got != 0 {
 		t.Fatalf("doctor exit = %d, want 0\n%s", got, out.String())
 	}
 	if first := strings.SplitN(out.String(), "\n", 2)[0]; !strings.HasPrefix(first, "INFO version: herdr-auto-resume ") {
@@ -124,7 +124,7 @@ func TestDoctorVersionLinePreservesCLIReportBody(t *testing.T) {
 	version, commit, date = "v0.2.0", "abc1234", "2026-07-31T12:00:00Z"
 
 	var out bytes.Buffer
-	if got := runDoctorCommand(nil, &out, passingDoctorDeps()); got != 0 {
+	if got := runDoctorCommand([]string{"--transport", "cli"}, &out, passingDoctorDeps()); got != 0 {
 		t.Fatalf("doctor exit = %d\n%s", got, out.String())
 	}
 	lines := strings.SplitN(out.String(), "\n", 2)
@@ -167,7 +167,7 @@ func TestDoctorReportsWatcherLockState(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.json")
 	t.Run("none", func(t *testing.T) {
 		var out bytes.Buffer
-		if got := runDoctorCommand([]string{"--state-file", statePath}, &out, passingDoctorDeps()); got != 0 {
+		if got := runDoctorCommand([]string{"--transport", "cli", "--state-file", statePath}, &out, passingDoctorDeps()); got != 0 {
 			t.Fatalf("doctor exit = %d\n%s", got, out.String())
 		}
 		if !strings.Contains(out.String(), "INFO watcher: none on "+statePath) {
@@ -181,7 +181,7 @@ func TestDoctorReportsWatcherLockState(t *testing.T) {
 		}
 		defer lock.Release()
 		var out bytes.Buffer
-		if got := runDoctorCommand([]string{"--state-file", statePath}, &out, passingDoctorDeps()); got != 0 {
+		if got := runDoctorCommand([]string{"--transport", "cli", "--state-file", statePath}, &out, passingDoctorDeps()); got != 0 {
 			t.Fatalf("doctor exit = %d\n%s", got, out.String())
 		}
 		if !strings.Contains(out.String(), "INFO watcher: active (pid "+strconv.Itoa(os.Getpid())+") on "+statePath) {
@@ -194,7 +194,7 @@ func TestDoctorReportsConfigState(t *testing.T) {
 	isolateDoctorState(t)
 	t.Run("absent", func(t *testing.T) {
 		var out bytes.Buffer
-		if got := runDoctorCommand(nil, &out, passingDoctorDeps()); got != 0 {
+		if got := runDoctorCommand([]string{"--transport", "cli"}, &out, passingDoctorDeps()); got != 0 {
 			t.Fatalf("doctor exit = %d\n%s", got, out.String())
 		}
 		if !strings.Contains(out.String(), "INFO config: none") {
@@ -207,7 +207,7 @@ func TestDoctorReportsConfigState(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out bytes.Buffer
-		if got := runDoctorCommand([]string{"--config", path}, &out, passingDoctorDeps()); got != 0 {
+		if got := runDoctorCommand([]string{"--transport", "cli", "--config", path}, &out, passingDoctorDeps()); got != 0 {
 			t.Fatalf("doctor exit = %d\n%s", got, out.String())
 		}
 		if !strings.Contains(out.String(), "PASS config: "+path) || !strings.Contains(out.String(), "INFO watcher: none on /tmp/doctor-state.json") {
@@ -220,7 +220,7 @@ func TestDoctorReportsConfigState(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out bytes.Buffer
-		if got := runDoctorCommand([]string{"--config", path}, &out, passingDoctorDeps()); got == 0 {
+		if got := runDoctorCommand([]string{"--transport", "cli", "--config", path}, &out, passingDoctorDeps()); got == 0 {
 			t.Fatalf("doctor exit = %d\n%s", got, out.String())
 		}
 		if !strings.Contains(out.String(), "FAIL config:") || !strings.Contains(out.String(), "version") {
@@ -239,7 +239,7 @@ func TestDoctorReportFailsWhenRequiredCheckFails(t *testing.T) {
 		return &runtime.Fake{Errs: map[string]error{"ListPanes": errors.New("list failed")}}
 	}
 	var out bytes.Buffer
-	if got := runDoctorCommand(nil, &out, deps); got == 0 {
+	if got := runDoctorCommand([]string{"--transport", "cli"}, &out, deps); got == 0 {
 		t.Fatalf("doctor exit = %d, want nonzero\n%s", got, out.String())
 	}
 	if !strings.Contains(out.String(), "FAIL binary") || !strings.Contains(out.String(), "FAIL socket") || !strings.Contains(out.String(), "FAIL status") || !strings.Contains(out.String(), "FAIL adapter") {
@@ -257,7 +257,7 @@ func TestDoctorSchemaParseFailureIsWarning(t *testing.T) {
 		return passingDoctorDeps().run("herdr", args...)
 	}
 	var out bytes.Buffer
-	if got := runDoctorCommand(nil, &out, deps); got != 0 {
+	if got := runDoctorCommand([]string{"--transport", "cli"}, &out, deps); got != 0 {
 		t.Fatalf("doctor exit = %d, want 0\n%s", got, out.String())
 	}
 	if !strings.Contains(out.String(), "WARN schema") {
@@ -275,7 +275,7 @@ func TestDoctorUnknownProtocolIsWarningNotPass(t *testing.T) {
 		return passingDoctorDeps().run("herdr", args...)
 	}
 	var out bytes.Buffer
-	if got := runDoctorCommand(nil, &out, deps); got != 0 {
+	if got := runDoctorCommand([]string{"--transport", "cli"}, &out, deps); got != 0 {
 		t.Fatalf("doctor exit = %d, want warning-only success\n%s", got, out.String())
 	}
 	if !strings.Contains(out.String(), "WARN status: protocol unknown") || strings.Contains(out.String(), "PASS status: protocol 17") {
@@ -319,17 +319,76 @@ func TestDoctorSocketModeRefusedProtocolWarningAndMissingAck(t *testing.T) {
 	})
 }
 
-func TestDoctorCLITransportDefaultOutputIsUnchanged(t *testing.T) {
+func TestDoctorTransportResolutionMatrix(t *testing.T) {
 	isolateDoctorState(t)
-	deps := passingDoctorDeps()
-	var implicit, explicit bytes.Buffer
-	if got := runDoctorCommand(nil, &implicit, deps); got != 0 {
-		t.Fatalf("implicit doctor exit = %d", got)
+	cases := []struct {
+		name        string
+		args        []string
+		config      string
+		wantSocket  bool
+		wantWarning string
+		wantErr     string
+	}{
+		{name: "default herdr", wantSocket: true},
+		{name: "default herdr session", args: []string{"--session", "s1"}, wantWarning: "--session"},
+		{name: "default tmux", args: []string{"--runtime", "tmux"}, wantWarning: "--runtime"},
+		{name: "default tmux session", args: []string{"--runtime", "tmux", "--session", "s1"}, wantWarning: "--runtime"},
+		{name: "yaml herdr cli", config: "runtime:\n  type: herdr\n  transport: cli\n"},
+		{name: "yaml herdr socket", config: "runtime:\n  type: herdr\n  transport: socket\n", wantSocket: true},
+		{name: "yaml herdr socket session", config: "runtime:\n  type: herdr\n  transport: socket\n", args: []string{"--session", "s1"}, wantErr: "--session is unsupported"},
+		{name: "yaml tmux cli", config: "runtime:\n  type: tmux\n  transport: cli\n"},
+		{name: "yaml tmux socket", config: "runtime:\n  type: tmux\n  transport: socket\n", wantErr: "runtime.transport socket requires runtime.type herdr"},
+		{name: "flag herdr cli", args: []string{"--transport", "cli"}},
+		{name: "flag herdr socket", args: []string{"--transport", "socket"}, wantSocket: true},
+		{name: "flag socket session", args: []string{"--transport", "socket", "--session", "s1"}, wantErr: "--session is unsupported"},
+		{name: "flag socket tmux", args: []string{"--transport", "socket", "--runtime", "tmux"}, wantErr: "requires --runtime herdr"},
 	}
-	if got := runDoctorCommand([]string{"--transport", "cli"}, &explicit, deps); got != 0 {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string(nil), tc.args...)
+			if tc.config != "" {
+				path := filepath.Join(t.TempDir(), "config.yaml")
+				if err := os.WriteFile(path, []byte("version: 1\n"+tc.config), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = append([]string{"--config", path}, args...)
+			}
+			var socketPath string
+			if tc.wantSocket {
+				socketPath = startDoctorSocket(t, 17, true)
+				args = append(args, "--socket", socketPath)
+			}
+			var out bytes.Buffer
+			got := runDoctorCommand(args, &out, passingDoctorDeps())
+			if tc.wantErr != "" {
+				if got == 0 || !strings.Contains(out.String(), tc.wantErr) {
+					t.Fatalf("exit=%d report=%q; want error %q", got, out.String(), tc.wantErr)
+				}
+				return
+			}
+			if got != 0 {
+				t.Fatalf("doctor exit=%d report=%q", got, out.String())
+			}
+			if tc.wantSocket && !strings.Contains(out.String(), "PASS ping") {
+				t.Fatalf("report=%q, want socket checks", out.String())
+			}
+			if !tc.wantSocket && !strings.Contains(out.String(), "PASS binary") {
+				t.Fatalf("report=%q, want CLI checks", out.String())
+			}
+			if tc.wantWarning != "" && !strings.Contains(out.String(), tc.wantWarning) {
+				t.Fatalf("report=%q, want warning naming %q", out.String(), tc.wantWarning)
+			}
+		})
+	}
+}
+
+func TestDoctorExplicitCLITransportMatchesTheCLIPath(t *testing.T) {
+	isolateDoctorState(t)
+	var explicit bytes.Buffer
+	if got := runDoctorCommand([]string{"--transport", "cli"}, &explicit, passingDoctorDeps()); got != 0 {
 		t.Fatalf("explicit doctor exit = %d", got)
 	}
-	if implicit.String() != explicit.String() {
-		t.Fatalf("CLI output changed:\nimplicit=%q\nexplicit=%q", implicit.String(), explicit.String())
+	if !strings.Contains(explicit.String(), "PASS binary") || strings.Contains(explicit.String(), "PASS ping") {
+		t.Fatalf("explicit CLI output = %q", explicit.String())
 	}
 }

@@ -4,13 +4,13 @@ version: 1
 
 # Runtime adapter and Herdr connection.
 # type: herdr
-# transport: cli
+# transport: socket  # explicit; omit for the built-in Herdr socket default
 # herdr_bin: herdr
 # socket: ~/.config/herdr/herdr.sock
 # workspace: your-workspace
 runtime:
   # type: herdr
-  # transport: cli
+  # transport: socket
   # herdr_bin: herdr
   # socket: ~/.config/herdr/herdr.sock
   # workspace: your-workspace
@@ -22,12 +22,15 @@ monitoring:
   #   - w2:p1
   # interval: 3s
   # lines: 200
+  # wait_for_panes: false  # retry transient startup reachability and zero matches
+  # admit_session_matches: false  # requires providers.session_file_channel
 
 # Safety margins and wait bounds.
 resume:
   # margin: 60s
   # max_wait: 192h
   # verify_timeout: 90s
+  # answer_limit_menu: false  # Herdr only; requires persistent state
 
 # Provider detection and continuation prompts.
 providers:
@@ -36,6 +39,7 @@ providers:
   #   - codex
   # claude_prompt: continue
   # codex_prompt: Continue the previous task from where you stopped.
+  # session_file_channel: false  # Herdr only; requires persistent state
 
 # Persistent job state. Use off to disable persistence and the run lock.
 state:

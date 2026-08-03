@@ -65,6 +65,68 @@ state:
 	}
 }
 
+func TestLoadParsesWaitForPanes(t *testing.T) {
+	path := writeConfig(t, "version: 1\nmonitoring:\n  wait_for_panes: true\n")
+	cfg, found, err := Load(path)
+	if err != nil || !found || !cfg.Has("monitoring.wait_for_panes") || !cfg.Monitoring.WaitForPanes {
+		t.Fatalf("cfg=%#v found=%v err=%v, want wait_for_panes=true", cfg, found, err)
+	}
+}
+
+func TestLoadParsesAnswerLimitMenu(t *testing.T) {
+	path := writeConfig(t, "version: 1\nresume:\n  answer_limit_menu: true\n")
+	cfg, found, err := Load(path)
+	if err != nil || !found || !cfg.Has("resume.answer_limit_menu") || !cfg.Resume.AnswerLimitMenu {
+		t.Fatalf("cfg=%#v found=%v err=%v, want answer_limit_menu enabled", cfg, found, err)
+	}
+}
+
+func TestLoadRejectsAnswerLimitMenuForTmux(t *testing.T) {
+	path := writeConfig(t, "version: 1\nruntime:\n  type: tmux\nresume:\n  answer_limit_menu: true\n")
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "answer_limit_menu") || !strings.Contains(err.Error(), "tmux") {
+		t.Fatalf("Load() error = %v, want tmux menu-answer rejection", err)
+	}
+}
+
+func TestLoadParsesSessionFileChannel(t *testing.T) {
+	path := writeConfig(t, "version: 1\nproviders:\n  session_file_channel: true\n")
+	cfg, found, err := Load(path)
+	if err != nil || !found || !cfg.Has("providers.session_file_channel") || !cfg.Providers.SessionFileChannel {
+		t.Fatalf("cfg=%#v found=%v err=%v, want session file channel enabled", cfg, found, err)
+	}
+}
+
+func TestLoadParsesAdmissionAndRequiresSessionFileChannel(t *testing.T) {
+	path := writeConfig(t, "version: 1\nproviders:\n  session_file_channel: true\nmonitoring:\n  admit_session_matches: true\n")
+	cfg, found, err := Load(path)
+	if err != nil || !found || !cfg.Has("monitoring.admit_session_matches") || !cfg.Monitoring.AdmitSessionMatches {
+		t.Fatalf("cfg=%#v found=%v err=%v, want admission enabled", cfg, found, err)
+	}
+
+	path = writeConfig(t, "version: 1\nmonitoring:\n  admit_session_matches: true\n")
+	_, _, err = Load(path)
+	if err == nil || !strings.Contains(err.Error(), "monitoring.admit_session_matches") || !strings.Contains(err.Error(), "providers.session_file_channel") {
+		t.Fatalf("Load() error = %v, want admission prerequisite naming both keys", err)
+	}
+}
+
+func TestLoadRejectsAdmissionForTmux(t *testing.T) {
+	path := writeConfig(t, "version: 1\nruntime:\n  type: tmux\nproviders:\n  session_file_channel: true\nmonitoring:\n  admit_session_matches: true\n")
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "admit_session_matches") || !strings.Contains(err.Error(), "tmux") {
+		t.Fatalf("Load() error = %v, want tmux admission rejection", err)
+	}
+}
+
+func TestLoadRejectsSessionFileChannelForTmux(t *testing.T) {
+	path := writeConfig(t, "version: 1\nruntime:\n  type: tmux\nproviders:\n  session_file_channel: true\n")
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "session_file_channel") || !strings.Contains(err.Error(), "tmux") {
+		t.Fatalf("Load() error = %v, want tmux session-file rejection", err)
+	}
+}
+
 func TestLoadRejectsUnknownKey(t *testing.T) {
 	_, _, err := Load(writeConfig(t, "version: 1\nunknown: true\n"))
 	if err == nil || !strings.Contains(err.Error(), "unknown") {

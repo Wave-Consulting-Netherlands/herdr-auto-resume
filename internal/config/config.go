@@ -35,21 +35,25 @@ type RuntimeConfig struct {
 }
 
 type MonitoringConfig struct {
-	Panes    []string
-	Interval time.Duration
-	Lines    int
+	Panes               []string
+	Interval            time.Duration
+	Lines               int
+	WaitForPanes        bool
+	AdmitSessionMatches bool
 }
 
 type ResumeConfig struct {
-	Margin        time.Duration
-	MaxWait       time.Duration
-	VerifyTimeout time.Duration
+	Margin          time.Duration
+	MaxWait         time.Duration
+	VerifyTimeout   time.Duration
+	AnswerLimitMenu bool
 }
 
 type ProvidersConfig struct {
-	Enabled      []string
-	ClaudePrompt string
-	CodexPrompt  string
+	Enabled            []string
+	ClaudePrompt       string
+	CodexPrompt        string
+	SessionFileChannel bool
 }
 
 type StateConfig struct {
@@ -66,29 +70,33 @@ type rawConfig struct {
 }
 
 type rawRuntimeConfig struct {
-	Type      string `yaml:"type"`
-	Transport string `yaml:"transport"`
-	HerdrBin  string `yaml:"herdr_bin"`
-	Socket    string `yaml:"socket"`
-	Workspace string `yaml:"workspace"`
+	Type      string  `yaml:"type"`
+	Transport *string `yaml:"transport"`
+	HerdrBin  string  `yaml:"herdr_bin"`
+	Socket    *string `yaml:"socket"`
+	Workspace string  `yaml:"workspace"`
 }
 
 type rawMonitoringConfig struct {
-	Panes    []string `yaml:"panes"`
-	Interval string   `yaml:"interval"`
-	Lines    *int     `yaml:"lines"`
+	Panes               []string `yaml:"panes"`
+	Interval            string   `yaml:"interval"`
+	Lines               *int     `yaml:"lines"`
+	WaitForPanes        *bool    `yaml:"wait_for_panes"`
+	AdmitSessionMatches *bool    `yaml:"admit_session_matches"`
 }
 
 type rawResumeConfig struct {
-	Margin        string `yaml:"margin"`
-	MaxWait       string `yaml:"max_wait"`
-	VerifyTimeout string `yaml:"verify_timeout"`
+	Margin          string `yaml:"margin"`
+	MaxWait         string `yaml:"max_wait"`
+	VerifyTimeout   string `yaml:"verify_timeout"`
+	AnswerLimitMenu *bool  `yaml:"answer_limit_menu"`
 }
 
 type rawProvidersConfig struct {
-	Enabled      []string `yaml:"enabled"`
-	ClaudePrompt string   `yaml:"claude_prompt"`
-	CodexPrompt  string   `yaml:"codex_prompt"`
+	Enabled            []string `yaml:"enabled"`
+	ClaudePrompt       string   `yaml:"claude_prompt"`
+	CodexPrompt        string   `yaml:"codex_prompt"`
+	SessionFileChannel *bool    `yaml:"session_file_channel"`
 }
 
 type rawStateConfig struct {
@@ -144,8 +152,8 @@ func Load(path string) (Config, bool, error) {
 	parsed := Config{
 		Version: 1,
 		Runtime: RuntimeConfig{
-			Type: raw.Runtime.Type, Transport: raw.Runtime.Transport,
-			HerdrBin: raw.Runtime.HerdrBin, Socket: raw.Runtime.Socket,
+			Type:      raw.Runtime.Type,
+			HerdrBin:  raw.Runtime.HerdrBin,
 			Workspace: raw.Runtime.Workspace,
 		},
 		Monitoring: MonitoringConfig{Panes: append([]string(nil), raw.Monitoring.Panes...)},
@@ -162,20 +170,42 @@ func Load(path string) (Config, bool, error) {
 		}
 	}
 	mark("runtime.type", raw.Runtime.Type != "")
-	mark("runtime.transport", raw.Runtime.Transport != "")
+	mark("runtime.transport", raw.Runtime.Transport != nil)
 	mark("runtime.herdr_bin", raw.Runtime.HerdrBin != "")
-	mark("runtime.socket", raw.Runtime.Socket != "")
+	mark("runtime.socket", raw.Runtime.Socket != nil)
 	mark("runtime.workspace", raw.Runtime.Workspace != "")
 	mark("monitoring.panes", raw.Monitoring.Panes != nil)
 	mark("monitoring.interval", raw.Monitoring.Interval != "")
 	mark("monitoring.lines", raw.Monitoring.Lines != nil)
+	mark("monitoring.wait_for_panes", raw.Monitoring.WaitForPanes != nil)
+	mark("monitoring.admit_session_matches", raw.Monitoring.AdmitSessionMatches != nil)
 	mark("resume.margin", raw.Resume.Margin != "")
 	mark("resume.max_wait", raw.Resume.MaxWait != "")
 	mark("resume.verify_timeout", raw.Resume.VerifyTimeout != "")
+	mark("resume.answer_limit_menu", raw.Resume.AnswerLimitMenu != nil)
 	mark("providers.enabled", raw.Providers.Enabled != nil)
 	mark("providers.claude_prompt", raw.Providers.ClaudePrompt != "")
 	mark("providers.codex_prompt", raw.Providers.CodexPrompt != "")
+	mark("providers.session_file_channel", raw.Providers.SessionFileChannel != nil)
 	mark("state.file", raw.State.File != "")
+	if raw.Runtime.Transport != nil {
+		parsed.Runtime.Transport = *raw.Runtime.Transport
+	}
+	if raw.Providers.SessionFileChannel != nil {
+		parsed.Providers.SessionFileChannel = *raw.Providers.SessionFileChannel
+	}
+	if raw.Runtime.Socket != nil {
+		parsed.Runtime.Socket = *raw.Runtime.Socket
+	}
+	if raw.Monitoring.WaitForPanes != nil {
+		parsed.Monitoring.WaitForPanes = *raw.Monitoring.WaitForPanes
+	}
+	if raw.Monitoring.AdmitSessionMatches != nil {
+		parsed.Monitoring.AdmitSessionMatches = *raw.Monitoring.AdmitSessionMatches
+	}
+	if raw.Resume.AnswerLimitMenu != nil {
+		parsed.Resume.AnswerLimitMenu = *raw.Resume.AnswerLimitMenu
+	}
 	if raw.Monitoring.Interval != "" {
 		parsed.Monitoring.Interval, err = time.ParseDuration(raw.Monitoring.Interval)
 		if err != nil {

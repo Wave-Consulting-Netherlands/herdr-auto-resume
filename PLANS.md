@@ -20,9 +20,17 @@ Deployed watchers during this phase:
 
 ## Sequencing
 
-**S0 ops (now, no release) → S1 soak evidence (48h) → S2 v0.3.0 flip → S3 v0.4.0 features.**
-The flip ships in a release of its own precisely so that a post-flip regression has one
-obvious cause. Features wait.
+**S0 ops (done) → S1 soak evidence (48h, running) → SD real-world diagnosis (NEW, blocking) →
+S2 v0.3.0 flip → S3 v0.4.0 features.**
+
+SD was inserted on 2026-08-01 after two real Claude sessions hit plain usage-limit banners in
+monitored panes (`wA:p1` under the production watcher, `wS:p1` under the soak watcher) and
+produced **no job, no state file, and no log line**. Neither state file has ever existed, so
+the tool has not been observed completing a real-world cycle in production — only in drills.
+
+Transport defaults and startup tolerance are refinements to a tool whose core promise is
+currently failing. They do not ship first. S1 and SD run concurrently (SD's evidence gathering
+is read-only and does not disturb the soak), but **S2 does not begin until SD closes.**
 
 ## Decisions
 
@@ -141,6 +149,25 @@ obvious cause. Features wait.
   provider-active later (enable on transition, preserving any explicit user disable), with a
   regression test that starts a watcher against an unidentifiable pane, makes it identifiable,
   and asserts a job is created.
+- **D-P8-10 Silence on a limited pane is a defect in its own right.** Every path that sees a
+  limited pane and does NOT create a job exits without a trace today: menu visible, reset
+  unparsed, provider unresolved, pane not enabled, horizon exceeded. That silence is why the
+  2026-08-01 incident is undiagnosable after the fact — there is nothing to read. Requirement:
+  when a pane is detected as limited and no job results, log exactly one line per evidence
+  hash naming the pane and the specific reason. Once per evidence hash, not per poll, so a
+  limit sitting on screen for hours does not flood the journal. This is not optional polish;
+  without it the next occurrence is equally undiagnosable.
+- **D-P8-11 The flip is gated on a real-world resume, not on drill evidence.** The soak proves
+  socket transport carries a synthetic cycle. It does not prove the tool resumes a genuine
+  Claude limit, which is what actually failed twice. v0.3.0 does not ship until at least one
+  real limit has been detected, jobbed, and resumed on a real agent pane — or, if the root
+  cause proves to be environmental rather than a code defect, until that is established from
+  captured evidence and recorded here.
+- **D-P8-12 The diagnostic build deploys to PRODUCTION only; the soak watcher stays on
+  v0.2.0.** These are separate units with separate state files, so restarting the production
+  watcher on an instrumented binary does not touch the soak or its clock (D-P8-3 constrains
+  the soak watcher specifically). This buys fast real-world instrumentation without spending
+  the 48h of socket evidence already accumulated.
 - **D-P8-7 Damped recycle ships in v0.4.0, after the flip (BACKLOG 11).** Poisoned sub-30s
   windows degrade to the 30s ticker floor — a latency defect, not a correctness one. Changing
   recycle timing in the flip release would invalidate the soak evidence the flip is gated on.
@@ -202,7 +229,199 @@ obvious cause. Features wait.
    reconnect across a deliberate `herdr server stop`/start, and a pane move across tabs
    (terminal_id follow). Journal entries from this window are expected and timestamped as such.
 
-### S2 — v0.3.0: the flip (only after S1 is clean)
+### SD — real-world diagnosis (blocking; runs concurrently with S1)
+
+- **D1. Ground-truth capture — DONE 2026-08-01** (`scripts/limit-capture.sh`, commit 414b8cc,
+  running detached). Snapshots `wA:p1`/`wR:p1`/`wS:p1` on a signal deliberately broader than
+  the detector's own patterns — matching only what the detector accepts would reproduce the
+  blind spot under investigation. Read-only; bounded by content hash and per-pane cooldown.
+  Captures land in `~/.local/state/herdr-auto-resume/limit-captures/`.
+- **D2. Diagnostic logging (D-P8-10), TDD.** One line per evidence hash naming pane and reason
+  whenever a limited pane yields no job. Ship on the `phase-8-flip` branch, build, and deploy
+  to the PRODUCTION unit only (D-P8-12). Tests: each non-action reason logs exactly once;
+  repeated polls of identical evidence do not re-log; changed evidence logs again.
+- **D3. Diagnose from evidence — RESOLVED 2026-08-02 from Claude session JSONLs**
+  (`~/.claude/projects/**/*.jsonl` carry structured rate_limit entries with sessionId, cwd,
+  banner, timestamp; found by studying saaranshM/unsnooze):
+  - Failure #1 (15:10:48Z, session ce7bb791, pane wW:p1, psft_run_script): **never
+    monitored** — the pane was in no watcher's list. Coverage-model gap: strict opt-in panes
+    plus ephemeral workspaces leave every new workspace unprotected by default.
+  - Failure #2 (15:14:56Z, session 829d1239, pane wA:p1): **swallowed after detection** —
+    watcher healthy all window, banner text parses Actionable=true/high, so the drop is
+    menu-visible, not-auto, silent read error, or read-window; v0.2.0 cannot say which, the
+    deployed diag build names each. Closed as far as pre-diag evidence allows.
+  - Bonus: `herdr pane list` `agent_session` maps panes to session UUIDs for both providers —
+    the D-P8-6 spike's "unique pane→rollout mapping" exists as a first-class API lookup.
+- **D4 — approved 2026-08-02: session-file channel + menu answering + dead-session resume.**
+  All four unsnooze advantages adapted to this architecture; the StopFailure hook is held in
+  reserve as a latency upgrade only. Detailed plan below (SD-D4); decisions D-P8-13…D-P8-17.
+
+### SD-D4 implementation plan
+
+Verified data shapes this plan is built on (checked live 2026-08-02, not assumed):
+
+- Claude session files `~/.claude/projects/<munged-cwd>/<sessionId>.jsonl`: rate-limit records
+  carry `"error":"rate_limit"`, `apiErrorStatus:429`, `timestamp` (ISO event epoch),
+  `sessionId`, `cwd`, `requestId` (natural dedup key), and the banner text (tz-tagged prose,
+  e.g. "resets 4:30pm (UTC)") inside `message.content[].text`. **No reset epoch field** — the
+  reset still goes through ParseReset, but with a deterministic timezone tag and a machine
+  observation timestamp. 74 such records exist on this host; both 2026-08-01 failures are in
+  them.
+- Codex rollout files `~/.codex/sessions/YYYY/MM/DD/rollout-*-<sessionId>.jsonl`: carry
+  `rate_limits` blocks with true `resets_at` epochs, BUT the shape varies by vintage
+  (Feb files: primary window 300m + secondary 10080m; Aug files: primary 10080m,
+  secondary null) and these records are routine telemetry — `resets_at` presence is NOT an
+  exhaustion signal. The exhaustion predicate must come from a real exhausted record
+  (D-P8-18); until one is captured the Codex channel is blocked. This supersedes D-P8-6's
+  spike framing and Risk 5 (herdr DOES expose `agent_session` for codex panes — verified
+  2026-08-02).
+- `herdr pane list` / socket snapshot expose `agent_session.value` = the session UUID for both
+  providers — pane↔session correlation is an API lookup.
+- The rate-limit menu fixture shows the cursor defaulting to `❯ 1. Stop and wait for limit to
+  reset` — answering it is a verified Enter, not navigation.
+
+Decisions (revised after harden round 1 — 12 findings, all accepted; see PLAN-REVIEW-LOG.md):
+
+- **D-P8-13 Session-file channel, as a new observation type feeding the EXISTING serialized
+  loop.** New package `internal/sessionfile` produces a `SessionObservation`
+  {provider, sessionID, cwd, observedAt, resetRaw, resetAt, requestID} — NOT a LimitEvent;
+  LimitEvent requires pane+content+evidence a file record does not have. Observations are
+  resolved against a fresh pane snapshot inside the coordinator's single event loop, becoming
+  a job only for the exact live pane whose `agent_session` matches, with session/cwd/provider
+  consistency checks. **Episode identity is provider+sessionID+resetAt(epoch)** and is shared
+  with the scrape channel where computable: the herdr scrape path attaches the pane's
+  `agent_session` to its events, so both channels dedupe on the same key. Where the key is
+  NOT computable — tmux runtime, or a herdr pane with no `agent_session` yet — the scrape
+  path keeps today's pane+evidence dedup unchanged and cross-channel dedup simply does not
+  apply (legacy fallback, tested). Relative resets ("try again in 5 hours") produce
+  different epochs per observer; episode equality therefore uses tolerance matching per
+  D-P8-22. **Durability (192h jobs, v0.2.0 writers):** the episode dedup registry lives
+  in the scan sidecar (which old binaries never touch), keyed
+  provider+sessionID+resetBucket; the Job's episode field is a convenience mirror only — a
+  v0.2.0 read-modify-write cycle dropping it must not break dedup, and a test proves that
+  round trip. Job records `source: session-file|scrape`.
+  **The channel itself is a gated feature:** `providers.session_file_channel: false` default
+  (flag + YAML key). The channel, its sidecar, and `revive` all REQUIRE a persistent state
+  path — with `--state-file off` they refuse to start with a clear error rather than running
+  memory-only.
+- **D-P8-14 Targeted admission, NOT blanket discovery.** `discover_agent_panes` as originally
+  specified was an authorization expansion disguised as opt-in (an agent label is not an
+  input-injection boundary). Replaced: a pane outside `monitoring.panes` may be admitted ONLY
+  when a fresh session-file observation names its exact `agent_session`, behind
+  `monitoring.admit_session_matches: true` (flag + YAML; default off; units may set it after
+  the Phase-A live gate). Admission is per-episode, logged, obeys D-P8-9 and self-pane
+  exclusion, and requires a complete pane snapshot with exactly one match — zero or multiple
+  matches, or a partial snapshot, fail closed with a diagnostic. Prerequisite: both herdr
+  adapters must parse and retain `agent_session` (they currently discard it).
+- **D-P8-15 Menu answering — default OFF, single-shot, persisted, TOCTOU documented.** Herdr
+  offers no revision-conditional send, so read-then-Enter is inherently racy; automatic
+  answering therefore ships disabled (`resume.answer_limit_menu: false`). When enabled:
+  require the literal question line AND `❯` on "Stop and wait for limit to reset" in a read
+  taken immediately before the send; persist the attempt (session+episode) BEFORE sending so
+  a daemon restart cannot re-answer; send exactly one Enter; re-read and log the outcome.
+  Dry-run = log-only, no send, no cleared-menu expectation. Any other menu state stays
+  fail-closed. If Herdr later ships a revision-conditional send, switch to it and drop the
+  caveat.
+- **D-P8-16 Dead-session resume — operator verb first, automation later.** Automatic spawn
+  has an unfixable check-then-act race against other watchers, user resumes, and delayed
+  metadata without a cross-process per-session lease. Phase D therefore ships
+  `herdr-auto-resume revive <session-id-prefix>`: an explicit operator command that takes a
+  per-session lease file, re-checks an unfiltered fresh pane snapshot for the session under
+  the lease, refuses on any match, then spawns `claude --resume <id>` in a daemon-owned
+  workspace and hands the pane to the normal verify path. Automation on top of the proven
+  lease + ATTACHING-intent mechanics is a later, separately reviewed change. Claude only;
+  Codex deferred.
+- **D-P8-17 Version scope: v0.3.0 = the whole phase-8-flip branch (S2 + diagnostics + D4
+  phases that pass their gates).** Supersedes "the flip ships alone". Each risky feature is
+  additionally gated per D-P8-18; the flip itself stays soak-gated and one-word revertible.
+- **D-P8-18 Per-feature live gates — nothing ships enabled on unit-test evidence alone.**
+  Phase A (Claude live-pane channel): enabled after one live drill where a session-file
+  observation creates a job for a monitored pane. `admit_session_matches`: enabled only after
+  a live drill admitting an unmonitored pane correctly. Menu answering: only after a live
+  menu drill on a real limit menu. Codex channel: blocked until a REAL exhausted rollout
+  record is captured (shapes vary across versions — Feb files show primary=300/secondary=10080,
+  reviewer-inspected Aug files show primary=10080/secondary=null; `resets_at` presence is
+  routine telemetry, NOT an exhaustion signal — the predicate must come from a real record).
+  `revive`: after a live dead-session drill. Features whose gate has not passed stay off in
+  shipped units.
+- **D-P8-21 Sidecar concurrency contract.** The sidecar is shared mutable state between the
+  watcher and the `revive` process, so atomic rename alone is not enough. Contract: every
+  sidecar mutation is a read-modify-write under an exclusive flock on `<state>.scan.lock`
+  (same discipline as the store's transactional `.lock`); fixed lock ordering everywhere —
+  sidecar lock first, then the store `.lock`, never the reverse; writes that span both files
+  (pending observation → job) go PENDING(sidecar) → job(store) → COMMITTED(sidecar), and
+  startup reconciles PENDING-without-job (retry) and job-without-COMMITTED (mark committed)
+  so a crash between the two writes converges instead of double-creating. Tests: concurrent
+  watcher+revive mutation, lost-update (two readers, both write), crash at each seam.
+- **D-P8-22 Episode equality uses tolerance matching, not buckets.** A 5-minute floor has a
+  boundary cliff: observations seconds apart can straddle it, and the same relative banner
+  observed minutes apart derives different epochs regardless of bucket size. Replaced: two
+  observations are the same episode iff same provider+sessionID and |resetAtA − resetAtB| ≤
+  10 minutes; the registry stores the first-seen resetAt per episode and matches new
+  observations by nearest-within-tolerance. Boundary tests replace bucket tests (4:59:59 vs
+  5:00:01 apart; same relative banner observed 3 minutes apart on both channels).
+- **D-P8-23 Session-identity features require a session-identity runtime.** Config
+  validation rejects `session_file_channel`, `admit_session_matches`, and
+  `answer_limit_menu` (its persisted-attempt key needs a session) when runtime is tmux, at
+  startup, with an error naming the flag and the reason. Tmux keeps today's scrape-only
+  behavior; no silent degradation.
+- **D-P8-19 Scanner cursors live in a versioned SIDECAR, not the state file.**
+  `manager.go` saves fresh `File{Version, Jobs}` literals — any additive cursor field would be
+  silently erased on the next job save, and a v0.2.0 rollback would drop it without tripping
+  the upper-version guard. Cursors go to `<state>.scan.json` (own version, atomic rename, same
+  0600/backup discipline). Bootstrap: start at EOF with a bounded lookback (default 2h) so
+  first startup cannot replay 74 historical records — with `revive` manual-only, replay cost
+  is bounded even if misconfigured. Ordering: persist observation intent before any side
+  effect; advance the cursor only after durable acceptance. Tests cover crash between intent
+  and side effect, partial lines, truncation, and inode replacement (rotation).
+- **D-P8-20 File discovery is strict.** Claude: only `~/.claude/projects/<project>/<uuid>.jsonl`
+  top-level session files; records with `isSidechain: true` are rejected (subagent sidechains
+  are not resumable sessions); malformed session IDs rejected. Codex: only
+  `rollout-*-<uuid>.jsonl` under the dated tree.
+
+Steps (TDD; gate per commit; phases are independently shippable):
+
+- **D4.0** Both herdr adapters parse and retain `agent_session` (prerequisite for all
+  correlation). Fixture-driven tests for CLI and socket transports.
+- **D4.1 (Phase A)** `internal/sessionfile` Claude scanner: strict discovery (D-P8-20),
+  sidecar cursors with EOF+lookback bootstrap (D-P8-19), requestId dedup,
+  SessionObservation output. Fixtures are the real sanitized 2026-08-01 records; the
+  acceptance test is that BOTH failure events yield observations with correct session, cwd,
+  and reset (16:30Z).
+- **D4.2 (Phase A)** Episode identity per revised D-P8-13: registry in the scan sidecar,
+  convenience mirror on Job, tolerance-based episode matching (D-P8-22), legacy fallback where the key is
+  not computable, sidecar mutations under the D-P8-21 lock contract. Tests: delayed-file-after-scrape, scrape-after-file, tmux no-session
+  fallback, relative-reset observed at different times, and the v0.2.0 read-modify-write
+  round trip (old writer drops the Job field; dedup must survive via the sidecar).
+- **D4.3 (Phase A)** Coordinator wiring: observations resolved in the event loop against a
+  fresh snapshot; monitored-pane match → job via existing sink; consistency checks.
+  **Zero matches is NOT terminal:** the observation persists as pending in the sidecar and
+  is retried against fresh snapshots until expiry (herdr populates `agent_session`
+  asynchronously — a lagging label must not lose the event). Expiry and freshness rules:
+  a pending observation expires at min(resetAt + verify_timeout, observedAt + 24h); no job
+  is ever created for an episode whose resetAt is already more than `margin` in the past
+  (stale bootstrap evidence from the 2h lookback must not resume a recovered session).
+  Cursor advance = observation durably persisted (accepted or pending), never
+  matched-or-dropped. Tests: lagging agent_session then match; expiry; stale-reset
+  rejection; crash between persist and cursor advance. Live drill, then enable Phase A in
+  production (D-P8-12 pattern).
+- **D4.4 (Phase B)** `admit_session_matches` per D-P8-14 with its live gate.
+- **D4.5 (Phase C)** Menu answering per D-P8-15 (default off), tests on the committed fixture
+  plus adversarial variants (cursor on option 2, unrelated menu, missing question line,
+  restart-no-reanswer), live gate before any unit enables it.
+- **D4.6 (Phase D)** `revive` verb per D-P8-16, with the crash-safe attach protocol IN this
+  step, not deferred: persist an ATTACHING intent (session, timestamp, lease) BEFORE spawning;
+  transition to ATTACHED/job on success; on startup, reconcile any dangling ATTACHING record
+  against a fresh unfiltered snapshot before honoring new revives. Tests: concurrent revive;
+  pane appears between check and spawn under the lease; stale lease recovery; crash
+  immediately BEFORE spawn (intent present, no pane) and immediately AFTER spawn (pane
+  present, no job) — both must reconcile without a duplicate attach.
+- **D4.7** Codex scanner — BLOCKED until a real exhausted rollout fixture exists; then as
+  D4.1 for Codex with epoch resets.
+- **D4.8** SD closes per D-P8-11 on the first real end-to-end resume through any gated-on
+  channel; each phase's gate result recorded in PROGRESS.md.
+
+### S2 — v0.3.0: the flip (only after S1 is clean AND SD is closed)
 
 10. Transport-default resolution moves behind one shared helper used by `run` AND `doctor`,
     implementing the D-P8-8 matrix; `--transport cli` remains fully supported. Tests: every row

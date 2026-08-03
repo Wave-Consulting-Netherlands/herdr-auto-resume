@@ -17,6 +17,7 @@ import (
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/sessionfile"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/terminal"
 )
@@ -26,12 +27,13 @@ type LimitEvent = coordinator.LimitEvent
 
 // Config controls scheduling and validation.
 type Config struct {
-	Provider      string
-	Margin        time.Duration
-	MaxHorizon    time.Duration
-	VerifyTimeout time.Duration
-	ReadLines     int
-	DryRun        bool
+	Provider        string
+	Margin          time.Duration
+	MaxHorizon      time.Duration
+	VerifyTimeout   time.Duration
+	ReadLines       int
+	DryRun          bool
+	AnswerLimitMenu bool
 }
 
 type Option func(*Manager)
@@ -78,17 +80,22 @@ func WithProviders(registry *provider.Registry) Option {
 	}
 }
 
+func WithEpisodeRegistry(registry *sessionfile.EpisodeRegistry) Option {
+	return func(m *Manager) { m.episodeRegistry = registry }
+}
+
 type Manager struct {
-	rt        runtime.Runtime
-	store     store.Store
-	cfg       Config
-	clock     func() time.Time
-	sleep     func(time.Duration)
-	nextID    func() string
-	logw      io.Writer
-	file      store.File
-	lastMod   time.Time
-	providers *provider.Registry
+	rt              runtime.Runtime
+	store           store.Store
+	cfg             Config
+	clock           func() time.Time
+	sleep           func(time.Duration)
+	nextID          func() string
+	logw            io.Writer
+	file            store.File
+	lastMod         time.Time
+	providers       *provider.Registry
+	episodeRegistry *sessionfile.EpisodeRegistry
 }
 
 func defaultRegistry() *provider.Registry {
@@ -158,9 +165,38 @@ func (m *Manager) Snapshot() []store.Job {
 	return jobs
 }
 
+// EpisodeIDs returns durable episode mirrors for startup sidecar reconciliation.
+func (m *Manager) EpisodeIDs() map[string]struct{} {
+	ids := make(map[string]struct{})
+	for _, job := range m.file.Jobs {
+		if job.Episode != "" {
+			ids[job.Episode] = struct{}{}
+		}
+	}
+	return ids
+}
+
 // HandleLimit implements coordinator.JobSink. It is level-triggered and owns a
 // known-reset episode even when persistence fails only after the attempt to save.
 func (m *Manager) HandleLimit(event LimitEvent) bool {
+	if m.episodeRegistry != nil && event.EpisodeID == "" && event.Pane.AgentSessionID != "" && !event.ResetTime.IsZero() {
+		observation := sessionfile.SessionObservation{
+			Provider: event.Provider, SessionID: event.Pane.AgentSessionID,
+			ObservedAt: event.ObservedAt, ResetRaw: event.ResetsRaw, ResetAt: event.ResetTime,
+		}
+		if observation.Provider == "" {
+			observation.Provider = m.cfg.Provider
+		}
+		episode, duplicate, err := m.episodeRegistry.Resolve(observation)
+		if err != nil {
+			m.logf("episode registry: %v", err)
+			return false
+		}
+		event.EpisodeID = episode.ID
+		if duplicate {
+			return true
+		}
+	}
 	owned := false
 	if err := store.WithLock(m.store, func() error {
 		m.reloadLocked()
@@ -171,6 +207,43 @@ func (m *Manager) HandleLimit(event LimitEvent) bool {
 		return false
 	}
 	return owned
+}
+
+// recordMenuAttempt durably claims the single menu action under the existing
+// store lock. A second watcher that observes the same episode loses the claim
+// before either process can send a key.
+func (m *Manager) recordMenuAttempt(jobID string, attempt *store.MenuAttempt) (bool, error) {
+	recorded := false
+	err := store.WithLock(m.store, func() error {
+		loaded, err := m.store.Load()
+		if err != nil {
+			return err
+		}
+		normalizeFile(&loaded)
+		for i := range loaded.Jobs {
+			if loaded.Jobs[i].ID != jobID {
+				continue
+			}
+			if loaded.Jobs[i].MenuAttempt != nil || loaded.Jobs[i].State != store.StateValidating {
+				m.file = loaded
+				m.noteModTime()
+				return nil
+			}
+			loaded.Jobs[i].MenuAttempt = attempt
+			if err := m.store.Save(loaded); err != nil {
+				return err
+			}
+			m.file = loaded
+			m.noteModTime()
+			recorded = true
+			return nil
+		}
+		return nil
+	})
+	if err != nil {
+		m.logf("menu attempt for job %s: %v", jobID, err)
+	}
+	return recorded, err
 }
 
 func (m *Manager) handleLimitLocked(event LimitEvent) bool {
@@ -185,6 +258,10 @@ func (m *Manager) handleLimitLocked(event LimitEvent) bool {
 	if providerName == "" {
 		providerName = m.cfg.Provider
 	}
+	source := event.Source
+	if source == "" {
+		source = "scrape"
+	}
 	evidence := event.Evidence
 	if evidence == "" {
 		if current := m.providers.Resolve(event.Pane.Agent, event.Content); current != nil {
@@ -193,6 +270,9 @@ func (m *Manager) handleLimitLocked(event LimitEvent) bool {
 	}
 	evidenceHash := hashEvidence(evidence)
 	for _, job := range m.file.Jobs {
+		if event.EpisodeID != "" && job.Episode == event.EpisodeID {
+			return true
+		}
 		if job.PaneID != event.Pane.ID {
 			continue
 		}
@@ -222,6 +302,8 @@ func (m *Manager) handleLimitLocked(event LimitEvent) bool {
 		EvidenceHash:  evidenceHash,
 		EvidenceAtUTC: now.UTC(),
 		DryRun:        m.cfg.DryRun,
+		Episode:       event.EpisodeID,
+		Source:        source,
 	}
 	if info, err := m.rt.ProcessInfo(event.Pane.ID); err == nil {
 		job.ProcCommand = info.Command
