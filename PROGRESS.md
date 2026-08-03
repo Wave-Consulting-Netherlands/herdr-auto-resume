@@ -602,6 +602,24 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     untouched for the whole window.
   - S1 and SD are both closed; S2 (socket default flip, step 14 docs, v0.3.0) is unblocked.
 
+- 2026-08-03, **v0.3.0 RELEASED.**
+  - Merged phase-8-flip (34 commits) into master, reconciling with the user's PR #1 merge
+    rather than overwriting it; gate re-run post-merge (544 tests, -race). CI on 46bb8ae green
+    including release-dry-run — the gate that proves goreleaser before tagging.
+  - `scripts/release.sh 0.3.0` → tag → Release workflow success → 4 tarballs + checksums.
+    linux_arm64 downloaded, `sha256sum -c` OK, `version` prints
+    `0.3.0 (commit 46bb8ae, built 2026-08-03T19:47:07Z, go1.23.12)`.
+  - Deployment: released binary installed to ~/.local/bin; BOTH units moved off the hand-built
+    `-diag` binary (production also dropped its explicit `--transport cli`, so it now takes the
+    v0.3.0 socket default); soak stopped/started around the binary replace (Text file busy);
+    the `-diag` binary is deleted. doctor on the default transport shows socket-mode PASS
+    (ping protocol 17, snapshot 12 panes, events subscription); `--transport cli` still PASSes
+    as the explicit opt-out. Job state survived the upgrade intact.
+  - Contents: S2 (transport precedence, --wait-for-panes, pane re-enablement, store version
+    guard), SD diagnostics, SD-D4 phases A–D (session-file channel, targeted admission,
+    single-shot menu answering, revive), docs/packaging.
+  - Remaining per D-P8-17: 12h post-flip confirmation before S3.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
