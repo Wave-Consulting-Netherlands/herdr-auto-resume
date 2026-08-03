@@ -22,9 +22,10 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
    and remediated with permanent regression coverage.
 9. **Closed in Phase 6.** Socket acquisition, reconnect/resync, pane-move, negative, and soak
    acceptance drills passed; the event-driven acquisition miss is recorded as resolved.
-10. **Default transport flip after soak.** Keep --transport cli as the default until the
-    explicit socket-mode soak and live drills are clean; then make the default flip a small,
-    separately reviewed change.
+10. **Closed 2026-08-03 — default transport flip after soak.** The 48h socket soak and
+    aged-connection drill passed (job `cdc0f5e1`: detection over a 50h-old event stream, durable
+    WAITING job, exactly one resume, “resume verified”, and RESUMED). Production is now on the
+    socket default; `--transport cli` remains the explicit opt-out.
 17. **Audit the herdr agent API against our hand-rolled equivalents (2026-08-02).** Protocol 17
     exposes agent-level surface we never enumerated — we subscribed to `pane.output_matched`
     and stopped. Concretely, each of these has a hand-built counterpart in this repo:

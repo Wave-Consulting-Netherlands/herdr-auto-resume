@@ -11,8 +11,7 @@
 		<string>run</string>
 		<string>--config</string>
 		<string>/Users/your-user/.config/herdr-auto-resume/config.yaml</string>
-		<string>--transport</string>
-		<string>cli</string>
+		<string>--wait-for-panes</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
