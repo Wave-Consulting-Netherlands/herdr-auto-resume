@@ -421,7 +421,7 @@ Steps (TDD; gate per commit; phases are independently shippable):
 - **D4.8** SD closes per D-P8-11 on the first real end-to-end resume through any gated-on
   channel; each phase's gate result recorded in PROGRESS.md.
 
-### S2 — v0.3.0: the flip (only after S1 is clean AND SD is closed)
+### S2 — v0.3.0: the flip — DONE 2026-08-04 (steps 10–16 complete; see PROGRESS.md)
 
 10. Transport-default resolution moves behind one shared helper used by `run` AND `doctor`,
     implementing the D-P8-8 matrix; `--transport cli` remains fully supported. Tests: every row

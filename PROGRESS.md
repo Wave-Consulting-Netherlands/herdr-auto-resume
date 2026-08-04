@@ -620,6 +620,18 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     single-shot menu answering, revive), docs/packaging.
   - Remaining per D-P8-17: 12h post-flip confirmation before S3.
 
+- 2026-08-04, **S2 step 16 CLOSED — 12h post-flip confirmation PASSED.**
+  - Window measured from the stricter of the two clocks: not the 16:27Z config/unit flip but
+    the 19:49:20Z restart onto the *released* v0.3.0 binary, so no hour is credited to the
+    hand-built binary. Closed 07:49Z.
+  - Evidence over the full 12h02m: `ActiveState=active`, **NRestarts=0** on both units,
+    **zero warning-or-worse journal entries** since the deploy, and unbroken 10-minute
+    `status: panes=4` ticks through 07:49:20Z.
+  - Post-window doctor on the default transport: socket-mode PASS (ping protocol 17, snapshot
+    decoded 13 panes, events `layout.updated subscription_started`).
+  - The socket default is confirmed on production; the `--transport cli` revert in the unit
+    stays available but is no longer the expected path. **S3 (v0.4.0) is unblocked.**
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
