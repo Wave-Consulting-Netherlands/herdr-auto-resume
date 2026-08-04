@@ -47,6 +47,27 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     RESET TIME (parsing stays), and none cover the session-file cases (limit with no pane,
     closed workspace), so the file channel remains the authority. Do this as a post-v0.3.0
     refactor with drills per replacement, not a rewrite.
+18. **DEFECT (found 2026-08-04, live): the identity gate parks menu-visible panes before the
+    menu-answering branch can run — `answer_limit_menu` is unreachable in its own use case.**
+    Two real sessions (w1F:p1 `dynamic-transfer2comp`, w1B:p1 `psft_pcode_diff`) were detected
+    correctly via the session-file channel, admitted, and scheduled with high confidence for
+    11:11Z. At the resume moment both parked MANUAL_REQUIRED, attempts=0,
+    `last_validation: "pane is not claude"` — with `answer_limit_menu: true` configured.
+    Cause: `internal/jobs/validate.go:75` runs `current.DetectContent(content)` and parks at
+    line 76; the `AnswerLimitMenu` branch is line 91, downstream. When the limit menu owns the
+    whole viewport, a 200-line `--source detection` read returns ~41 lines containing **no
+    Claude chrome at all** (verified live on w1F:p1), so `detection.IsClaudeCode` is false and
+    the gate fires first. The feature built for menu panes can never see a menu pane whose
+    menu covers the screen.
+    Fix direction: test `looksLikeLimitMenu(content)` before the generic content-identity gate
+    (the menu text is itself a Claude-specific marker), or let a job whose `agent`/`terminal_id`
+    and stored provider still match satisfy identity without re-detecting chrome. Keep every
+    other gate — process, cwd, single-shot — unchanged; identity must still be established,
+    just not exclusively from chrome the menu hides. Needs a drill against a real menu pane,
+    plus a regression fixture of a menu-only viewport.
+    Secondary: the park is **silent** — no journal line named the pane or the reason, so this
+    was only visible by dumping state.json. The D-P8-10 diagnostics cover detection-time
+    non-actions; extend the same one-line-per-reason treatment to resume-time parks.
 15. **Event-hook pane pickup (from mo-arvan/herdr-claude-auto-retry, reviewed 2026-08-02).**
     That plugin registers herdr `[[events]]` hooks on agent-detected and picks up new agent
     panes at creation, so coverage never depends on config or on a limit having fired. Our
