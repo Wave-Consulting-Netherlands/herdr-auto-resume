@@ -2,8 +2,17 @@
 
 Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked up.
 
-1. **clear/ack command for parked jobs.** A pane with any non-RESUMED terminal job is parked;
-   add a safe CLI verb to acknowledge or clear a handled job without hand-editing state.
+1. **clear/ack command for parked jobs — PROMOTED to next-up (2026-08-05).** A pane with any
+   non-RESUMED terminal job is parked; add a safe CLI verb to acknowledge or clear a handled
+   job without hand-editing state. No longer hypothetical: `manager.go:279` returns "already
+   owned" for any same-pane job that is terminal-but-not-RESUMED, so a stale park **silently
+   excludes that pane from all future detection**. Found live on 2026-08-05 — four healthy,
+   actively-working panes (w1F, w1B, w0, wZ) still carried MANUAL_REQUIRED jobs from earlier
+   limits, which would have made the v0.3.1 menu fix inapplicable to the very two panes it was
+   written for. Cleared by hand-editing state.json with the watcher stopped, because that is
+   the only remedy that exists today. The verb must also make the exclusion visible (`status`
+   should say a pane is parked and why) — a silent permanent exclusion is the worst property
+   of the current behaviour.
 2. **Closed in Phase 7 (D-P7-6).** Status RESET(local) now renders in the caller-provided
    local timezone; the Europe/Amsterdam regression prevents a UTC display regression.
 3. **Closed in Phase 4.** Validation gate 9 sensitivity is covered by the committed regression

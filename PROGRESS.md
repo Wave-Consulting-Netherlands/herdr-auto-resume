@@ -655,6 +655,18 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
   - Both live panes were cleared by hand (menu dismissed, `continue` sent) and resumed work.
   - **Open: the live gate.** Tests pass, but this class of defect has now twice survived a
     green suite. Not proven until a real menu pane resumes through the fix.
+  - **v0.3.1 released and deployed 2026-08-05.** CI on 246b91c green (test + release-dry-run);
+    `scripts/release.sh 0.3.1` → 4 tarballs + checksums; linux_arm64 `sha256sum -c` OK and
+    `0.3.1 (commit 246b91c, built 2026-08-05T10:09:30Z)`; both units restarted on it; doctor
+    PASS on the socket default (protocol 17, 14 panes, events subscribed); job state survived.
+  - **Second defect found during the deploy — stale parks silently exclude a pane forever.**
+    `manager.go:279` treats any same-pane job that is terminal-but-not-RESUMED as already
+    owning the pane, so it never creates a new one. Four panes (w1F, w1B, w0, wZ) still carried
+    MANUAL_REQUIRED jobs from earlier limits while running healthy — meaning the v0.3.1 fix
+    could never have applied to the two panes it was written for. Cleared by hand with the
+    watcher stopped (backup `state.json.bak-20260805`); 8 jobs → 4, all RESUMED. This is
+    exactly the gap BACKLOG 1's `ack` verb exists to close, and it is now the argument for
+    pulling that item forward: today the only remedy is hand-editing production state.
 
 ## Project status
 
