@@ -59,7 +59,7 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 			return doctorCommand(args[1:], stdout, stderr)
 		case "detect":
 			return detectCommand(args[1:], stdout, stderr)
-		case "status", "inspect", "cancel":
+		case "status", "inspect", "cancel", "ack":
 			return jobCommand(args, stdout, stderr)
 		case "revive":
 			return reviveCommand(args, stdout, stderr)

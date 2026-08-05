@@ -276,7 +276,11 @@ func (m *Manager) handleLimitLocked(event LimitEvent) bool {
 		if job.PaneID != event.Pane.ID {
 			continue
 		}
-		if !job.State.Terminal() || job.State != store.StateResumed || job.EvidenceHash == evidenceHash {
+		// Acknowledging a terminal park releases the pane only for a genuinely
+		// new episode. Identical evidence remains suppressed. RESUMED jobs keep
+		// their historical changed-evidence behavior; other terminal jobs stay
+		// parked unless explicitly acknowledged.
+		if !job.State.Terminal() || job.EvidenceHash == evidenceHash || (job.State != store.StateResumed && job.AckedAt.IsZero()) {
 			return true
 		}
 	}

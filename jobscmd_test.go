@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	jobmanager "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/jobs"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
 
@@ -144,5 +147,248 @@ func TestJobCommandUsesStateFileFromConfigWhenFlagUnset(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "abcdefgh") {
 		t.Fatalf("status output = %q, want configured state file", out.String())
+	}
+}
+
+func TestAckTransitionMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		state      store.JobState
+		wantExit   int
+		wantState  store.JobState
+		wantReason string
+	}{
+		{name: "manual required", state: store.StateManualRequired, wantExit: 0, wantState: store.StateManualRequired, wantReason: "resumed by hand"},
+		{name: "session gone", state: store.StateSessionGone, wantExit: 0, wantState: store.StateSessionGone, wantReason: "acknowledged by operator"},
+		{name: "failed", state: store.StateFailed, wantExit: 0, wantState: store.StateFailed, wantReason: "acknowledged by operator"},
+		{name: "cancelled", state: store.StateCancelled, wantExit: 0, wantState: store.StateCancelled, wantReason: "acknowledged by operator"},
+		{name: "disabled", state: store.StateDisabled, wantExit: 0, wantState: store.StateDisabled, wantReason: "acknowledged by operator"},
+		{name: "resumed", state: store.StateResumed, wantExit: 1, wantState: store.StateResumed},
+		{name: "waiting", state: store.StateWaiting, wantExit: 1, wantState: store.StateWaiting},
+		{name: "validating", state: store.StateValidating, wantExit: 1, wantState: store.StateValidating},
+		{name: "resuming", state: store.StateResuming, wantExit: 1, wantState: store.StateResuming},
+		{name: "verifying", state: store.StateVerifyingResume, wantExit: 1, wantState: store.StateVerifyingResume},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			if err := store.NewJSONStore(path).Save(store.File{Version: 1, Jobs: []store.Job{{ID: "job-ack", State: tc.state}}}); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"ack", "job-ack", "--state-file", path}
+			if tc.name == "manual required" {
+				args = append(args, "--reason", "  resumed by hand  ")
+			}
+			var out, errOut bytes.Buffer
+			if got := jobCommand(args, &out, &errOut); got != tc.wantExit {
+				t.Fatalf("exit=%d stdout=%q stderr=%q, want %d", got, out.String(), errOut.String(), tc.wantExit)
+			}
+			file, err := store.NewJSONStore(path).Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			job := file.Jobs[0]
+			if job.State != tc.wantState {
+				t.Fatalf("state=%s, want %s", job.State, tc.wantState)
+			}
+			if tc.wantExit == 0 {
+				if job.AckedAt.IsZero() || job.AckedReason != tc.wantReason {
+					t.Fatalf("ack metadata=%#v, want timestamp and reason %q", job, tc.wantReason)
+				}
+			} else if !job.AckedAt.IsZero() || job.AckedReason != "" {
+				t.Fatalf("rejected ack mutated metadata: %#v", job)
+			}
+		})
+	}
+}
+
+func TestAckRejectsInvalidReason(t *testing.T) {
+	for _, reason := range []string{"", "   ", strings.Repeat("x", 257)} {
+		t.Run(fmt.Sprintf("reason-%d", len(reason)), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			if err := store.NewJSONStore(path).Save(store.File{Version: 1, Jobs: []store.Job{{ID: "job-ack", State: store.StateFailed}}}); err != nil {
+				t.Fatal(err)
+			}
+			var out, errOut bytes.Buffer
+			if got := jobCommand([]string{"ack", "job-ack", "--reason", reason, "--state-file", path}, &out, &errOut); got != 2 || !strings.Contains(errOut.String(), "reason") {
+				t.Fatalf("exit=%d stdout=%q stderr=%q, want reason validation error", got, out.String(), errOut.String())
+			}
+		})
+	}
+}
+
+func TestAckAlreadyAckedIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	ackedAt := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	if err := store.NewJSONStore(path).Save(store.File{Version: 1, Jobs: []store.Job{{ID: "job-ack", State: store.StateFailed, AckedAt: ackedAt, AckedReason: "original"}}}); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if got := jobCommand([]string{"ack", "job-ack", "--reason", "replacement", "--state-file", path}, &out, &errOut); got != 0 || !strings.Contains(out.String(), "already acknowledged") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", got, out.String(), errOut.String())
+	}
+	file, err := store.NewJSONStore(path).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !file.Jobs[0].AckedAt.Equal(ackedAt) || file.Jobs[0].AckedReason != "original" {
+		t.Fatalf("idempotent ack changed metadata: %#v", file.Jobs[0])
+	}
+}
+
+func TestAckPrefixResolution(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := store.NewJSONStore(path).Save(store.File{Version: 1, Jobs: []store.Job{
+		{ID: "abcdef01", State: store.StateFailed},
+		{ID: "abcdef02", State: store.StateFailed},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		id   string
+		want string
+	}{
+		{name: "ambiguous", id: "abcdef", want: "ambiguous"},
+		{name: "unknown", id: "missing", want: "no job matches"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			if got := jobCommand([]string{"ack", tc.id, "--state-file", path}, &out, &errOut); got != 1 || !strings.Contains(errOut.String(), tc.want) {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", got, out.String(), errOut.String())
+			}
+		})
+	}
+}
+
+func TestStatusAndInspectShowParkedReason(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := store.NewJSONStore(path).Save(store.File{Version: 1, Jobs: []store.Job{{
+		ID: "parked-job", PaneID: "w1:p1", State: store.StateManualRequired, LastValidation: "session ended before verification",
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	var statusOut, errOut bytes.Buffer
+	if got := jobCommand([]string{"status", "--state-file", path}, &statusOut, &errOut); got != 0 || !strings.Contains(statusOut.String(), "PARKED") || !strings.Contains(statusOut.String(), "session ended before verification") {
+		t.Fatalf("status exit=%d output=%q stderr=%q", got, statusOut.String(), errOut.String())
+	}
+	var inspectOut bytes.Buffer
+	if got := jobCommand([]string{"inspect", "parked", "--state-file", path}, &inspectOut, &errOut); got != 0 {
+		t.Fatalf("inspect exit=%d stderr=%q", got, errOut.String())
+	}
+	var inspected map[string]any
+	if err := json.Unmarshal(inspectOut.Bytes(), &inspected); err != nil {
+		t.Fatal(err)
+	}
+	if inspected["parked"] != true || inspected["park_reason"] != "session ended before verification" {
+		t.Fatalf("inspect parked fields=%#v", inspected)
+	}
+}
+
+type transitionStore struct {
+	state      store.File
+	staleRead  bool
+	locked     bool
+	transition bool
+	saveCount  int
+}
+
+func (s *transitionStore) Load() (store.File, error) {
+	if s.locked {
+		return s.state, nil
+	}
+	if !s.staleRead {
+		s.staleRead = true
+		return s.state, nil
+	}
+	return s.state, nil
+}
+
+func (s *transitionStore) Save(file store.File) error {
+	s.saveCount++
+	s.state = file
+	return nil
+}
+
+func (s *transitionStore) Path() string { return "" }
+
+func (s *transitionStore) WithLock(fn func() error) error {
+	if !s.transition {
+		s.state.Jobs[0].State = store.StateResumed
+		s.transition = true
+	}
+	s.locked = true
+	defer func() { s.locked = false }()
+	return fn()
+}
+
+func TestAckRechecksStateInsideLockAfterWatcherTransition(t *testing.T) {
+	st := &transitionStore{state: store.File{Version: 1, Jobs: []store.Job{{ID: "job-ack", State: store.StateFailed}}}}
+	var out, errOut bytes.Buffer
+	if got := ackJob("job-ack", "acknowledged by operator", st, &out, &errOut); got != 1 || !strings.Contains(errOut.String(), "RESUMED") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", got, out.String(), errOut.String())
+	}
+	if st.saveCount != 0 || st.state.Jobs[0].State != store.StateResumed || !st.state.Jobs[0].AckedAt.IsZero() {
+		t.Fatalf("ack clobbered concurrent transition: saves=%d state=%#v", st.saveCount, st.state.Jobs[0])
+	}
+}
+
+func TestAckUnparksPaneAfterWatcherReloadWithChangedEvidence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	st := store.NewJSONStore(path)
+	if err := st.Save(store.File{Version: 1, Jobs: []store.Job{{
+		ID: "old-job", PaneID: "w1:p1", State: store.StateManualRequired,
+		EvidenceHash: "old-evidence", LastValidation: "resumed manually",
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	if got := jobCommand([]string{"ack", "old-job", "--reason", "menu answered manually", "--state-file", path}, &out, &errOut); got != 0 {
+		t.Fatalf("ack exit=%d stdout=%q stderr=%q", got, out.String(), errOut.String())
+	}
+
+	reloaded := jobmanager.New(&runtime.Fake{}, st, jobmanager.Config{Provider: "claude"},
+		jobmanager.WithIDGenerator(func() string { return "new-job" }),
+		jobmanager.WithClock(func() time.Time { return time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC) }))
+	if !reloaded.HandleLimit(jobmanager.LimitEvent{
+		Pane:       runtime.Pane{ID: "w1:p1", Agent: "claude"},
+		ResetTime:  time.Date(2026, 8, 5, 13, 0, 0, 0, time.UTC),
+		Evidence:   "new-evidence",
+		ObservedAt: time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC),
+	}) {
+		t.Fatal("changed evidence was not scheduled after watcher reload")
+	}
+	file, err := st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Jobs) != 2 || file.Jobs[1].ID != "new-job" || file.Jobs[1].State != store.StateWaiting {
+		t.Fatalf("reloaded state=%#v, want old acked job plus new waiting job", file.Jobs)
+	}
+}
+
+func TestJSONStoreRoundTripsAckMetadataAndLoadsV02Shape(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	data := []byte(`{"version":1,"jobs":[{"id":"old-job","state":"MANUAL_REQUIRED","acked_at":"2026-08-05T12:00:00Z","acked_reason":"resumed by hand"}]}`)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.NewJSONStore(path).Load()
+	if err != nil || len(file.Jobs) != 1 || file.Jobs[0].AckedReason != "resumed by hand" || file.Jobs[0].AckedAt.IsZero() {
+		t.Fatalf("loaded ack metadata=%#v err=%v", file, err)
+	}
+	if err := store.NewJSONStore(path).Save(file); err != nil {
+		t.Fatal(err)
+	}
+	roundTrip, err := store.NewJSONStore(path).Load()
+	if err != nil || !roundTrip.Jobs[0].AckedAt.Equal(file.Jobs[0].AckedAt) || roundTrip.Jobs[0].AckedReason != "resumed by hand" {
+		t.Fatalf("round-trip ack metadata=%#v err=%v", roundTrip, err)
+	}
+
+	v02Path := filepath.Join(t.TempDir(), "v02-state.json")
+	if err := os.WriteFile(v02Path, []byte(`{"version":1,"jobs":[{"id":"v02-job","state":"WAITING"}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if loaded, err := store.NewJSONStore(v02Path).Load(); err != nil || len(loaded.Jobs) != 1 || loaded.Jobs[0].AckedReason != "" || !loaded.Jobs[0].AckedAt.IsZero() {
+		t.Fatalf("v0.2-shaped state load=%#v err=%v", loaded, err)
 	}
 }

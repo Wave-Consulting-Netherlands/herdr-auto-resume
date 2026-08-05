@@ -56,6 +56,8 @@ type Job struct {
 	LastError         string       `json:"last_error"`
 	EvidenceHash      string       `json:"evidence_hash"`
 	EvidenceAtUTC     time.Time    `json:"evidence_at_utc"`
+	AckedAt           time.Time    `json:"acked_at,omitempty"`
+	AckedReason       string       `json:"acked_reason,omitempty"`
 	DryRun            bool         `json:"dry_run"`
 	Episode           string       `json:"episode,omitempty"`
 	Source            string       `json:"source,omitempty"`
