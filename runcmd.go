@@ -431,21 +431,26 @@ func filterPanesByIdentityWithPaneIDs(panes []runtimeapi.Pane, requested []strin
 const paneWaitBackoff = 5 * time.Second
 
 func listPanesStartup(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, waitForPanes bool, logw io.Writer) ([]runtimeapi.Pane, error) {
+	panes, _, _, err := listPanesStartupWithSnapshot(ctx, rt, requested, ownPaneID, waitForPanes, logw)
+	return panes, err
+}
+
+func listPanesStartupWithSnapshot(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, waitForPanes bool, logw io.Writer) ([]runtimeapi.Pane, []runtimeapi.Pane, bool, error) {
 	if waitForPanes {
-		return waitForPanesUntilReady(ctx, rt, requested, ownPaneID, logw, sleepForPanes)
+		return waitForPanesUntilReadyWithSnapshot(ctx, rt, requested, ownPaneID, logw, sleepForPanes)
 	}
 	allPanes, err := rt.ListPanes()
 	if err != nil {
-		return nil, fmt.Errorf("list panes: %w", err)
+		return nil, nil, false, fmt.Errorf("list panes: %w", err)
 	}
 	panes, excludedOwn := filterPanes(allPanes, requested, ownPaneID)
 	if excludedOwn && logw != nil {
 		fmt.Fprintf(logw, "warning: excluding own pane %s\n", ownPaneID)
 	}
 	if len(panes) == 0 {
-		return nil, errors.New("none of the requested panes were found")
+		return nil, nil, true, errors.New("none of the requested panes were found")
 	}
-	return panes, nil
+	return panes, allPanes, true, nil
 }
 
 func waitForPanes(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, logw io.Writer, wait func(context.Context, time.Duration) error) ([]runtimeapi.Pane, error) {
@@ -453,18 +458,23 @@ func waitForPanes(ctx context.Context, rt runtimeapi.Runtime, requested []string
 }
 
 func waitForPanesUntilReady(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, logw io.Writer, wait func(context.Context, time.Duration) error) ([]runtimeapi.Pane, error) {
+	panes, _, _, err := waitForPanesUntilReadyWithSnapshot(ctx, rt, requested, ownPaneID, logw, wait)
+	return panes, err
+}
+
+func waitForPanesUntilReadyWithSnapshot(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, logw io.Writer, wait func(context.Context, time.Duration) error) ([]runtimeapi.Pane, []runtimeapi.Pane, bool, error) {
 	state := ""
 	ownWarningLogged := false
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, nil, false, ctx.Err()
 		default:
 		}
 		allPanes, err := rt.ListPanes()
 		if err != nil {
 			if !retryablePaneListError(err) {
-				return nil, err
+				return nil, nil, false, err
 			}
 			if state != "error" && logw != nil {
 				fmt.Fprintf(logw, "warning: waiting for panes: %v\n", err)
@@ -480,7 +490,7 @@ func waitForPanesUntilReady(ctx context.Context, rt runtimeapi.Runtime, requeste
 				if state != "" && logw != nil {
 					fmt.Fprintln(logw, "info: panes available")
 				}
-				return panes, nil
+				return panes, allPanes, true, nil
 			}
 			if state != "empty" && logw != nil {
 				fmt.Fprintln(logw, "warning: waiting for panes: none of the requested panes were found")
@@ -488,7 +498,7 @@ func waitForPanesUntilReady(ctx context.Context, rt runtimeapi.Runtime, requeste
 			state = "empty"
 		}
 		if err := wait(ctx, paneWaitBackoff); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 	}
 }
@@ -689,7 +699,7 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	if selfPaneID == "" && inheritedSelfPaneID != "" && cfg.Runtime == "herdr" {
 		selfPaneID = inheritedSelfPaneID
 	}
-	panes, err := listPanesStartup(ctx, rt, cfg.Panes, selfPaneID, cfg.WaitForPanes, stderr)
+	panes, startupSnapshot, startupSnapshotComplete, err := listPanesStartupWithSnapshot(ctx, rt, cfg.Panes, selfPaneID, cfg.WaitForPanes, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
@@ -821,6 +831,10 @@ func runCommand(args []string, _, stderr io.Writer) int {
 			}
 		}
 	}
+	coord.AdmitAgentSnapshotPanes(startupSnapshot, startupSnapshotComplete, func(pane runtimeapi.Pane) bool {
+		_, ok := monitoredPaneIDs[pane.ID]
+		return ok
+	}, selfPaneID, admitPane, time.Now())
 	coord.RunLoopWithCadence(ctx, detectionTicks, statusTicker.C, func() ([]runtimeapi.Pane, error) {
 		var snapshot []runtimeapi.Pane
 		var hasSnapshot bool
@@ -837,6 +851,10 @@ func runCommand(args []string, _, stderr io.Writer) int {
 					if event.Kind == runtimeapi.EventResync {
 						snapshot = append([]runtimeapi.Pane(nil), event.Snapshot...)
 						hasSnapshot = true
+						coord.AdmitAgentSnapshotPanes(event.Snapshot, true, func(pane runtimeapi.Pane) bool {
+							_, ok := monitoredPaneIDs[pane.ID]
+							return ok
+						}, selfPaneID, admitPane, time.Now())
 						if manager != nil {
 							if err := manager.ReconcilePanes(event.Snapshot); err != nil {
 								fmt.Fprintf(stderr, "warning: reconcile pane identities: %v\n", err)

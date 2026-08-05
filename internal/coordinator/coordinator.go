@@ -373,12 +373,34 @@ func (c *Coordinator) AdmitSessionFilePanes(panes []runtime.Pane, complete bool,
 // anything. Admission changes coverage only; Poll and the job manager retain
 // all provider, identity, process, cwd, menu, and safety gates.
 func (c *Coordinator) AdmitAgentEventPanes(panes []runtime.Pane, eventPanes map[string]string, complete bool, isMonitored func(runtime.Pane) bool, selfPaneID string, admit func(runtime.Pane), now time.Time) {
-	if !c.cfg.AdmitAgentEvents || len(eventPanes) == 0 || !complete || admit == nil {
+	if len(eventPanes) == 0 {
+		return
+	}
+	c.admitAgentPanes(panes, eventPanes, complete, isMonitored, selfPaneID, admit, "pane.agent_detected")
+}
+
+// AdmitAgentSnapshotPanes seeds agent-event admission from a complete pane
+// snapshot. The same narrow admission checks as the event path apply; this
+// only fills the coverage gap for panes detected before subscription or while
+// the event stream was unavailable.
+func (c *Coordinator) AdmitAgentSnapshotPanes(panes []runtime.Pane, complete bool, isMonitored func(runtime.Pane) bool, selfPaneID string, admit func(runtime.Pane), now time.Time) {
+	c.admitAgentPanes(panes, nil, complete, isMonitored, selfPaneID, admit, "startup-snapshot")
+}
+
+func (c *Coordinator) admitAgentPanes(panes []runtime.Pane, eventPanes map[string]string, complete bool, isMonitored func(runtime.Pane) bool, selfPaneID string, admit func(runtime.Pane), trigger string) {
+	if !c.cfg.AdmitAgentEvents || !complete || admit == nil {
 		return
 	}
 	for _, pane := range panes {
-		reportedAgent, triggered := eventPanes[pane.ID]
-		if !triggered || pane.ID == "" || (selfPaneID != "" && pane.ID == selfPaneID) {
+		reportedAgent := pane.Agent
+		if eventPanes != nil {
+			var triggered bool
+			reportedAgent, triggered = eventPanes[pane.ID]
+			if !triggered {
+				continue
+			}
+		}
+		if pane.ID == "" || (selfPaneID != "" && pane.ID == selfPaneID) {
 			continue
 		}
 		if state, ok := c.states[pane.ID]; ok && state.UserDisabled {
@@ -392,7 +414,7 @@ func (c *Coordinator) AdmitAgentEventPanes(panes []runtime.Pane, eventPanes map[
 		if reportedProvider == nil || currentProvider == nil || !strings.EqualFold(reportedProvider.Name(), currentProvider.Name()) {
 			continue
 		}
-		c.logf("agent-event admission: admitted pane=%s agent=%s trigger=pane.agent_detected", pane.ID, pane.Agent)
+		c.logf("agent-event admission: admitted pane=%s agent=%s trigger=%s", pane.ID, pane.Agent, trigger)
 		admit(pane)
 	}
 }
