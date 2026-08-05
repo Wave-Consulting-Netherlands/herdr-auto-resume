@@ -473,6 +473,35 @@ Steps (TDD; gate per commit; phases are independently shippable):
     under 30s to prove the gap actually closed.
 21. Release v0.4.0; close BACKLOG 1, 7, 11 — and 6 only if step 18 cleared its gate.
 
+### S3a — event-driven pane pickup (BACKLOG 15), pulled forward 2026-08-05
+
+Forced forward by evidence, not appetite: after the soak retirement the production watcher
+reports `panes=1` — the static `monitoring.panes` list names three workspaces that no longer
+exist, while six live agent sessions are covered only if a limit happens to be observed. The
+static coverage model has now needed four manual edits in five days and has already caused one
+real missed resume (BACKLOG 13, failure #1).
+
+- **D-S3a-1 Signal.** Subscribe to herdr `pane.agent_detected` (protocol 17, reachable through
+  the existing socket subscription machinery — see BACKLOG 17). Socket transport only; under
+  `--transport cli` the feature is inert and says so once at startup rather than pretending to
+  be armed. `pane.agent_status_changed` as a detection trigger is explicitly OUT of scope here.
+- **D-S3a-2 Opt-in.** New `monitoring.admit_agent_events` (+ flag), default **false**. Coverage
+  changes are authorization changes; they do not arrive by upgrade.
+- **D-S3a-3 Authorization is unchanged.** An agent label is not a licence to inject. An
+  event-admitted pane must pass every existing gate — provider resolution, terminal-ID,
+  process, cwd, menu/idle safety, single-flight. Admission decides *whether we look at a pane*,
+  never *whether we may type into it*.
+- **D-S3a-4 Explicit disable wins.** A pane the operator disabled stays disabled; event
+  admission may never resurrect it. Self-pane (`HERDR_PANE_ID`) is always excluded.
+- **D-S3a-5 Replay is not liveness.** Subscribe replays a historical lifecycle burst; treat it
+  as a refresh trigger and reconcile against a fresh snapshot before admitting anything.
+  Re-subscription after reconnect must not re-admit or duplicate.
+- **D-S3a-6 Observable.** One log line per admission naming pane, agent, and trigger —
+  matching the existing `session-file admission:` line. Silent coverage changes are how
+  BACKLOG 13 and 18 stayed invisible.
+- **Live gate:** a brand-new agent pane created after startup is covered without any config
+  edit, proven on a real pane before the flag is recommended in docs.
+
 ## Risks / open questions
 
 1. **The soak may never see a real limit event.** D-P8-1 accepts synthetic evidence; a genuine
