@@ -47,7 +47,14 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     RESET TIME (parsing stays), and none cover the session-file cases (limit with no pane,
     closed workspace), so the file channel remains the authority. Do this as a post-v0.3.0
     refactor with drills per replacement, not a rewrite.
-18. **DEFECT (found 2026-08-04, live): the identity gate parks menu-visible panes before the
+18. **FIXED in v0.3.1 (2026-08-05, commit b142329) — pending a live drill.** The limit-menu
+    signature now satisfies the chrome check when `answer_limit_menu` is on and the provider
+    already resolved to claude; a terminal-ID gate was added so a reused pane id still parks;
+    every other gate is unchanged; resume-time parks now emit one diagnostic line. 553 tests
+    (was 544). **The live gate is still open** — this class of defect has twice survived a
+    green suite, so the fix is not proven until a real menu pane resumes through it. Original
+    report below.
+    **DEFECT (found 2026-08-04, live): the identity gate parks menu-visible panes before the
     menu-answering branch can run — `answer_limit_menu` is unreachable in its own use case.**
     Two real sessions (w1F:p1 `dynamic-transfer2comp`, w1B:p1 `psft_pcode_diff`) were detected
     correctly via the session-file channel, admitted, and scheduled with high confidence for

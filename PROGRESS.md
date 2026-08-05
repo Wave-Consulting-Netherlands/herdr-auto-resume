@@ -632,6 +632,30 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
   - The socket default is confirmed on production; the `--transport cli` revert in the unit
     stays available but is no longer the expected path. **S3 (v0.4.0) is unblocked.**
 
+- 2026-08-04/05, **BACKLOG 18 — live defect found, fixed, released as v0.3.1.**
+  - Found by a user question, not by a test: two real sessions (w1F:p1 `dynamic-transfer2comp`,
+    w1B:p1 `psft_pcode_diff`) hit a limit resetting 11:10Z, were detected via the session-file
+    channel, admitted, and scheduled `confidence=high` for 11:11Z — then both parked
+    MANUAL_REQUIRED, attempts=0, `last_validation: "pane is not claude"`, with
+    `answer_limit_menu: true` configured. Without the question they would have sat forever.
+  - Cause: the generic content-identity gate (`validate.go` ~:75) ran before the menu branch
+    (~:91). A menu-only viewport carries no Claude chrome — a 200-line detection read on the
+    live pane returned ~41 lines with zero Claude markers — so `IsClaudeCode` was false and the
+    gate parked the job. The feature built for menu panes could not reach a menu pane.
+  - Fix (Codex, TDD, 11 min): the limit-menu signature satisfies the chrome check when
+    `answer_limit_menu` is on and the provider already resolved to claude; a terminal-ID gate
+    added so a reused pane id still parks; provider/process/cwd/single-shot gates unchanged;
+    resume-time parks now emit `limit diagnostic pane=… job=… provider=… reason=…` (they were
+    entirely silent, which is why only a state.json dump revealed this).
+  - Review: gate re-run by the orchestrator — build clean, `go test ./... -race` **553 pass**
+    (was 544). Checked the risk the new terminal-ID gate introduced: both herdr adapters
+    populate `TerminalID`; the tmux adapter sets neither job nor pane ID, so the gate is inert
+    there rather than fatal. Codex hit the sandbox `.git` denial and reported it instead of
+    working around it; the orchestrator branched and committed on its behalf.
+  - Both live panes were cleared by hand (menu dismissed, `continue` sent) and resumed work.
+  - **Open: the live gate.** Tests pass, but this class of defect has now twice survived a
+    green suite. Not proven until a real menu pane resumes through the fix.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
