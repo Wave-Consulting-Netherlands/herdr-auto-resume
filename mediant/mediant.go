@@ -69,8 +69,12 @@ func grow(n int) []node {
 
 // ------------------------------------------------------------------ the score
 
+// The piece holds nothing above 3.2 kHz — 257 pure sines, no harmonics — so
+// any rate past ~7 kHz carries the same signal. 44.1 kHz is the default only
+// because it is what everything expects.
+var rate = 44100
+
 const (
-	rate     = 44100
 	duration = 420.0 // seconds — seven minutes
 
 	silence = 14.0  // the bare octave, before anything is inserted
@@ -180,7 +184,7 @@ func score() ([]voice, []node) {
 // ----------------------------------------------------------------- the render
 
 func render(voices []voice) []float64 {
-	total := int(duration * rate)
+	total := int(duration * float64(rate))
 	buf := make([]float64, 2*total) // interleaved L,R
 
 	workers := runtime.NumCPU()
@@ -200,7 +204,7 @@ func render(voices []voice) []float64 {
 			defer wg.Done()
 			for _, v := range voices {
 				// Skip the stretches where this tone is not yet alive.
-				start := int(v.birth * rate)
+				start := int(v.birth * float64(rate))
 				if start >= hi {
 					continue
 				}
@@ -208,17 +212,17 @@ func render(voices []voice) []float64 {
 					start = lo
 				}
 
-				dph := 2 * math.Pi * v.freq / rate
-				dlf := 2 * math.Pi * v.lfoHz / rate
+				dph := 2 * math.Pi * v.freq / float64(rate)
+				dlf := 2 * math.Pi * v.lfoHz / float64(rate)
 
 				// Envelope and breath move slowly enough to compute at
 				// control rate and slide between.
 				var env, denv, brt, dbrt float64
 				for i := start; i < hi; i++ {
 					if (i-start)%ctrlDiv == 0 {
-						t := float64(i) / rate
+						t := float64(i) / float64(rate)
 						j := i + ctrlDiv
-						tn := float64(j) / rate
+						tn := float64(j) / float64(rate)
 						e0 := envelope(t, v.birth)
 						e1 := envelope(tn, v.birth)
 						env, denv = e0, (e1-e0)/ctrlDiv
@@ -317,6 +321,7 @@ func writeWAV(path string, buf []float64) error {
 func main() {
 	out := flag.String("o", "mediant.wav", "output WAV path")
 	dump := flag.Bool("dump", false, "print the score and exit")
+	flag.IntVar(&rate, "rate", rate, "sample rate")
 	flag.Parse()
 
 	voices, nodes := score()
