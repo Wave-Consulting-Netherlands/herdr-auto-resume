@@ -27,6 +27,12 @@ good deal of modern nonlinear dynamics.
 This is that run, integrated again, and turned into something you can watch and
 hear.
 
+![The return, at 153.4 periods](tsingou-return.png)
+
+*Frame at 6:46. The chain is a clean single arch again, the mode-1 lane has
+swelled back to full, lanes 2 to 5 have collapsed, and the lane holding modes 6
+through 32 is a flat whisper across the whole page.*
+
 ## What you see and hear
 
 Both come from one integration. There is no separate audio track and no
