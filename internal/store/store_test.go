@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -237,6 +238,33 @@ func TestJSONStorePermissions(t *testing.T) {
 	}
 	if mode := dirInfo.Mode().Perm(); mode != 0700 {
 		t.Fatalf("state directory permissions = %04o, want 0700", mode)
+	}
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := fileInfo.Mode().Perm(); mode != 0600 {
+		t.Fatalf("state file permissions = %04o, want 0600", mode)
+	}
+}
+
+func TestJSONStoreSaveIntoPreExistingUnownedDirectoryKeepsFileSecure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root owns /tmp and could change its mode")
+	}
+	info, err := os.Stat("/tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || uint32(os.Getuid()) == stat.Uid {
+		t.Skip("/tmp is owned by the test user")
+	}
+
+	path := filepath.Join("/tmp", fmt.Sprintf("herdr-json-store-%d-%d.json", os.Getpid(), time.Now().UnixNano()))
+	t.Cleanup(func() { _ = os.Remove(path) })
+	if err := NewJSONStore(path).Save(File{Version: 1}); err != nil {
+		t.Fatalf("Save() into pre-existing unowned directory error = %v", err)
 	}
 	fileInfo, err := os.Stat(path)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
+	codexprovider "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/codex"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/sessionfile"
 )
@@ -45,12 +46,29 @@ type LimitEvent struct {
 	Provider   string
 	Source     string
 	EpisodeID  string
+	ParkReason string
 	ResetsRaw  string
 	ResetTime  time.Time
 	Spec       detection.ResetSpec
 	Content    string
 	Evidence   string
 	ObservedAt time.Time
+}
+
+const (
+	codexCreditsParkReason  = "Codex billing action required: add workspace credits"
+	codexSpendCapParkReason = "Codex billing action required: raise the workspace spend cap"
+)
+
+func codexBillingParkReason(family detection.Family) string {
+	switch family {
+	case codexprovider.FamilyCredits:
+		return codexCreditsParkReason
+	case codexprovider.FamilySpendCap:
+		return codexSpendCapParkReason
+	default:
+		return ""
+	}
 }
 
 // JobSink owns known-reset limit episodes when configured by the headless runner.
@@ -279,12 +297,14 @@ func (c *Coordinator) Poll() {
 			}
 		}
 
-		if state.IsRateLimited && state.Mode == ModeAuto && analysis.Actionable {
+		billingParkReason := codexBillingParkReason(analysis.Family)
+		if state.IsRateLimited && state.Mode == ModeAuto && (analysis.Actionable || billingParkReason != "") {
 			if !analysis.Reset.ParsedTime.IsZero() {
 				if c.jobSink != nil {
 					owned := c.jobSink.HandleLimit(LimitEvent{
 						Pane:       state.Pane,
 						Provider:   current.Name(),
+						ParkReason: billingParkReason,
 						ResetsRaw:  resetDisplayText(analysis.Reset.Raw),
 						ResetTime:  analysis.Reset.ParsedTime,
 						Spec:       analysis.Reset,
@@ -304,6 +324,14 @@ func (c *Coordinator) Poll() {
 							state.ContinueSent = true
 						}
 					}
+				}
+			} else if billingParkReason != "" && c.jobSink != nil {
+				owned := c.jobSink.HandleLimit(LimitEvent{
+					Pane: state.Pane, Provider: current.Name(), ParkReason: billingParkReason,
+					Content: content, Evidence: analysis.Evidence, ObservedAt: now,
+				})
+				if !owned {
+					c.logLimitedDiagnostic(state.Pane, current.Name(), analysis, content, "job-manager-declined")
 				}
 			} else {
 				periodicInterval := 15 * time.Minute
