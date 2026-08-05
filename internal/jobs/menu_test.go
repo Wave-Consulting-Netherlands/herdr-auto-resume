@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
@@ -42,6 +43,11 @@ func menuValidationContent(fixture string) string {
 	// The committed captures are menu-focused tails; retain their exact menu
 	// text while supplying the live Claude limit banner used by validation.
 	return "Claude Code\n⎿ You've hit your limit · resets 5m\n" + fixture
+}
+
+func menuOnlyViewport(t *testing.T) string {
+	t.Helper()
+	return readMenuFixture(t, "claude/positive/cc2026-08_menu-team-plan.txt")
 }
 
 func menuEvent(content string) LimitEvent {
@@ -103,6 +109,131 @@ func TestAnswerLimitMenuSupportsBothCommittedVariants(t *testing.T) {
 				t.Fatalf("validation = %q, want menu gone outcome", job.LastValidation)
 			}
 		})
+	}
+}
+
+func TestMenuOnlyViewportHasNoClaudeChrome(t *testing.T) {
+	content := menuOnlyViewport(t)
+	if detection.IsClaudeCode(content) {
+		t.Fatal("menu-only regression fixture unexpectedly contains Claude chrome")
+	}
+	if !looksLikeLimitMenu(content) {
+		t.Fatal("menu-only regression fixture is not recognized as a limit menu")
+	}
+}
+
+func TestMenuOnlyViewportWithAnswerLimitMenuAnswersBeforeIdentityGate(t *testing.T) {
+	content := menuOnlyViewport(t)
+	m, rt, _ := menuManager(t, content, true, false)
+	if !m.HandleLimit(menuEvent(content)) {
+		t.Fatal("HandleLimit() did not own menu episode")
+	}
+	m.Tick(testNow.Add(2 * time.Hour))
+
+	job := m.Snapshot()[0]
+	if len(rt.SentKeys) != 1 || rt.SentKeys[0].Keys[0] != "enter" {
+		t.Fatalf("sent keys = %#v, want one menu answer", rt.SentKeys)
+	}
+	if job.MenuAttempt == nil || job.State != store.StateManualRequired {
+		t.Fatalf("job = %#v, want persisted menu answer and manual-required outcome", job)
+	}
+	if strings.Contains(job.LastValidation, "pane is not claude") {
+		t.Fatalf("validation = %q, menu-only pane hit content identity gate", job.LastValidation)
+	}
+}
+
+func TestMenuOnlyViewportWithoutAnswerLimitMenuParksAndLogsOnce(t *testing.T) {
+	content := menuOnlyViewport(t)
+	m, _, _ := menuManager(t, content, false, false)
+	var log strings.Builder
+	m.logw = &log
+	if !m.HandleLimit(menuEvent(content)) {
+		t.Fatal("HandleLimit() did not own menu episode")
+	}
+	m.Tick(testNow.Add(2 * time.Hour))
+	m.Tick(testNow.Add(2*time.Hour + time.Second))
+
+	job := m.Snapshot()[0]
+	if job.State != store.StateManualRequired || !strings.Contains(job.LastValidation, "pane is not claude") {
+		t.Fatalf("job = %#v, want unchanged identity-gate park", job)
+	}
+	if got := strings.Count(log.String(), "limit diagnostic"); got != 1 {
+		t.Fatalf("diagnostic count = %d (%q), want one line", got, log.String())
+	}
+	for _, want := range []string{"pane=p1", "job=job-1", "provider=claude", "reason=pane-is-not-claude"} {
+		if !strings.Contains(log.String(), want) {
+			t.Fatalf("diagnostic = %q, want %q", log.String(), want)
+		}
+	}
+}
+
+func TestMenuOnlyViewportForeignPaneStillParks(t *testing.T) {
+	content := menuOnlyViewport(t)
+	cases := []struct {
+		name   string
+		mutate func(*menuRuntime)
+		want   string
+	}{
+		{name: "agent hint mismatch", mutate: func(rt *menuRuntime) { rt.PanesList[0].Agent = "codex" }, want: "conflicts with job provider"},
+		{name: "foreground process changed", mutate: func(rt *menuRuntime) { rt.Procs["p1"] = runtime.ProcessInfo{Command: "bash", CWD: "/work"} }, want: "foreground process changed"},
+		{name: "working directory changed", mutate: func(rt *menuRuntime) { rt.Procs["p1"] = runtime.ProcessInfo{Command: "claude", CWD: "/other"} }, want: "working directory changed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, rt, _ := menuManager(t, content, true, false)
+			if !m.HandleLimit(menuEvent(content)) {
+				t.Fatal("HandleLimit() did not own menu episode")
+			}
+			tc.mutate(rt)
+			m.Tick(testNow.Add(2 * time.Hour))
+			job := m.Snapshot()[0]
+			if len(rt.SentKeys) != 0 || job.State != store.StateManualRequired || !strings.Contains(job.LastValidation, tc.want) {
+				t.Fatalf("keys=%#v job=%#v, want parked foreign pane (%q)", rt.SentKeys, job, tc.want)
+			}
+		})
+	}
+
+	t.Run("reused pane id", func(t *testing.T) {
+		m, rt, st := menuManager(t, content, true, false)
+		event := menuEvent(content)
+		event.Pane.TerminalID = "term-1"
+		if !m.HandleLimit(event) {
+			t.Fatal("HandleLimit() did not own menu episode")
+		}
+		file := m.Snapshot()
+		if file[0].TerminalID != "term-1" {
+			t.Fatalf("job terminal id = %q, want term-1", file[0].TerminalID)
+		}
+		rt.PanesList[0].TerminalID = "term-2"
+		m.Tick(testNow.Add(2 * time.Hour))
+		job := m.Snapshot()[0]
+		if len(rt.SentKeys) != 0 || job.State != store.StateManualRequired || job.LastValidation != "pane identity changed" {
+			t.Fatalf("keys=%#v job=%#v, want reused pane parked", rt.SentKeys, job)
+		}
+		loaded, err := st.Load()
+		if err != nil || len(loaded.Jobs) != 1 {
+			t.Fatalf("stored state = %#v, err=%v", loaded, err)
+		}
+	})
+}
+
+func TestMenuOnlyViewportCannotAnswerSameJobTwiceAcrossValidationPasses(t *testing.T) {
+	content := menuOnlyViewport(t)
+	m, rt, _ := menuManager(t, content, true, false)
+	rt.afterSend = content
+	if !m.HandleLimit(menuEvent(content)) {
+		t.Fatal("HandleLimit() did not own menu episode")
+	}
+	m.Tick(testNow.Add(2 * time.Hour))
+	if len(rt.SentKeys) != 1 {
+		t.Fatalf("initial sends = %d, want one", len(rt.SentKeys))
+	}
+
+	job := m.Snapshot()[0]
+	job.State = store.StateValidating
+	m.validate(0, job, testNow.Add(2*time.Hour+time.Second))
+	if len(rt.SentKeys) != 1 {
+		t.Fatalf("sends after second validation = %d, want still one", len(rt.SentKeys))
 	}
 }
 

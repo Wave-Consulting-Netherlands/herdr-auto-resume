@@ -14,7 +14,17 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 	finish := func(state store.JobState, result string, notify bool) {
 		job.State = state
 		job.LastValidation = result
-		if m.updateJob(index, job) && notify {
+		if !m.updateJob(index, job) {
+			return
+		}
+		if state == store.StateManualRequired || state == store.StateSessionGone {
+			providerName := job.Provider
+			if providerName == "" {
+				providerName = m.cfg.Provider
+			}
+			m.logf("limit diagnostic pane=%s job=%s provider=%s reason=%s", job.PaneID, job.ID, providerName, resumeDiagnosticReason(result))
+		}
+		if notify {
 			m.notify("auto-resume", fmt.Sprintf("job %s: %s", job.ID, result), false)
 		}
 	}
@@ -72,7 +82,12 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		finish(store.StateManualRequired, fmt.Sprintf("provider mismatch: job %q, current pane %q", expectedProvider, current.Name()), true)
 		return
 	}
-	if !current.DetectContent(content) {
+	if job.TerminalID != "" && candidate.TerminalID != job.TerminalID {
+		finish(store.StateManualRequired, "pane identity changed", true)
+		return
+	}
+	menuVisible := m.cfg.AnswerLimitMenu && current.Name() == "claude" && looksLikeLimitMenu(content)
+	if !current.DetectContent(content) && !menuVisible {
 		finish(store.StateManualRequired, "pane is not "+current.Name(), true)
 		return
 	}
@@ -208,4 +223,21 @@ func (m *Manager) verify(index int, job store.Job, now time.Time) {
 		job.LastValidation = "resume verification read failed: " + err.Error()
 	}
 	_ = m.updateJob(index, job)
+}
+
+func resumeDiagnosticReason(reason string) string {
+	var b strings.Builder
+	separator := false
+	for _, r := range strings.ToLower(strings.TrimSpace(reason)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			separator = false
+			continue
+		}
+		if b.Len() > 0 && !separator {
+			b.WriteByte('-')
+			separator = true
+		}
+	}
+	return strings.TrimSuffix(b.String(), "-")
 }
