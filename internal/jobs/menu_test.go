@@ -142,6 +142,75 @@ func TestMenuOnlyViewportWithAnswerLimitMenuAnswersBeforeIdentityGate(t *testing
 	}
 }
 
+func TestMenuOnlyViewportWithoutAgentHintUsesStoredClaudeProvider(t *testing.T) {
+	content := menuOnlyViewport(t)
+	m, rt, _ := menuManager(t, content, true, false)
+	if !m.HandleLimit(menuEvent(content)) {
+		t.Fatal("HandleLimit() did not own menu episode")
+	}
+	rt.PanesList[0].Agent = ""
+	m.Tick(testNow.Add(2 * time.Hour))
+
+	job := m.Snapshot()[0]
+	if len(rt.SentKeys) != 1 || rt.SentKeys[0].Keys[0] != "enter" {
+		t.Fatalf("sent keys = %#v, want one menu answer", rt.SentKeys)
+	}
+	if job.MenuAttempt == nil || strings.Contains(job.LastValidation, "unknown current provider") {
+		t.Fatalf("job = %#v, want stored Claude provider rescue to reach menu answer", job)
+	}
+}
+
+func TestMenuOnlyViewportWithoutAgentHintAndAnswerLimitMenuOffStillParksUnknownProvider(t *testing.T) {
+	content := menuOnlyViewport(t)
+	m, rt, _ := menuManager(t, content, false, false)
+	if !m.HandleLimit(menuEvent(content)) {
+		t.Fatal("HandleLimit() did not own menu episode")
+	}
+	rt.PanesList[0].Agent = ""
+	m.Tick(testNow.Add(2 * time.Hour))
+
+	job := m.Snapshot()[0]
+	if len(rt.SentKeys) != 0 || job.State != store.StateManualRequired || !strings.Contains(job.LastValidation, "unknown current provider") {
+		t.Fatalf("keys=%#v job=%#v, want unchanged unknown-provider park", rt.SentKeys, job)
+	}
+}
+
+func TestMenuOnlyViewportWithoutAgentHintDoesNotRescueStoredCodexProvider(t *testing.T) {
+	content := menuOnlyViewport(t)
+	m, rt, _ := menuManager(t, content, true, false)
+	event := menuEvent(content)
+	event.Provider = "codex"
+	if !m.HandleLimit(event) {
+		t.Fatal("HandleLimit() did not own menu episode")
+	}
+	rt.PanesList[0].Agent = ""
+	m.Tick(testNow.Add(2 * time.Hour))
+
+	job := m.Snapshot()[0]
+	if len(rt.SentKeys) != 0 || job.State != store.StateManualRequired || !strings.Contains(job.LastValidation, "unknown current provider") {
+		t.Fatalf("keys=%#v job=%#v, want no cross-provider rescue", rt.SentKeys, job)
+	}
+}
+
+func TestUnidentifiableContentWithoutAgentHintDoesNotUseStoredProviderRescue(t *testing.T) {
+	content := "$ echo ready\nready"
+	rt := &menuRuntime{testRuntime: testRuntime{Fake: runtime.Fake{
+		PanesList: []runtime.Pane{{ID: "p1", Agent: ""}},
+		Content:   map[string]string{"p1": content},
+		Procs:     map[string]runtime.ProcessInfo{"p1": {Command: "claude", CWD: "/work"}},
+	}}}
+	m, _ := newTestManager(t, rt, Config{AnswerLimitMenu: true, Margin: time.Minute}, "job-1")
+	if !m.HandleLimit(menuEvent("You've hit your limit · resets 5m")) {
+		t.Fatal("HandleLimit() did not own menu episode")
+	}
+	m.Tick(testNow.Add(2 * time.Hour))
+
+	job := m.Snapshot()[0]
+	if job.State != store.StateManualRequired || !strings.Contains(job.LastValidation, "unknown current provider") {
+		t.Fatalf("job = %#v, want non-menu unknown-provider park", job)
+	}
+}
+
 func TestMenuOnlyViewportWithoutAnswerLimitMenuParksAndLogsOnce(t *testing.T) {
 	content := menuOnlyViewport(t)
 	m, _, _ := menuManager(t, content, false, false)
