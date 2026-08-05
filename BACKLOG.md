@@ -51,9 +51,20 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     aged-connection drill passed (job `cdc0f5e1`: detection over a 50h-old event stream, durable
     WAITING job, exactly one resume, “resume verified”, and RESUMED). Production is now on the
     socket default; `--transport cli` remains the explicit opt-out.
-17. **Audit the herdr agent API against our hand-rolled equivalents (2026-08-02).** Protocol 17
-    exposes agent-level surface we never enumerated — we subscribed to `pane.output_matched`
-    and stopped. Concretely, each of these has a hand-built counterpart in this repo:
+17. **AUDIT DELIVERED 2026-08-05 (read-only Codex); adopt-list below, item stays open for the
+    two adoptions.** Verdicts: `pane.agent_detected` — adopted in v0.4.0. `agent.explain` —
+    adopt as a manual diagnostic (zero cost in the runbook). `agent_status_changed` — keep as a
+    wake-up hint only; `blocked` is not rate-limit-specific and carries no reset time, so
+    trusting it to authorize injection REDUCES safety. `agent.wait` — trap: status cannot prove
+    the banner cleared or that our resume caused the transition. `agent.prompt` — lateral:
+    proves submission, not acceptance, and has no revision precondition. `agent.start` — cannot
+    replace the revive launcher: it has **no cwd parameter**, the exact bug the launcher exists
+    to fix. Schema confirms no event carries a reset time and none covers the session-file
+    cases. **Correction to the original note below:** we already subscribe to
+    `pane.agent_status_changed` (`events.go:193`) and feed it in as a detection tick; the claim
+    that we "stopped at output_matched" was wrong.
+    **Audit the herdr agent API against our hand-rolled equivalents (2026-08-02).** Protocol 17
+    exposes agent-level surface we never enumerated. Concretely, each of these has a hand-built counterpart in this repo:
     - `pane.agent_status_changed` pushes `idle|working|blocked|done`. **Both menu-parked panes
       today reported `blocked`** — herdr will tell us a pane is stuck instead of us inferring
       it from screen text on a 30s ticker. Candidate primary trigger, scraping as fallback.
@@ -100,7 +111,12 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     Secondary: the park is **silent** — no journal line named the pane or the reason, so this
     was only visible by dumping state.json. The D-P8-10 diagnostics cover detection-time
     non-actions; extend the same one-line-per-reason treatment to resume-time parks.
-15. **Event-hook pane pickup (from mo-arvan/herdr-claude-auto-retry, reviewed 2026-08-02).**
+15. **CLOSED in v0.4.0 (2026-08-05).** Shipped as `monitoring.admit_agent_events` (default
+    off): `pane.agent_detected` subscription plus startup/resync snapshot seeding (D-S3a-1..7).
+    Live-gated twice — the first gate passed while covering only 2 of 6 panes, which is how the
+    seeding gap was found. Production went from `panes=1` to all seven live panes. Original
+    report below.
+    **Event-hook pane pickup (from mo-arvan/herdr-claude-auto-retry, reviewed 2026-08-02).**
     That plugin registers herdr `[[events]]` hooks on agent-detected and picks up new agent
     panes at creation, so coverage never depends on config or on a limit having fired. Our
     Phase B admission only triggers on a limit observation, so a brand-new pane is uncovered

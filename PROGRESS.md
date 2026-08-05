@@ -682,6 +682,38 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
   - Lesson for any future second watcher: give it its OWN config file, not just its own state
     file. A separate `--state-file` does not isolate admission policy.
 
+- 2026-08-05, **v0.4.0 RELEASED and deployed — BACKLOG 15 closed (event-driven + seeded
+  coverage).**
+  - Two halves, both live-gated before release. (a) `pane.agent_detected` subscription through
+    the existing socket plumbing admitted two real unconfigured panes. (b) The live run then
+    exposed HALF-COVERAGE — the event fires on appearance, so panes detected before the
+    watcher subscribed stayed invisible (2 of 6 admitted). D-S3a-7 added startup + resync
+    seeding, after which a live run admitted **all six** live agent panes including the Codex
+    one. Finding the gap required running it against the real machine; the suite was green
+    either way.
+  - Authorization unchanged (D-S3a-3): admission decides only whether a pane is looked at.
+    Self-pane and operator-disabled panes refused; a dedicated test asserts an admitted pane
+    still parks on every foreign-pane condition. Opt-in, default off, inert under cli transport.
+  - Gate: build + vet + `go test ./... -race`, **586 pass** (was 553). CI green on cc7c016
+    including release-dry-run; artifact checksum verified; `0.4.0 (commit cc7c016)`.
+  - Production deployed and `admit_agent_events: true` enabled: coverage went from **panes=1**
+    (three of four configured workspaces no longer existed) to all seven live panes, six of
+    them admitted by `trigger=startup-snapshot` at boot.
+
+- 2026-08-05, **BACKLOG 17 audit delivered (read-only, Codex).** Verdicts against protocol 17:
+  `pane.agent_detected` is a genuine win and is now adopted; `agent.explain` is worth adopting
+  immediately as a manual diagnostic; `agent_status_changed` is a fine wake-up hint but
+  **dangerous as authority** — `blocked` is not rate-limit-specific and carries no reset time;
+  `agent.wait` is a trap as a verification replacement because status cannot prove the banner
+  cleared or that OUR resume caused the transition; `agent.prompt` is lateral (proves
+  submission, not acceptance, and has no revision precondition); `agent.start` cannot replace
+  the revive launcher because it has **no cwd parameter**, which is the exact bug the launcher
+  was invented to fix. Schema confirms no event carries a reset time and none covers the
+  session-file cases, so parsing and the file channel stay authoritative.
+  - **Correction to our own note:** BACKLOG 17 claimed we "subscribed to `pane.output_matched`
+    and stopped". Untrue — `events.go:193` already subscribes to `pane.agent_status_changed`
+    and feeds it in as a detection tick. The item overstated the gap.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
