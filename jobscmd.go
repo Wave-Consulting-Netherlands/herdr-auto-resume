@@ -9,6 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 
 	appconfig "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/config"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
@@ -16,7 +17,7 @@ import (
 
 func jobCommand(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: herdr-auto-resume status|inspect|cancel [id-prefix] [--state-file path]")
+		fmt.Fprintln(stderr, "usage: herdr-auto-resume status|inspect|cancel|ack [id-prefix] [--state-file path]")
 		return 2
 	}
 	subcommand := args[0]
@@ -25,6 +26,7 @@ func jobCommand(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	statePath := fs.String("state-file", store.DefaultPath(), "state file path")
 	configPath := fs.String("config", appconfig.DefaultPath(), "configuration file path")
+	reason := fs.String("reason", "", "acknowledgement reason (ack only)")
 	if err := fs.Parse(flagArgs); err != nil {
 		return 2
 	}
@@ -36,6 +38,12 @@ func jobCommand(args []string, stdout, stderr io.Writer) int {
 			stateFileSet = true
 		case "config":
 			configExplicit = true
+		}
+	})
+	reasonExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "reason" {
+			reasonExplicit = true
 		}
 	})
 	if !stateFileSet {
@@ -63,7 +71,28 @@ func jobCommand(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error: invalid job command arguments")
 		return 2
 	}
+	if reasonExplicit && subcommand != "ack" {
+		fmt.Fprintln(stderr, "error: --reason is only valid with ack")
+		return 2
+	}
+	ackReason := strings.TrimSpace(*reason)
+	if subcommand == "ack" {
+		if !reasonExplicit {
+			ackReason = defaultAckReason
+		}
+		if ackReason == "" {
+			fmt.Fprintln(stderr, "error: acknowledgement reason must not be empty")
+			return 2
+		}
+		if utf8.RuneCountInString(ackReason) > 256 {
+			fmt.Fprintln(stderr, "error: acknowledgement reason must be 256 characters or fewer")
+			return 2
+		}
+	}
 	st := store.NewJSONStore(*statePath)
+	if subcommand == "ack" {
+		return ackJob(positionals[0], ackReason, st, stdout, stderr)
+	}
 	var file store.File
 	var err error
 	lockErr := store.WithLock(st, func() error {
@@ -99,12 +128,12 @@ func jobCommand(args []string, stdout, stderr io.Writer) int {
 
 func splitJobArgs(args []string) (positionals, flags []string) {
 	for i := 0; i < len(args); i++ {
-		if (args[i] == "--state-file" || args[i] == "--config") && i+1 < len(args) {
+		if (args[i] == "--state-file" || args[i] == "--config" || args[i] == "--reason") && i+1 < len(args) {
 			flags = append(flags, args[i], args[i+1])
 			i++
 			continue
 		}
-		if strings.HasPrefix(args[i], "--state-file=") || strings.HasPrefix(args[i], "--config=") {
+		if strings.HasPrefix(args[i], "--state-file=") || strings.HasPrefix(args[i], "--config=") || strings.HasPrefix(args[i], "--reason=") {
 			flags = append(flags, args[i])
 			continue
 		}
@@ -118,9 +147,9 @@ func writeJobStatus(out io.Writer, jobs []store.Job, loc *time.Location) {
 		loc = time.Local
 	}
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "JOB\tPANE\tSTATE\tRESET(local)\tRESUME(UTC)\tATTEMPTS\tERROR\tPROVIDER")
+	fmt.Fprintln(w, "JOB\tPANE\tSTATE\tRESET(local)\tRESUME(UTC)\tATTEMPTS\tERROR\tPARKED\tPROVIDER")
 	for _, job := range jobs {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", shortJobID(job.ID), job.PaneID, job.State, displayTime(job.ResetAtUTC.In(loc)), displayTime(job.ResumeAtUTC.UTC()), job.Attempts, job.LastError, job.Provider)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", shortJobID(job.ID), job.PaneID, job.State, displayTime(job.ResetAtUTC.In(loc)), displayTime(job.ResumeAtUTC.UTC()), job.Attempts, job.LastError, parkedStatus(job), job.Provider)
 	}
 	_ = w.Flush()
 }
@@ -162,13 +191,97 @@ func inspectJob(prefix string, jobs []store.Job, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+	view := struct {
+		store.Job
+		Parked     bool   `json:"parked"`
+		ParkReason string `json:"park_reason,omitempty"`
+	}{Job: *job, Parked: jobIsParked(*job)}
+	if view.Parked {
+		view.ParkReason = parkReason(*job)
+	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(job); err != nil {
+	if err := encoder.Encode(view); err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
 	return 0
+}
+
+const defaultAckReason = "acknowledged by operator"
+
+func ackJob(prefix, reason string, st store.Store, stdout, stderr io.Writer) int {
+	var ackedID string
+	alreadyAcked := false
+	err := store.WithLock(st, func() error {
+		fresh, err := st.Load()
+		if err != nil {
+			return err
+		}
+		job, err := findJob(prefix, fresh.Jobs)
+		if err != nil {
+			return err
+		}
+		if job.State == store.StateResumed {
+			return fmt.Errorf("job %s is RESUMED; nothing to acknowledge", job.ID)
+		}
+		if !job.State.Terminal() {
+			return fmt.Errorf("job %s is still active (%s); cancel it first", job.ID, job.State)
+		}
+		if !job.AckedAt.IsZero() {
+			ackedID = job.ID
+			alreadyAcked = true
+			return nil
+		}
+		for i := range fresh.Jobs {
+			if fresh.Jobs[i].ID != job.ID {
+				continue
+			}
+			fresh.Jobs[i].AckedAt = time.Now().UTC()
+			fresh.Jobs[i].AckedReason = reason
+			ackedID = job.ID
+			break
+		}
+		return st.Save(fresh)
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, "error: ack state:", err)
+		return 1
+	}
+	if alreadyAcked {
+		fmt.Fprintf(stdout, "already acknowledged %s\n", ackedID)
+	} else {
+		fmt.Fprintf(stdout, "acknowledged %s\n", ackedID)
+	}
+	return 0
+}
+
+func jobIsParked(job store.Job) bool {
+	return job.State.Terminal() && job.State != store.StateResumed && job.AckedAt.IsZero()
+}
+
+func parkReason(job store.Job) string {
+	if job.LastError != "" {
+		return job.LastError
+	}
+	if job.LastValidation != "" {
+		return job.LastValidation
+	}
+	return string(job.State)
+}
+
+func parkedStatus(job store.Job) string {
+	if jobIsParked(job) {
+		return "yes (" + parkReason(job) + ")"
+	}
+	if !job.AckedAt.IsZero() {
+		reason := job.AckedReason
+		if reason == "" {
+			reason = defaultAckReason
+		}
+		return "acked (" + reason + ")"
+	}
+	return "-"
 }
 
 func cancelJob(prefix string, file store.File, st store.Store, stdout, stderr io.Writer) int {

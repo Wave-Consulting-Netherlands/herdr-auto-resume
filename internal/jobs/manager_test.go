@@ -373,3 +373,49 @@ func TestDeterministicIDsAndStayArmedSecondJob(t *testing.T) {
 		t.Fatalf("jobs = %#v", jobs)
 	}
 }
+
+func TestAckedJobSuppressesIdenticalEvidenceButAllowsChangedEvidence(t *testing.T) {
+	content := limitedContent()
+	reset := testNow.Add(time.Hour)
+	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}}}
+	m, st := newTestManager(t, rt, Config{}, "first", "second")
+	if !m.HandleLimit(limitEvent(content, reset)) {
+		t.Fatal("initial limit was not owned")
+	}
+	file := m.Snapshot()
+	file[0].State = store.StateManualRequired
+	file[0].AckedAt = testNow
+	file[0].AckedReason = "resumed by hand"
+	if err := st.Save(store.File{Version: 1, Jobs: file}); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := New(rt, st, Config{}, WithClock(func() time.Time { return testNow }), WithSleep(func(time.Duration) {}), WithIDGenerator(func() string { return "second" }), WithLogWriter(io.Discard))
+	if !restarted.HandleLimit(LimitEvent{Pane: runtime.Pane{ID: "p1", Agent: "claude"}, ResetTime: reset, Evidence: content, ObservedAt: testNow}) {
+		t.Fatal("identical evidence was not owned")
+	}
+	if got := len(restarted.Snapshot()); got != 1 {
+		t.Fatalf("identical evidence created %d jobs, want 1", got)
+	}
+	if !restarted.HandleLimit(LimitEvent{Pane: runtime.Pane{ID: "p1", Agent: "claude"}, ResetTime: reset.Add(time.Hour), Evidence: "a different limit episode", ObservedAt: testNow}) {
+		t.Fatal("changed evidence was not owned")
+	}
+	if got := len(restarted.Snapshot()); got != 2 || restarted.Snapshot()[1].ID != "second" {
+		t.Fatalf("changed evidence jobs=%#v, want a new second job", restarted.Snapshot())
+	}
+}
+
+func TestNonAckedTerminalJobStillSuppressesChangedEvidence(t *testing.T) {
+	rt := &testRuntime{Fake: runtime.Fake{PanesList: []runtime.Pane{{ID: "p1"}}}}
+	m, st := newTestManager(t, rt, Config{}, "first", "second")
+	if err := st.Save(store.File{Version: 1, Jobs: []store.Job{{ID: "first", PaneID: "p1", State: store.StateManualRequired, EvidenceHash: hashEvidence("old")}}}); err != nil {
+		t.Fatal(err)
+	}
+	m = New(rt, st, Config{}, WithClock(func() time.Time { return testNow }), WithSleep(func(time.Duration) {}), WithIDGenerator(func() string { return "second" }), WithLogWriter(io.Discard))
+	if !m.HandleLimit(LimitEvent{Pane: runtime.Pane{ID: "p1", Agent: "claude"}, ResetTime: testNow.Add(time.Hour), Evidence: "new", ObservedAt: testNow}) {
+		t.Fatal("non-acked terminal episode was not owned")
+	}
+	if got := len(m.Snapshot()); got != 1 {
+		t.Fatalf("non-acked terminal job released pane: jobs=%#v", m.Snapshot())
+	}
+}
