@@ -37,7 +37,7 @@ chain's own dispersion relation, `omega_k = 2 sin(k pi / 2(N+1))`, transposed so
 mode 1 lands at 110 Hz — a series very slightly flatter than harmonic, because a
 chain of beads is not an ideal string. Its amplitude is `sqrt(E_k(t))`, the
 energy actually in that mode at that instant. Because total energy is conserved,
-the loudness of the piece varies by **0.26 dB across seven and a half minutes**.
+the loudness of the piece varies by **0.25 dB across seven and a half minutes**.
 Nothing is added and nothing is taken away. Only the colour changes, and that
 change is the whole piece: a nearly pure tone that gets reedy, then complex,
 then wanders, then — around 6:45 — resolves back to nearly the pure tone, and
@@ -75,6 +75,7 @@ gamma-boosted to make fractions of a percent visible.
 pip install numpy          # the only dependency
 python3 sim.py             # integrate; ~13 s, writes state/
 python3 audio.py           # synthesise; ~70 s, writes state/audio.f32
+python3 verify.py          # check the sound really is the physics
 python3 poster.py          # the sheet
 FPS=60 python3 render.py   # the film; ~35 min, writes tsingou.mp4
 python3 render.py --preview  # single frames instead, for checking layout
@@ -91,6 +92,7 @@ faithful copy of itself.
 |---|---|
 | `sim.py` | velocity-Verlet integration of the alpha-chain, 675,000 steps, N=32, alpha=1/4 |
 | `audio.py` | 32-partial resynthesis from the mode energies, 48 kHz stereo |
+| `verify.py` | pulls the 110 Hz partial back out of the finished audio and checks it against `sqrt(E_1(t))` |
 | `render.py` | the film: numpy rasteriser piping rgb24 into ffmpeg |
 | `poster.py` | the thirty-two-stave sheet |
 | `glyphs.py` | a 5x7 bitmap alphabet, hand-set, because there are no font files |
