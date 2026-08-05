@@ -164,6 +164,25 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     attach reports `panes=N` indefinitely and can never act on them. Reproduced live in both
     directions on one pane, banner, binary, and transport. Must land with `--wait-for-panes`,
     which otherwise converts a visible crash loop into a silent no-op.
+20. **The v0.3.1 menu fix is incomplete: a menu-only pane with NO agent hint still parks
+    (found 2026-08-05 by the first real menu drill).** v0.3.1 taught the CONTENT-identity gate
+    (`validate.go` ~:91) that the limit menu counts as Claude. But `providers.Resolve(
+    candidate.Agent, content)` runs earlier at `validate.go:68` and returns nil when the pane
+    carries no agent hint AND the content identifies no provider — which is exactly a bare
+    menu. The job then parks at :78 with `unknown current provider for pane`, before the menu
+    branch is ever reached. Live drill evidence: job 53c22c26 on pane w1H:p1, scheduled
+    `confidence=high` for 22:18:00Z, parked `reason=unknown-current-provider-for-pane`.
+    **Scope, stated honestly:** the two REAL panes on 2026-08-04 (w1F/w1B) were tagged
+    `agent=claude` by herdr, so Resolve succeeded for them and they parked at the later gate —
+    the one v0.3.1 fixed. Production's common path is genuinely fixed. This is the narrower
+    case where herdr has not tagged the pane (agent released or never detected). It is also
+    why the drill harness cannot reproduce the production failure exactly: a shell script pane
+    gets no agent hint, so the drill tests a STRICTER path than production hits.
+    Fix: when the content-provider is unresolved but `answer_limit_menu` is on, the content
+    looks like the limit menu, and the job's stored provider is claude, resolve to the stored
+    provider — subject to the unchanged terminal-ID, process, cwd, and single-shot gates. Then
+    re-run `scripts/menu-drill-harness.sh`; the pass condition is MENU-ANSWERED-OK plus a
+    recorded MenuAttempt, NOT a RESUMED job.
 19. **Minor, pre-existing: the JSON store chmods its PARENT DIRECTORY to 0700 on every save**
     (`internal/store/json_store.go:96`), so any state file whose directory is not owned by the
     user fails to save with `chmod <dir>: operation not permitted`. Hit while testing `ack`
