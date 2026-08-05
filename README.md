@@ -21,7 +21,7 @@ upgrading.
 
 Install tagged source with Go:
 
-    go install github.com/Wave-Consulting-Netherlands/herdr-auto-resume@v0.5.0
+    go install github.com/Wave-Consulting-Netherlands/herdr-auto-resume@v0.6.0
 
 Or build from a checkout:
 
@@ -195,6 +195,22 @@ Doctor flags: --config, --transport, --herdr-bin, --socket, --session, --workspa
   safety, single-flight, and verification. The watcher's own pane and any explicitly disabled
   pane are always refused, and every admission logs one line naming the pane, agent, and
   trigger (`startup-snapshot` or `pane.agent_detected`).
+
+### v0.6.0 options
+
+- `--transient-retry` / `monitoring.transient_retry`: default `false`, and deliberately not
+  recommended yet. Classifies API-side stalls that are NOT reset-bearing usage limits — 429
+  without a reset, 5xx, overloaded, throttling, connection errors — as a separate transient
+  class and retries them 60s, 120s, 240s, then 300s, capped by
+  `monitoring.transient_max_attempts` (default 5) before parking. A reset-bearing limit always
+  wins over a transient. Single-flight and every resume gate still apply; each attempt logs the
+  pane, attempt number, and next delay.
+
+  **The patterns are unverified.** No real capture of these messages existed when the feature
+  was written, so the table in `internal/detection/transient.go` records the provenance of each
+  entry and is built to be replaced. `scripts/limit-capture.sh` now also captures
+  transient-looking panes so real fixtures can be collected. Leave this off until you have
+  captured a genuine transient and drilled it.
 
 These session-identity features remain opt-in and are not enabled by the shipped service
 examples. The YAML keys must use the exact nesting shown above; unknown keys are rejected.

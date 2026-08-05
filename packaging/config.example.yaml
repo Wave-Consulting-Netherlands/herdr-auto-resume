@@ -28,6 +28,9 @@ monitoring:
   #                            # coverage instead of the pane list above. Seeds from
   #                            # the startup snapshot and follows pane.agent_detected.
 
+  # transient_retry: false  # UNVERIFIED patterns; leave off until drilled
+  # transient_max_attempts: 5
+
 # Safety margins and wait bounds.
 resume:
   # margin: 60s
