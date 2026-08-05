@@ -52,6 +52,9 @@ func IsCodex(content string) bool {
 	if findBanner(normalized) != "" {
 		return true
 	}
+	if _, ok := detection.ClassifyTransient(strings.Join(liveTailLines(content), "\n")); ok {
+		return true
+	}
 	return codexComposer.MatchString(normalized) || codexFooter.MatchString(normalized) ||
 		codexWorking.MatchString(normalized) || codexWorked.MatchString(normalized)
 }
@@ -59,7 +62,14 @@ func IsCodex(content string) bool {
 func (c *Codex) DetectContent(content string) bool { return IsCodex(content) }
 
 func (c *Codex) Analyze(content string, now time.Time) detection.Analysis {
-	return analyzeLive(content, now)
+	analysis := analyzeLive(content, now)
+	if analysis.Transient {
+		return analysis
+	}
+	if _, ok := detection.ClassifyTransient(strings.Join(liveTailLines(content), "\n")); ok {
+		return detection.Analyze(content, now)
+	}
+	return analysis
 }
 
 func analyzeCore(content string, now time.Time) detection.Analysis {
@@ -114,6 +124,9 @@ func (c *Codex) SafeToResume(content string, now time.Time) (bool, string) {
 	}
 	analysis := c.Analyze(content, now)
 	idle := codexComposer.MatchString(terminal.StripANSI(content))
+	if analysis.Transient {
+		return true, "validation passed"
+	}
 	if analysis.IsLimited {
 		if !analysis.Actionable {
 			return false, "terminal is not in a safe blocked or idle state"

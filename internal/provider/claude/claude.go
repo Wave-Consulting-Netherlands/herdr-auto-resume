@@ -41,7 +41,7 @@ func (c *Claude) SafeToResume(content string, now time.Time) (bool, string) {
 	status := detection.CheckRateLimitAt(content, now)
 	analysis := detection.Analyze(content, now)
 	idle := detection.IsIdlePrompt(content)
-	if analysis.MenuVisible || (!status.IsLimited && !idle) {
+	if analysis.MenuVisible || (!status.IsLimited && !analysis.Transient && !idle) {
 		return false, "terminal is not in a safe blocked or idle state"
 	}
 	return true, "validation passed"

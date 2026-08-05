@@ -35,12 +35,14 @@ type RuntimeConfig struct {
 }
 
 type MonitoringConfig struct {
-	Panes               []string
-	Interval            time.Duration
-	Lines               int
-	WaitForPanes        bool
-	AdmitSessionMatches bool
-	AdmitAgentEvents    bool
+	Panes                []string
+	Interval             time.Duration
+	Lines                int
+	WaitForPanes         bool
+	AdmitSessionMatches  bool
+	AdmitAgentEvents     bool
+	TransientRetry       bool
+	TransientMaxAttempts int
 }
 
 type ResumeConfig struct {
@@ -79,12 +81,14 @@ type rawRuntimeConfig struct {
 }
 
 type rawMonitoringConfig struct {
-	Panes               []string `yaml:"panes"`
-	Interval            string   `yaml:"interval"`
-	Lines               *int     `yaml:"lines"`
-	WaitForPanes        *bool    `yaml:"wait_for_panes"`
-	AdmitSessionMatches *bool    `yaml:"admit_session_matches"`
-	AdmitAgentEvents    *bool    `yaml:"admit_agent_events"`
+	Panes                []string `yaml:"panes"`
+	Interval             string   `yaml:"interval"`
+	Lines                *int     `yaml:"lines"`
+	WaitForPanes         *bool    `yaml:"wait_for_panes"`
+	AdmitSessionMatches  *bool    `yaml:"admit_session_matches"`
+	AdmitAgentEvents     *bool    `yaml:"admit_agent_events"`
+	TransientRetry       *bool    `yaml:"transient_retry"`
+	TransientMaxAttempts *int     `yaml:"transient_max_attempts"`
 }
 
 type rawResumeConfig struct {
@@ -182,6 +186,8 @@ func Load(path string) (Config, bool, error) {
 	mark("monitoring.wait_for_panes", raw.Monitoring.WaitForPanes != nil)
 	mark("monitoring.admit_session_matches", raw.Monitoring.AdmitSessionMatches != nil)
 	mark("monitoring.admit_agent_events", raw.Monitoring.AdmitAgentEvents != nil)
+	mark("monitoring.transient_retry", raw.Monitoring.TransientRetry != nil)
+	mark("monitoring.transient_max_attempts", raw.Monitoring.TransientMaxAttempts != nil)
 	mark("resume.margin", raw.Resume.Margin != "")
 	mark("resume.max_wait", raw.Resume.MaxWait != "")
 	mark("resume.verify_timeout", raw.Resume.VerifyTimeout != "")
@@ -208,6 +214,15 @@ func Load(path string) (Config, bool, error) {
 	}
 	if raw.Monitoring.AdmitAgentEvents != nil {
 		parsed.Monitoring.AdmitAgentEvents = *raw.Monitoring.AdmitAgentEvents
+	}
+	if raw.Monitoring.TransientRetry != nil {
+		parsed.Monitoring.TransientRetry = *raw.Monitoring.TransientRetry
+	}
+	if raw.Monitoring.TransientMaxAttempts != nil {
+		parsed.Monitoring.TransientMaxAttempts = *raw.Monitoring.TransientMaxAttempts
+		if parsed.Monitoring.TransientMaxAttempts <= 0 {
+			return Config{}, true, fmt.Errorf("config monitoring.transient_max_attempts: must be positive")
+		}
 	}
 	if raw.Resume.AnswerLimitMenu != nil {
 		parsed.Resume.AnswerLimitMenu = *raw.Resume.AnswerLimitMenu

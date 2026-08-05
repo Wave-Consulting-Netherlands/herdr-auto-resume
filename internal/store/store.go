@@ -61,6 +61,8 @@ type Job struct {
 	DryRun            bool         `json:"dry_run"`
 	Episode           string       `json:"episode,omitempty"`
 	Source            string       `json:"source,omitempty"`
+	TransientClass    string       `json:"transient_class,omitempty"`
+	RetryAttempt      int          `json:"retry_attempt,omitempty"`
 	MenuAttempt       *MenuAttempt `json:"menu_attempt,omitempty"`
 }
 

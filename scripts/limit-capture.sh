@@ -12,6 +12,7 @@
 set -uo pipefail
 
 OUT="${OUT:-$HOME/.local/state/herdr-auto-resume/limit-captures}"
+TRANSIENT_OUT="${TRANSIENT_OUT:-$OUT/transient}"
 PANES="${PANES:-wA:p1 wR:p1 wS:p1}"
 INTERVAL="${INTERVAL:-60}"
 COOLDOWN="${COOLDOWN:-300}"
@@ -21,37 +22,46 @@ LINES="${LINES:-200}"
 # text the detector may be REJECTING, so matching only what it accepts would
 # reproduce the blind spot being investigated.
 SIGNAL='limit reached|usage limit|hit your limit|resets? (at )?[0-9]|try again in|rate.?limit|out of (usage|credits)|upgrade your plan|extra usage'
+# Deliberately broad and provisional, for the same ground-truth purpose as
+# SIGNAL. These are the BACKLOG 16 hypotheses, not validated provider captures.
+TRANSIENT_SIGNAL='429|too many requests|5[0-9][0-9]|5xx|overloaded|temporarily limiting requests|api error: connection|connection (reset|refused|closed|failed)|network error'
 
-mkdir -p "$OUT"
+mkdir -p "$OUT" "$TRANSIENT_OUT"
+
+capture() {
+	local out=$1 kind=$2 signal=$3 pane=$4 text=$5
+	printf '%s' "$text" | grep -qiE "$signal" || return 0
+
+	# The per-pane cooldown and content hash remain independent for each class:
+	# a busy pane cannot produce a file every poll, and a static screen cannot
+	# produce duplicate files forever.
+	local now last_var last hash stamp file
+	now=$(date -u '+%s')
+	last_var="last_${kind}_${pane//[:.-]/_}"
+	last=${!last_var:-0}
+	[ $((now - last)) -lt "$COOLDOWN" ] && return 0
+
+	hash=$(printf '%s' "$text" | sha256sum | cut -c1-12)
+	stamp=$(date -u '+%Y%m%dT%H%M%SZ')
+	file="$out/${pane//:/-}-$hash.txt"
+	[ -e "$file" ] && return 0
+	printf -v "$last_var" '%s' "$now"
+
+	{
+		echo "# pane=$pane captured=$stamp"
+		echo "# herdr pane read $pane --source detection --lines $LINES"
+		echo "---"
+		printf '%s\n' "$text"
+	} > "$file"
+	echo "$stamp captured $kind $pane -> $file"
+}
 
 while :; do
 	for pane in $PANES; do
 		text=$(herdr pane read "$pane" --source detection --lines "$LINES" 2>/dev/null) || continue
 		[ -z "$text" ] && continue
-		printf '%s' "$text" | grep -qiE "$SIGNAL" || continue
-
-		# Two independent bounds. Content hashing alone is not enough: an ACTIVE
-		# pane changes every poll, so a busy session discussing limits would
-		# capture on every tick. The per-pane cooldown bounds that case; the hash
-		# bounds the opposite one, a static limit screen sitting there for hours.
-		now=$(date -u '+%s')
-		last_var="last_${pane//[:.-]/_}"
-		last=${!last_var:-0}
-		[ $((now - last)) -lt "$COOLDOWN" ] && continue
-
-		hash=$(printf '%s' "$text" | sha256sum | cut -c1-12)
-		stamp=$(date -u '+%Y%m%dT%H%M%SZ')
-		file="$OUT/${pane//:/-}-$hash.txt"
-		[ -e "$file" ] && continue
-		printf -v "$last_var" '%s' "$now"
-
-		{
-			echo "# pane=$pane captured=$stamp"
-			echo "# herdr pane read $pane --source detection --lines $LINES"
-			echo "---"
-			printf '%s\n' "$text"
-		} > "$file"
-		echo "$stamp captured $pane -> $file"
+		capture "$OUT" limit "$SIGNAL" "$pane" "$text"
+		capture "$TRANSIENT_OUT" transient "$TRANSIENT_SIGNAL" "$pane" "$text"
 	done
 	sleep "$INTERVAL"
 done

@@ -34,6 +34,13 @@ func IsClaudeCode(content string) bool {
 	if isRateLimitSignal(content) {
 		return true
 	}
+	// A transient API banner is also provider evidence when the runtime has
+	// already supplied the pane's Claude agent identity. The pattern remains
+	// opt-in at the coordinator/job layer; this only keeps validation attached
+	// to the existing provider gates.
+	if _, ok := ClassifyTransient(strings.Join(visibleTail(content), "\n")); ok {
+		return true
+	}
 
 	// Footer hint is very reliable
 	if footerHintPattern.MatchString(content) {

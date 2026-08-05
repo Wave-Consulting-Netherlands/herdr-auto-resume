@@ -9,12 +9,14 @@ import (
 )
 
 type Analysis struct {
-	IsLimited   bool
-	Actionable  bool
-	MenuVisible bool
-	Family      Family
-	Reset       ResetSpec
-	Evidence    string
+	IsLimited      bool
+	Actionable     bool
+	MenuVisible    bool
+	Family         Family
+	Reset          ResetSpec
+	Evidence       string
+	Transient      bool
+	TransientClass TransientClass
 }
 
 var (
@@ -43,6 +45,17 @@ func Analyze(content string, now time.Time) Analysis {
 		}
 	} else if analysis.IsLimited {
 		analysis.Family = ClassifyFamily(content)
+	}
+	if analysis.Reset.ParsedTime.IsZero() {
+		if match, ok := ClassifyTransient(strings.Join(lines, "\n")); ok {
+			analysis.Transient = true
+			analysis.TransientClass = match.Class
+			// A non-reset transient is its own class, not an unparseable
+			// usage-limit episode. This lets the coordinator route it to the
+			// opt-in transient path without weakening reset-bearing precedence.
+			analysis.IsLimited = false
+			analysis.Actionable = false
+		}
 	}
 	return analysis
 }
@@ -202,6 +215,11 @@ func isLimitLine(line string) bool {
 func hasNonChromeBelow(lines []string, resetAt int, menu bool) bool {
 	for _, line := range lines[resetAt+1:] {
 		if isChromeLine(line) || strings.TrimSpace(line) == "" {
+			continue
+		}
+		// A transient API failure is part of the same blocked error screen;
+		// it must not make a parseable usage-limit banner non-actionable.
+		if _, ok := ClassifyTransient(line); ok {
 			continue
 		}
 		if menu && isMenuBlockLine(line) {
