@@ -15,6 +15,22 @@
 #   it tests the case that already worked. The menu screen here is therefore
 #   deliberately bare.
 #
+# WHAT THIS HARNESS CAN AND CANNOT PROVE — read before trusting a result.
+# Established by two live runs on 2026-08-05. A shell-script pane has no
+# `agent_session`, and `answerLimitMenu` (internal/jobs/validate.go) deliberately
+# refuses to press Enter unless BOTH a pane agent-session id and a job episode id
+# are present. That guard is correct — it is what stops the watcher answering a
+# menu it cannot tie to a known episode — and no fake pane can satisfy it.
+# Therefore:
+#   CAN prove: detection of the banner, job scheduling, and that a menu-only
+#              viewport no longer parks at the identity gates (BACKLOG 18 + 20).
+#              Reaching "menu answer refused: missing session or episode identity"
+#              IS the pass signal for those two items — it means every identity
+#              gate was cleared and only the session guard remains.
+#   CANNOT prove: the menu keypress itself. That needs a REAL Claude pane showing
+#              a REAL limit menu, i.e. the production event of 2026-08-04.
+# Do not "fix" this by weakening the session guard to make the drill go green.
+#
 # SUCCESS IS NOT "RESUMED". Answering the menu selects "Stop and wait for limit
 # to reset", after which Claude itself waits — so the job is expected to end
 # MANUAL_REQUIRED with MenuAttempt recorded. A drill that demands RESUMED here
