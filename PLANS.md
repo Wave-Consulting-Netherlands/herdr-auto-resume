@@ -501,6 +501,17 @@ real missed resume (BACKLOG 13, failure #1).
   BACKLOG 13 and 18 stayed invisible.
 - **Live gate:** a brand-new agent pane created after startup is covered without any config
   edit, proven on a real pane before the flag is recommended in docs.
+  **PASSED 2026-08-05** (commit d190847): herdr accepted the subscription and the watcher
+  admitted w19:p1 and w1F:p1, neither of them configured; `panes=1` → `panes=3`.
+- **D-S3a-7 Startup and resync seeding (found by the live gate, same flag).** The event fires
+  when an agent *appears*, so panes herdr detected before the watcher subscribed stay invisible
+  — the live run admitted two of six live agent panes. Under the same
+  `monitoring.admit_agent_events` flag, reconcile the first complete snapshot at startup and
+  again after any resync/reconnect, admitting panes whose agent resolves to a configured
+  provider. Same authorization rules as D-S3a-3/4 with no relaxation; distinct log trigger so
+  the two admission paths stay tellable apart; idempotent, so a reconnect re-seed admits
+  nothing new. Rationale: the flag means "let herdr's agent detection define coverage" — a
+  watcher restart must not silently narrow that coverage to whatever happens to appear next.
 
 ## Risks / open questions
 

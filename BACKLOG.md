@@ -21,9 +21,25 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
    names now use herdr-auto-resume; the first release is v0.2.0.
 5. **Out of repository.** The Go toolchain PATH belongs in the chezmoi-managed dotfiles, not
    this application repository.
-6. **Codex rollout resets_at epoch integration.** Codex rollout JSONL carries structured
-   rate_limits.resets_at epochs; integrate this as a future signal without changing the
-   terminal fallback.
+6. **Codex rollout resets_at epoch integration — SPIKE PARTLY RUN 2026-08-05 (D-P8-6 / PLANS
+   step 18); still blocked on one fixture.** Codex rollout JSONL carries structured
+   `rate_limits.resets_at` epochs; integrate as a future signal without changing the terminal
+   fallback. Evidence gathered from seven real rollouts written today:
+   - **cwd is NOT a usable selector.** Three rollouts share `~/dev/Herdr-auto-resume`, two
+     share `~/dev/workspace`, two share `~/dev/psft_instanceid`. Any cwd-based file-selection
+     rule is ambiguous in ordinary daily use, not just in a contrived case.
+   - **`session_id` is not 1:1 with the file either.** The two 20:41:00 rollouts, 145 ms
+     apart, carry DIFFERENT top-level `id`s but the SAME `session_id`. File selection must
+     therefore tolerate several files per session (latest-wins or merge) instead of assuming
+     one.
+   - **`originator` is the field that identifies pane-backed sessions:** `codex-tui` is a real
+     pane; `codex_exec` and `Claude Code` are headless. Only `codex-tui` rollouts can
+     correspond to a herdr pane, so the resolver must filter on it before matching.
+   - **Still blocked:** every observed window is healthy (`used_percent` 14–16,
+     `window_minutes` 10080). No exhausted-window fixture exists yet, so the primary/secondary
+     selection rule and the tolerance duration remain unproven. Note the structural risk: our
+     Codex usage is almost entirely headless, so a pane-backed exhausted rollout may never
+     occur naturally here — if it does not, PLANS step 18's stop-and-defer condition applies.
 7. **Codex credits-park UX.** Workspace credits and spend-cap banners are detected and
    non-actionable; add an explicit credits/park resolution command when acknowledgement is
    designed.
@@ -102,20 +118,26 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     detection with its own bounded retry policy, explicitly distinct from reset-bearing
     limits, defaulting off until drilled. Note their retry is unverified fire-and-forget;
     ours must keep the verification and single-flight guarantees.
-13. **Real limits produced no job (2026-08-01; DIAGNOSED 2026-08-02, fix pending; PLANS.md
-    SD-D3/D4).** JSONL evidence corrected the initial report: failure #1 was session ce7bb791
+13. **CLOSED in v0.3.0 (SD-D4 phases A–D).** The session-file channel + `agent_session`
+    correlation shipped and produced the first real-world unattended resumes on 2026-08-02
+    (wW/wS/wX/wY RESUMED, attempts=1). Original report below.
+    **Real limits produced no job (2026-08-01; DIAGNOSED 2026-08-02).** JSONL evidence corrected the initial report: failure #1 was session ce7bb791
     in pane wW:p1 (psft_run_script) — monitored by NO watcher, a coverage-model gap, not a
     code defect. Failure #2 was session 829d1239 in wA:p1 — watcher healthy, banner parses
     Actionable=true, so it was swallowed post-detection (menu-visible / not-auto / silent
     read error / read-window); the deployed diag build names the reason on the next
     occurrence. Fix direction: session-file detection channel + pane correlation via herdr
     `agent_session` (D4, needs sign-off).
-14. **Every non-action on a limited pane is silent (PLANS.md D-P8-10).** Menu visible, reset
+14. **CLOSED — detection-time in v0.3.0 (D-P8-10), resume-time in v0.3.1.** Both classes of
+    non-action now log one line per evidence hash / per park. The v0.3.1 half was added only
+    after the silence hid BACKLOG 18 for a full day, which is the argument for treating any
+    new silent exit path as a defect on sight.
+    **Every non-action on a limited pane is silent (PLANS.md D-P8-10).** Menu visible, reset
     unparsed, provider unresolved, pane not enabled, horizon exceeded — all exit without a
     trace, which is what made item 13 undiagnosable. Needs one log line per evidence hash
     naming pane and reason.
-12. **Pane enablement is decided once, at startup (found 2026-08-01, Phase 8 step-5 rehearsal;
-    scheduled as PLANS.md D-P8-9 in v0.3.0).** `runcmd.go` runs `Poll() → EnableAll() → Poll()`
+12. **CLOSED in v0.3.0 (D-P8-9), shipped alongside `--wait-for-panes` as required.**
+    **Pane enablement is decided once, at startup (found 2026-08-01, Phase 8 step-5 rehearsal).** `runcmd.go` runs `Poll() → EnableAll() → Poll()`
     once, and `EnableAll` skips panes whose provider has not resolved yet, leaving
     `Mode = ModeOff` with no later re-evaluation. A watcher that starts before its agent panes
     attach reports `panes=N` indefinitely and can never act on them. Reproduced live in both

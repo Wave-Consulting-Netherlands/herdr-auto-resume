@@ -59,6 +59,7 @@ type runConfig struct {
 	Providers           string
 	SessionFileChannel  bool
 	AdmitSessionMatches bool
+	AdmitAgentEvents    bool
 	AnswerLimitMenu     bool
 	ClaudePrompt        string
 	CodexPrompt         string
@@ -102,6 +103,7 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	fs.StringVar(&cfg.Providers, "providers", "claude,codex", "enabled providers: claude,codex")
 	fs.BoolVar(&cfg.SessionFileChannel, "session-file-channel", false, "read Claude session files and correlate rate-limit observations")
 	fs.BoolVar(&cfg.AdmitSessionMatches, "admit-session-matches", false, "admit an unmonitored pane named by a session-file observation")
+	fs.BoolVar(&cfg.AdmitAgentEvents, "admit-agent-events", false, "admit panes reported by herdr agent-detected events")
 	fs.BoolVar(&cfg.AnswerLimitMenu, "answer-limit-menu", false, "select Claude's safe stop-and-wait limit-menu option")
 	fs.StringVar(&cfg.ClaudePrompt, "claude-prompt", claude.New("").ResumeAction().Text, "Claude continuation prompt")
 	fs.StringVar(&cfg.CodexPrompt, "codex-prompt", codex.New("").ResumeAction().Text, "Codex continuation prompt")
@@ -285,6 +287,9 @@ func mergeRunConfig(defaults runConfig, file appconfig.Config) runConfig {
 	if file.Has("monitoring.admit_session_matches") {
 		merged.AdmitSessionMatches = file.Monitoring.AdmitSessionMatches
 	}
+	if file.Has("monitoring.admit_agent_events") {
+		merged.AdmitAgentEvents = file.Monitoring.AdmitAgentEvents
+	}
 	if file.Has("resume.answer_limit_menu") {
 		merged.AnswerLimitMenu = file.Resume.AnswerLimitMenu
 	}
@@ -343,6 +348,8 @@ func applyExplicitRunFlags(dst, parsed *runConfig, panes *stringList, fs *flag.F
 			dst.SessionFileChannel = parsed.SessionFileChannel
 		case "admit-session-matches":
 			dst.AdmitSessionMatches = parsed.AdmitSessionMatches
+		case "admit-agent-events":
+			dst.AdmitAgentEvents = parsed.AdmitAgentEvents
 		case "answer-limit-menu":
 			dst.AnswerLimitMenu = parsed.AnswerLimitMenu
 		case "claude-prompt":
@@ -424,21 +431,26 @@ func filterPanesByIdentityWithPaneIDs(panes []runtimeapi.Pane, requested []strin
 const paneWaitBackoff = 5 * time.Second
 
 func listPanesStartup(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, waitForPanes bool, logw io.Writer) ([]runtimeapi.Pane, error) {
+	panes, _, _, err := listPanesStartupWithSnapshot(ctx, rt, requested, ownPaneID, waitForPanes, logw)
+	return panes, err
+}
+
+func listPanesStartupWithSnapshot(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, waitForPanes bool, logw io.Writer) ([]runtimeapi.Pane, []runtimeapi.Pane, bool, error) {
 	if waitForPanes {
-		return waitForPanesUntilReady(ctx, rt, requested, ownPaneID, logw, sleepForPanes)
+		return waitForPanesUntilReadyWithSnapshot(ctx, rt, requested, ownPaneID, logw, sleepForPanes)
 	}
 	allPanes, err := rt.ListPanes()
 	if err != nil {
-		return nil, fmt.Errorf("list panes: %w", err)
+		return nil, nil, false, fmt.Errorf("list panes: %w", err)
 	}
 	panes, excludedOwn := filterPanes(allPanes, requested, ownPaneID)
 	if excludedOwn && logw != nil {
 		fmt.Fprintf(logw, "warning: excluding own pane %s\n", ownPaneID)
 	}
 	if len(panes) == 0 {
-		return nil, errors.New("none of the requested panes were found")
+		return nil, nil, true, errors.New("none of the requested panes were found")
 	}
-	return panes, nil
+	return panes, allPanes, true, nil
 }
 
 func waitForPanes(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, logw io.Writer, wait func(context.Context, time.Duration) error) ([]runtimeapi.Pane, error) {
@@ -446,18 +458,23 @@ func waitForPanes(ctx context.Context, rt runtimeapi.Runtime, requested []string
 }
 
 func waitForPanesUntilReady(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, logw io.Writer, wait func(context.Context, time.Duration) error) ([]runtimeapi.Pane, error) {
+	panes, _, _, err := waitForPanesUntilReadyWithSnapshot(ctx, rt, requested, ownPaneID, logw, wait)
+	return panes, err
+}
+
+func waitForPanesUntilReadyWithSnapshot(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, logw io.Writer, wait func(context.Context, time.Duration) error) ([]runtimeapi.Pane, []runtimeapi.Pane, bool, error) {
 	state := ""
 	ownWarningLogged := false
 	for {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, nil, false, ctx.Err()
 		default:
 		}
 		allPanes, err := rt.ListPanes()
 		if err != nil {
 			if !retryablePaneListError(err) {
-				return nil, err
+				return nil, nil, false, err
 			}
 			if state != "error" && logw != nil {
 				fmt.Fprintf(logw, "warning: waiting for panes: %v\n", err)
@@ -473,7 +490,7 @@ func waitForPanesUntilReady(ctx context.Context, rt runtimeapi.Runtime, requeste
 				if state != "" && logw != nil {
 					fmt.Fprintln(logw, "info: panes available")
 				}
-				return panes, nil
+				return panes, allPanes, true, nil
 			}
 			if state != "empty" && logw != nil {
 				fmt.Fprintln(logw, "warning: waiting for panes: none of the requested panes were found")
@@ -481,7 +498,7 @@ func waitForPanesUntilReady(ctx context.Context, rt runtimeapi.Runtime, requeste
 			state = "empty"
 		}
 		if err := wait(ctx, paneWaitBackoff); err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 	}
 }
@@ -599,6 +616,12 @@ func startDetectionPumpWithInbox(ctx context.Context, ticker <-chan time.Time, e
 					}
 				}
 				if event.Kind != runtimeapi.EventOutputMatched && event.Kind != runtimeapi.EventAgentStatus && event.Kind != runtimeapi.EventPaneMoved && event.Kind != runtimeapi.EventResync {
+					if event.Kind == runtimeapi.EventAgentDetected {
+						select {
+						case ticks <- time.Now():
+						default:
+						}
+					}
 					continue
 				}
 				if event.Kind == runtimeapi.EventPaneMoved || event.Kind == runtimeapi.EventResync {
@@ -642,6 +665,7 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	if err != nil {
 		return 2
 	}
+	announceAgentEventAdmission(cfg, stderr)
 	statePath := resolveStatePath(cfg)
 	if statePath != "off" {
 		runLock, lockErr := store.AcquireRunLock(statePath)
@@ -656,6 +680,10 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 2
 	}
+	// Capture the inherited identity before any Herdr child command can scrub
+	// HERDR_* variables from its environment. Socket transport has no self-pane
+	// RPC, but the watcher still must exclude its own pane when launched there.
+	inheritedSelfPaneID := os.Getenv("HERDR_PANE_ID")
 	rt, err := runtimeForRun(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
@@ -668,7 +696,10 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "Error: get own pane: %v\n", err)
 		return 1
 	}
-	panes, err := listPanesStartup(ctx, rt, cfg.Panes, selfPaneID, cfg.WaitForPanes, stderr)
+	if selfPaneID == "" && inheritedSelfPaneID != "" && cfg.Runtime == "herdr" {
+		selfPaneID = inheritedSelfPaneID
+	}
+	panes, startupSnapshot, startupSnapshotComplete, err := listPanesStartupWithSnapshot(ctx, rt, cfg.Panes, selfPaneID, cfg.WaitForPanes, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "Error: %v\n", err)
 		return 1
@@ -738,6 +769,7 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		ReadLines:           cfg.Lines,
 		SessionFileChannel:  cfg.SessionFileChannel,
 		AdmitSessionMatches: cfg.AdmitSessionMatches,
+		AdmitAgentEvents:    cfg.AdmitAgentEvents,
 		Margin:              cfg.Margin,
 		VerifyTimeout:       cfg.VerifyTimeout,
 	}, coordOpts...)
@@ -760,10 +792,11 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	if source, ok := rt.(runtimeapi.EventSource); ok {
 		eventSource = source
 		started, startErr := source.StartEvents(ctx, runtimeapi.SubscribeSpec{
-			PaneIDs:    paneIDs(panes),
-			MatchRegex: herdrDetectionMatchRegex,
-			ReadSource: "detection",
-			ReadLines:  cfg.Lines,
+			PaneIDs:          paneIDs(panes),
+			MatchRegex:       herdrDetectionMatchRegex,
+			ReadSource:       "detection",
+			ReadLines:        cfg.Lines,
+			AdmitAgentEvents: cfg.AdmitAgentEvents,
 		})
 		if startErr != nil {
 			fmt.Fprintf(stderr, "warning: event stream unavailable; polling fallback: %v\n", startErr)
@@ -798,9 +831,15 @@ func runCommand(args []string, _, stderr io.Writer) int {
 			}
 		}
 	}
+	coord.AdmitAgentSnapshotPanes(startupSnapshot, startupSnapshotComplete, func(pane runtimeapi.Pane) bool {
+		_, ok := monitoredPaneIDs[pane.ID]
+		return ok
+	}, selfPaneID, admitPane, time.Now())
 	coord.RunLoopWithCadence(ctx, detectionTicks, statusTicker.C, func() ([]runtimeapi.Pane, error) {
 		var snapshot []runtimeapi.Pane
 		var hasSnapshot bool
+		agentEventRefresh := false
+		agentEventPanes := make(map[string]string)
 		if eventChannelOpen {
 			for {
 				select {
@@ -812,6 +851,10 @@ func runCommand(args []string, _, stderr io.Writer) int {
 					if event.Kind == runtimeapi.EventResync {
 						snapshot = append([]runtimeapi.Pane(nil), event.Snapshot...)
 						hasSnapshot = true
+						coord.AdmitAgentSnapshotPanes(event.Snapshot, true, func(pane runtimeapi.Pane) bool {
+							_, ok := monitoredPaneIDs[pane.ID]
+							return ok
+						}, selfPaneID, admitPane, time.Now())
 						if manager != nil {
 							if err := manager.ReconcilePanes(event.Snapshot); err != nil {
 								fmt.Fprintf(stderr, "warning: reconcile pane identities: %v\n", err)
@@ -850,6 +893,11 @@ func runCommand(args []string, _, stderr io.Writer) int {
 						}
 					} else if event.Kind == runtimeapi.EventOutputMatched || event.Kind == runtimeapi.EventAgentStatus {
 						lastTrigger = time.Now()
+					} else if event.Kind == runtimeapi.EventAgentDetected {
+						agentEventRefresh = true
+						if event.PaneID != "" {
+							agentEventPanes[event.PaneID] = event.Pane.Agent
+						}
 					}
 				default:
 					if eventSource != nil && recycleDue(lastRecycle, lastTrigger, time.Now()) {
@@ -857,6 +905,12 @@ func runCommand(args []string, _, stderr io.Writer) int {
 						lastRecycle = time.Now()
 					}
 					if hasSnapshot {
+						if agentEventRefresh {
+							coord.AdmitAgentEventPanes(snapshot, agentEventPanes, true, func(pane runtimeapi.Pane) bool {
+								_, ok := monitoredPaneIDs[pane.ID]
+								return ok
+							}, selfPaneID, admitPane, time.Now())
+						}
 						coord.AdmitSessionFilePanes(snapshot, true, func(pane runtimeapi.Pane) bool {
 							_, ok := monitoredPaneIDs[pane.ID]
 							return ok
@@ -873,6 +927,12 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		if err != nil {
 			return nil, err
 		}
+		if agentEventRefresh {
+			coord.AdmitAgentEventPanes(all, agentEventPanes, true, func(pane runtimeapi.Pane) bool {
+				_, ok := monitoredPaneIDs[pane.ID]
+				return ok
+			}, selfPaneID, admitPane, time.Now())
+		}
 		coord.AdmitSessionFilePanes(all, true, func(pane runtimeapi.Pane) bool {
 			_, ok := monitoredPaneIDs[pane.ID]
 			return ok
@@ -881,6 +941,12 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		return filtered, nil
 	}, managerTick(manager), stderr)
 	return 0
+}
+
+func announceAgentEventAdmission(cfg runConfig, logw io.Writer) {
+	if cfg.AdmitAgentEvents && cfg.Transport == "cli" && logw != nil {
+		fmt.Fprintln(logw, "info: monitoring.admit_agent_events is inert under --transport cli; pane.agent_detected requires socket transport")
+	}
 }
 
 func recycleDue(lastRecycle, lastTrigger, now time.Time) bool {

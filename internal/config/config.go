@@ -40,6 +40,7 @@ type MonitoringConfig struct {
 	Lines               int
 	WaitForPanes        bool
 	AdmitSessionMatches bool
+	AdmitAgentEvents    bool
 }
 
 type ResumeConfig struct {
@@ -83,6 +84,7 @@ type rawMonitoringConfig struct {
 	Lines               *int     `yaml:"lines"`
 	WaitForPanes        *bool    `yaml:"wait_for_panes"`
 	AdmitSessionMatches *bool    `yaml:"admit_session_matches"`
+	AdmitAgentEvents    *bool    `yaml:"admit_agent_events"`
 }
 
 type rawResumeConfig struct {
@@ -179,6 +181,7 @@ func Load(path string) (Config, bool, error) {
 	mark("monitoring.lines", raw.Monitoring.Lines != nil)
 	mark("monitoring.wait_for_panes", raw.Monitoring.WaitForPanes != nil)
 	mark("monitoring.admit_session_matches", raw.Monitoring.AdmitSessionMatches != nil)
+	mark("monitoring.admit_agent_events", raw.Monitoring.AdmitAgentEvents != nil)
 	mark("resume.margin", raw.Resume.Margin != "")
 	mark("resume.max_wait", raw.Resume.MaxWait != "")
 	mark("resume.verify_timeout", raw.Resume.VerifyTimeout != "")
@@ -202,6 +205,9 @@ func Load(path string) (Config, bool, error) {
 	}
 	if raw.Monitoring.AdmitSessionMatches != nil {
 		parsed.Monitoring.AdmitSessionMatches = *raw.Monitoring.AdmitSessionMatches
+	}
+	if raw.Monitoring.AdmitAgentEvents != nil {
+		parsed.Monitoring.AdmitAgentEvents = *raw.Monitoring.AdmitAgentEvents
 	}
 	if raw.Resume.AnswerLimitMenu != nil {
 		parsed.Resume.AnswerLimitMenu = *raw.Resume.AnswerLimitMenu

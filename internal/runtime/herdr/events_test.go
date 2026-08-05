@@ -134,6 +134,9 @@ func TestSocketEventsSubscribeAndDecodeBothEventVocabularies(t *testing.T) {
 	if len(params.Subscriptions) != 9 {
 		t.Fatalf("subscriptions = %#v, want two pane pairs plus lifecycle/layout", params.Subscriptions)
 	}
+	if strings.Contains(string(data), `"type":"pane.agent_detected"`) {
+		t.Fatalf("default subscriptions = %s, want agent detection opt-in", data)
+	}
 	if params.Subscriptions[0]["type"] != "pane.agent_status_changed" || params.Subscriptions[0]["pane_id"] != "p1" {
 		t.Fatalf("first subscription = %#v", params.Subscriptions[0])
 	}
@@ -172,6 +175,29 @@ func TestSocketEventsSubscribeAndDecodeBothEventVocabularies(t *testing.T) {
 	}
 	if got[3].Kind != runtimeapi.EventPanesChanged || got[4].Kind != runtimeapi.EventPanesChanged {
 		t.Fatalf("lifecycle events = %#v", got[3:])
+	}
+}
+
+func TestSocketEventsSubscribesAndDecodesAgentDetected(t *testing.T) {
+	h := newStreamHarness(t)
+	_, ch, conn, request, _ := startStream(t, h, runtimeapi.SubscribeSpec{PaneIDs: []string{"p1"}, MatchRegex: "limit", AdmitAgentEvents: true})
+	data, err := json.Marshal(request.Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"type":"pane.agent_detected"`) {
+		t.Fatalf("subscriptions = %s, want pane.agent_detected", data)
+	}
+	writeStreamEvent(t, conn, "pane.agent_detected", map[string]any{
+		"pane": map[string]any{"pane_id": "p2", "agent": "claude", "terminal_id": "term-2"},
+	})
+	select {
+	case event := <-ch:
+		if event.Kind != runtimeapi.EventKind("agent_detected") || event.Pane.ID != "p2" || event.Pane.Agent != "claude" {
+			t.Fatalf("agent event = %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for agent-detected event")
 	}
 }
 

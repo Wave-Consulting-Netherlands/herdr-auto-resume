@@ -124,6 +124,58 @@ func TestParseRunFlagsWaitForPanesDefaultsOffAndHonorsFlagAndYAML(t *testing.T) 
 	}
 }
 
+func TestParseRunFlagsAdmitAgentEventsPrecedenceIncludingSetToDefault(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cases := []struct {
+		name   string
+		args   []string
+		config string
+		want   bool
+	}{
+		{name: "default", args: []string{"--pane", "w1:p1"}, want: false},
+		{name: "flag true", args: []string{"--pane", "w1:p1", "--admit-agent-events"}, want: true},
+		{name: "flag false set to default", args: []string{"--pane", "w1:p1", "--admit-agent-events=false"}, want: false},
+		{name: "yaml true", config: "monitoring:\n  admit_agent_events: true\n", args: []string{"--pane", "w1:p1"}, want: true},
+		{name: "yaml true flag false", config: "monitoring:\n  admit_agent_events: true\n", args: []string{"--pane", "w1:p1", "--admit-agent-events=false"}, want: false},
+		{name: "yaml false flag true", config: "monitoring:\n  admit_agent_events: false\n", args: []string{"--pane", "w1:p1", "--admit-agent-events=true"}, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string(nil), tc.args...)
+			if tc.config != "" {
+				path := filepath.Join(t.TempDir(), "config.yaml")
+				if err := os.WriteFile(path, []byte("version: 1\n"+tc.config), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = append([]string{"--config", path}, args...)
+			}
+			var stderr bytes.Buffer
+			cfg, err := parseRunFlags(args, &stderr)
+			if err != nil || cfg.AdmitAgentEvents != tc.want {
+				t.Fatalf("cfg=%#v err=%v stderr=%q, want admit_agent_events=%v", cfg, err, stderr.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentEventAdmissionIsInertUnderCLITransport(t *testing.T) {
+	var log bytes.Buffer
+	announceAgentEventAdmission(runConfig{AdmitAgentEvents: true, Transport: "cli"}, &log)
+	if got := strings.Count(log.String(), "monitoring.admit_agent_events is inert"); got != 1 {
+		t.Fatalf("notice count = %d, want one startup notice", got)
+	}
+	if !strings.Contains(log.String(), "pane.agent_detected requires socket transport") {
+		t.Fatalf("notice = %q, want clear socket explanation", log.String())
+	}
+	rt, err := runtimeForRun(runConfig{Runtime: "herdr", Transport: "cli", HerdrBin: "herdr"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := rt.(runtime.EventSource); ok {
+		t.Fatal("CLI runtime unexpectedly exposes an event subscription")
+	}
+}
+
 func TestParseRunFlagsSessionFileChannelFlagAndYAML(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var stderr bytes.Buffer
@@ -533,6 +585,20 @@ func TestDetectionEventPumpForwardsTickerAndIgnoresNonTriggers(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("ticker tick was not forwarded")
+	}
+}
+
+func TestDetectionEventPumpTreatsAgentDetectedAsRefreshTrigger(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ticker := make(chan time.Time)
+	events := make(chan runtime.Event, 1)
+	ticks := startDetectionPump(ctx, ticker, events)
+	events <- runtime.Event{Kind: runtime.EventKind("agent_detected"), PaneID: "new:p1"}
+	select {
+	case <-ticks:
+	case <-time.After(time.Second):
+		t.Fatal("agent-detected event did not produce a refresh tick")
 	}
 }
 
