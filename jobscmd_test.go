@@ -40,6 +40,59 @@ func TestStatusCommandGoldenShape(t *testing.T) {
 	}
 }
 
+func TestCodexBillingParkStatusInspectAckAndDedup(t *testing.T) {
+	const (
+		parkReason = "Codex billing action required: add workspace credits"
+		content    = "workspace credits evidence v1"
+	)
+	path := filepath.Join(t.TempDir(), "state.json")
+	st := store.NewJSONStore(path)
+	rt := &runtime.Fake{PanesList: []runtime.Pane{{ID: "p1", Agent: "codex"}}}
+	ids := []string{"credits-1", "credits-2"}
+	nextID := func() string {
+		id := ids[0]
+		ids = ids[1:]
+		return id
+	}
+	m := jobmanager.New(rt, st, jobmanager.Config{}, jobmanager.WithIDGenerator(nextID))
+	event := jobmanager.LimitEvent{
+		Pane:       runtime.Pane{ID: "p1", Agent: "codex"},
+		Provider:   "codex",
+		Evidence:   content,
+		ParkReason: parkReason,
+		ObservedAt: time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC),
+	}
+	if !m.HandleLimit(event) {
+		t.Fatal("credits park was not owned")
+	}
+	if jobs := m.Snapshot(); len(jobs) != 1 || jobs[0].State != store.StateManualRequired || jobs[0].LastError != parkReason || !jobs[0].ResetAtUTC.IsZero() || !jobs[0].ResumeAtUTC.IsZero() {
+		t.Fatalf("credits park jobs = %#v, want terminal billing park", jobs)
+	}
+
+	var statusOut, statusErr bytes.Buffer
+	if got := jobCommand([]string{"status", "--state-file", path}, &statusOut, &statusErr); got != 0 || !strings.Contains(statusOut.String(), parkReason) {
+		t.Fatalf("status exit=%d stdout=%q stderr=%q, want billing park reason", got, statusOut.String(), statusErr.String())
+	}
+	var inspectOut, inspectErr bytes.Buffer
+	if got := jobCommand([]string{"inspect", "credits-1", "--state-file", path}, &inspectOut, &inspectErr); got != 0 || !strings.Contains(inspectOut.String(), `"park_reason": "`+parkReason+`"`) {
+		t.Fatalf("inspect exit=%d stdout=%q stderr=%q, want billing park reason", got, inspectOut.String(), inspectErr.String())
+	}
+
+	var ackOut, ackErr bytes.Buffer
+	if got := jobCommand([]string{"ack", "credits-1", "--state-file", path}, &ackOut, &ackErr); got != 0 {
+		t.Fatalf("ack exit=%d stdout=%q stderr=%q", got, ackOut.String(), ackErr.String())
+	}
+	restarted := jobmanager.New(rt, st, jobmanager.Config{}, jobmanager.WithIDGenerator(nextID))
+	if !restarted.HandleLimit(event) || len(restarted.Snapshot()) != 1 {
+		t.Fatalf("identical billing evidence was not suppressed after ack: %#v", restarted.Snapshot())
+	}
+	changed := event
+	changed.Evidence = "workspace credits evidence v2"
+	if !restarted.HandleLimit(changed) || len(restarted.Snapshot()) != 2 || restarted.Snapshot()[1].ID != "credits-2" {
+		t.Fatalf("changed billing evidence did not create a new job: %#v", restarted.Snapshot())
+	}
+}
+
 func TestWriteJobStatusUsesProvidedLocationForReset(t *testing.T) {
 	loc, err := time.LoadLocation("Europe/Amsterdam")
 	if err != nil {
