@@ -15,6 +15,7 @@ import (
 
 	appconfig "github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/config"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/jobs"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
@@ -38,34 +39,36 @@ func (s *stringList) Set(value string) error {
 }
 
 type runConfig struct {
-	Runtime             string
-	Transport           string
-	TransportExplicit   bool
-	SocketExplicit      bool
-	Panes               []string
-	Interval            time.Duration
-	Lines               int
-	DryRun              bool
-	TestPattern         string
-	HerdrBin            string
-	Socket              string
-	Session             string
-	Workspace           string
-	StateFile           string
-	Margin              time.Duration
-	MaxWait             time.Duration
-	VerifyTimeout       time.Duration
-	WaitForPanes        bool
-	Providers           string
-	SessionFileChannel  bool
-	AdmitSessionMatches bool
-	AdmitAgentEvents    bool
-	AnswerLimitMenu     bool
-	ClaudePrompt        string
-	CodexPrompt         string
+	Runtime              string
+	Transport            string
+	TransportExplicit    bool
+	SocketExplicit       bool
+	Panes                []string
+	Interval             time.Duration
+	Lines                int
+	DryRun               bool
+	TestPattern          string
+	HerdrBin             string
+	Socket               string
+	Session              string
+	Workspace            string
+	StateFile            string
+	Margin               time.Duration
+	MaxWait              time.Duration
+	VerifyTimeout        time.Duration
+	WaitForPanes         bool
+	Providers            string
+	SessionFileChannel   bool
+	AdmitSessionMatches  bool
+	AdmitAgentEvents     bool
+	TransientRetry       bool
+	TransientMaxAttempts int
+	AnswerLimitMenu      bool
+	ClaudePrompt         string
+	CodexPrompt          string
 }
 
-const herdrDetectionMatchRegex = `(?i)(?:limit\s+reached|rate\s+limit|usage\s+limit|out\s+of\s+(?:extra\s+)?usage|try\s+again\s+in|you['’]ve\s+hit\s+your|out\s+of\s+credits|spend\s+cap)`
+var herdrDetectionMatchRegex = `(?i)(?:limit\s+reached|rate\s+limit|usage\s+limit|out\s+of\s+(?:extra\s+)?usage|try\s+again\s+in|you['’]ve\s+hit\s+your|out\s+of\s+credits|spend\s+cap|` + detection.TransientMatchRegex() + `)`
 
 func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -79,7 +82,8 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 		Runtime: "herdr", Interval: 3 * time.Second, Lines: 200,
 		HerdrBin: "herdr", StateFile: "auto", Margin: time.Minute,
 		MaxWait: 192 * time.Hour, VerifyTimeout: 90 * time.Second,
-		Providers: "claude,codex", ClaudePrompt: claude.New("").ResumeAction().Text,
+		TransientMaxAttempts: 5,
+		Providers:            "claude,codex", ClaudePrompt: claude.New("").ResumeAction().Text,
 		CodexPrompt: codex.New("").ResumeAction().Text,
 	}
 	cfg := defaults
@@ -104,6 +108,8 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 	fs.BoolVar(&cfg.SessionFileChannel, "session-file-channel", false, "read Claude session files and correlate rate-limit observations")
 	fs.BoolVar(&cfg.AdmitSessionMatches, "admit-session-matches", false, "admit an unmonitored pane named by a session-file observation")
 	fs.BoolVar(&cfg.AdmitAgentEvents, "admit-agent-events", false, "admit panes reported by herdr agent-detected events")
+	fs.BoolVar(&cfg.TransientRetry, "transient-retry", false, "retry transient API failures with bounded backoff (default off)")
+	fs.IntVar(&cfg.TransientMaxAttempts, "transient-max-attempts", 5, "maximum transient retry attempts")
 	fs.BoolVar(&cfg.AnswerLimitMenu, "answer-limit-menu", false, "select Claude's safe stop-and-wait limit-menu option")
 	fs.StringVar(&cfg.ClaudePrompt, "claude-prompt", claude.New("").ResumeAction().Text, "Claude continuation prompt")
 	fs.StringVar(&cfg.CodexPrompt, "codex-prompt", codex.New("").ResumeAction().Text, "Codex continuation prompt")
@@ -218,8 +224,8 @@ func parseRunFlags(args []string, stderr io.Writer) (runConfig, error) {
 		fs.Usage()
 		return runConfig{}, err
 	}
-	if cfg.Margin < 0 || cfg.MaxWait <= 0 || cfg.VerifyTimeout <= 0 {
-		err := errors.New("--margin must be non-negative; --max-wait and --verify-timeout must be positive")
+	if cfg.Margin < 0 || cfg.MaxWait <= 0 || cfg.VerifyTimeout <= 0 || cfg.TransientMaxAttempts <= 0 {
+		err := errors.New("--margin must be non-negative; --max-wait, --verify-timeout, and --transient-max-attempts must be positive")
 		fmt.Fprintln(stderr, "error:", err)
 		fs.Usage()
 		return runConfig{}, err
@@ -290,6 +296,12 @@ func mergeRunConfig(defaults runConfig, file appconfig.Config) runConfig {
 	if file.Has("monitoring.admit_agent_events") {
 		merged.AdmitAgentEvents = file.Monitoring.AdmitAgentEvents
 	}
+	if file.Has("monitoring.transient_retry") {
+		merged.TransientRetry = file.Monitoring.TransientRetry
+	}
+	if file.Has("monitoring.transient_max_attempts") {
+		merged.TransientMaxAttempts = file.Monitoring.TransientMaxAttempts
+	}
 	if file.Has("resume.answer_limit_menu") {
 		merged.AnswerLimitMenu = file.Resume.AnswerLimitMenu
 	}
@@ -350,6 +362,10 @@ func applyExplicitRunFlags(dst, parsed *runConfig, panes *stringList, fs *flag.F
 			dst.AdmitSessionMatches = parsed.AdmitSessionMatches
 		case "admit-agent-events":
 			dst.AdmitAgentEvents = parsed.AdmitAgentEvents
+		case "transient-retry":
+			dst.TransientRetry = parsed.TransientRetry
+		case "transient-max-attempts":
+			dst.TransientMaxAttempts = parsed.TransientMaxAttempts
 		case "answer-limit-menu":
 			dst.AnswerLimitMenu = parsed.AnswerLimitMenu
 		case "claude-prompt":
@@ -734,13 +750,15 @@ func runCommand(args []string, _, stderr io.Writer) int {
 			}
 		}
 		manager = jobs.New(rt, st, jobs.Config{
-			Provider:        "claude",
-			Margin:          cfg.Margin,
-			MaxHorizon:      cfg.MaxWait,
-			VerifyTimeout:   cfg.VerifyTimeout,
-			ReadLines:       cfg.Lines,
-			DryRun:          cfg.DryRun,
-			AnswerLimitMenu: cfg.AnswerLimitMenu,
+			Provider:             "claude",
+			Margin:               cfg.Margin,
+			MaxHorizon:           cfg.MaxWait,
+			VerifyTimeout:        cfg.VerifyTimeout,
+			ReadLines:            cfg.Lines,
+			DryRun:               cfg.DryRun,
+			AnswerLimitMenu:      cfg.AnswerLimitMenu,
+			TransientRetry:       cfg.TransientRetry,
+			TransientMaxAttempts: cfg.TransientMaxAttempts,
 		}, jobs.WithLogWriter(stderr), jobs.WithProviders(registry), jobs.WithEpisodeRegistry(episodeRegistry))
 		if err := manager.Reconcile(); err != nil {
 			fmt.Fprintf(stderr, "Error: reconcile state: %v\n", err)
@@ -770,6 +788,7 @@ func runCommand(args []string, _, stderr io.Writer) int {
 		SessionFileChannel:  cfg.SessionFileChannel,
 		AdmitSessionMatches: cfg.AdmitSessionMatches,
 		AdmitAgentEvents:    cfg.AdmitAgentEvents,
+		TransientRetry:      cfg.TransientRetry,
 		Margin:              cfg.Margin,
 		VerifyTimeout:       cfg.VerifyTimeout,
 	}, coordOpts...)

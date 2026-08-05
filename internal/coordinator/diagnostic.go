@@ -31,3 +31,23 @@ func (c *Coordinator) logLimitedDiagnostic(pane runtime.Pane, providerName strin
 	}
 	fmt.Fprintf(c.logw, "limit diagnostic pane=%s provider=%s reason=%s reset=%q evidence=%s\n", pane.ID, providerName, reason, analysis.Reset.Raw, evidenceHash)
 }
+
+func (c *Coordinator) logTransientDiagnostic(pane runtime.Pane, providerName string, analysis detection.Analysis, content string) {
+	if c.logw == nil {
+		return
+	}
+	evidence := analysis.Evidence
+	if evidence == "" {
+		evidence = content
+	}
+	digest := sha256.Sum256([]byte(evidence))
+	evidenceHash := hex.EncodeToString(digest[:])
+	if c.transientEvidence[pane.ID] == evidenceHash {
+		return
+	}
+	c.transientEvidence[pane.ID] = evidenceHash
+	if providerName == "" {
+		providerName = "none"
+	}
+	fmt.Fprintf(c.logw, "transient diagnostic pane=%s provider=%s reason=classified class=%s evidence=%s\n", pane.ID, providerName, analysis.TransientClass, evidenceHash)
+}

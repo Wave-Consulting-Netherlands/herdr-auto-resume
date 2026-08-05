@@ -41,3 +41,25 @@ func TestClaudeSafeToResumeMatchesGateNineBody(t *testing.T) {
 		t.Fatalf("SafeToResume() = %v, %q, want true validation passed", ok, reason)
 	}
 }
+
+func TestClaudeSafeToResumePreservesPreFeatureTransientContract(t *testing.T) {
+	now := time.Date(2026, 7, 31, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		content string
+		wantOK  bool
+		wantMsg string
+	}{
+		{name: "idle prompt", content: "╭────╮\n> ", wantOK: true, wantMsg: "validation passed"},
+		{name: "transient only", content: "api error: connection reset", wantMsg: "pane is not Claude Code"},
+		{name: "transient with Claude chrome", content: "╭────╮\nClaude\napi error: connection reset", wantMsg: "terminal is not in a safe blocked or idle state"},
+		{name: "plain shell", content: "$ echo ready\n$ ", wantMsg: "pane is not Claude Code"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gotOK, gotMsg := New("").SafeToResume(tc.content, now)
+			if gotOK != tc.wantOK || gotMsg != tc.wantMsg {
+				t.Fatalf("SafeToResume() = %v, %q; want %v, %q", gotOK, gotMsg, tc.wantOK, tc.wantMsg)
+			}
+		})
+	}
+}

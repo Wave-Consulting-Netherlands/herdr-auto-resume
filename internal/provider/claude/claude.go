@@ -47,6 +47,18 @@ func (c *Claude) SafeToResume(content string, now time.Time) (bool, string) {
 	return true, "validation passed"
 }
 
+// SafeToRetryTransient is called only after jobs has established Claude from
+// the pane's runtime hint or genuine Claude chrome. It does not alter the
+// shared SafeToResume contract: the transient state itself is the explicit
+// blocked condition, while menus remain unsafe.
+func (c *Claude) SafeToRetryTransient(content string, now time.Time) (bool, string) {
+	analysis := detection.Analyze(content, now)
+	if analysis.MenuVisible || !analysis.Transient {
+		return false, "terminal is not in a safe blocked or idle state"
+	}
+	return true, "validation passed"
+}
+
 func (c *Claude) ResumeAction() provider.ResumeAction {
 	return provider.ResumeAction{KeysBefore: []string{"escape"}, Text: c.prompt, SubmitKey: "enter"}
 }

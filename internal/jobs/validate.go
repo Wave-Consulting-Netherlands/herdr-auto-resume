@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/store"
 )
@@ -82,12 +83,20 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		finish(store.StateManualRequired, fmt.Sprintf("provider mismatch: job %q, current pane %q", expectedProvider, current.Name()), true)
 		return
 	}
+	if job.Source == "transient" {
+		analysis := detection.Analyze(content, now)
+		if analysis.IsLimited && !analysis.Reset.ParsedTime.IsZero() {
+			finish(store.StateManualRequired, "reset-bearing limit superseded transient retry", true)
+			return
+		}
+	}
 	if job.TerminalID != "" && candidate.TerminalID != job.TerminalID {
 		finish(store.StateManualRequired, "pane identity changed", true)
 		return
 	}
 	menuVisible := m.cfg.AnswerLimitMenu && current.Name() == "claude" && looksLikeLimitMenu(content)
-	if !current.DetectContent(content) && !menuVisible {
+	identityFromHint := strings.TrimSpace(candidate.Agent) != "" && strings.EqualFold(candidate.Agent, expectedProvider)
+	if !current.DetectContent(content) && !(job.Source == "transient" && identityFromHint) && !menuVisible {
 		finish(store.StateManualRequired, "pane is not "+current.Name(), true)
 		return
 	}
@@ -101,6 +110,10 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 	}
 	if job.WorkingDir != "" && info.CWD != job.WorkingDir {
 		finish(store.StateManualRequired, "working directory changed", true)
+		return
+	}
+	if job.Source == "transient" && current.Name() == "claude" && detection.HasRateLimitMenu(content) {
+		finish(store.StateManualRequired, "menu-visible: transient retry requires a non-menu screen", true)
 		return
 	}
 	if m.cfg.AnswerLimitMenu && current.Name() == "claude" && looksLikeLimitMenu(content) {
@@ -121,7 +134,17 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		finish(store.StateManualRequired, "menu-visible: terminal menu failed strict answer guard", true)
 		return
 	}
-	if ok, reason := current.SafeToResume(content, now); !ok {
+	if job.Source == "transient" {
+		safety, ok := current.(provider.TransientRetrySafety)
+		if !ok {
+			finish(store.StateManualRequired, "provider has no transient retry safety gate", true)
+			return
+		}
+		if ok, reason := safety.SafeToRetryTransient(content, now); !ok {
+			finish(store.StateManualRequired, reason, true)
+			return
+		}
+	} else if ok, reason := current.SafeToResume(content, now); !ok {
 		finish(store.StateManualRequired, reason, true)
 		return
 	}
@@ -188,6 +211,35 @@ func (m *Manager) verify(index int, job store.Job, now time.Time) {
 			return
 		}
 		analysis := current.Analyze(content, now)
+		if job.Source == "transient" {
+			analysis = detection.Analyze(content, now)
+			if analysis.IsLimited && !analysis.Reset.ParsedTime.IsZero() {
+				job.State = store.StateManualRequired
+				job.LastError = "reset-bearing limit superseded transient retry"
+				job.LastValidation = "reset-bearing limit superseded transient retry"
+				if m.updateJob(index, job) {
+					m.logf("limit diagnostic pane=%s job=%s provider=%s reason=reset-bearing-limit-superseded-transient", job.PaneID, job.ID, job.Provider)
+				}
+				return
+			}
+			if !analysis.Transient {
+				job.State = store.StateResumed
+				job.LastValidation = "resume verified"
+				job.LastError = ""
+				if m.updateJob(index, job) {
+					m.logf("job=%s active", job.ID)
+					m.notify("auto-resume", fmt.Sprintf("job %s resumed", job.ID), false)
+				}
+				return
+			}
+			if !now.Before(job.VerifyDeadlineUTC) {
+				m.scheduleNextTransientRetry(index, job, now)
+				return
+			}
+			job.LastValidation = "transient retry verification pending"
+			_ = m.updateJob(index, job)
+			return
+		}
 		if now.Before(job.VerifyDeadlineUTC) && (!analysis.IsLimited || (analysis.IsLimited && !analysis.Actionable)) {
 			job.State = store.StateResumed
 			job.LastValidation = "resume verified"
@@ -223,6 +275,31 @@ func (m *Manager) verify(index int, job store.Job, now time.Time) {
 		job.LastValidation = "resume verification read failed: " + err.Error()
 	}
 	_ = m.updateJob(index, job)
+}
+
+func (m *Manager) scheduleNextTransientRetry(index int, job store.Job, now time.Time) {
+	nextAttempt := job.RetryAttempt + 1
+	if nextAttempt > m.cfg.TransientMaxAttempts {
+		job.State = store.StateManualRequired
+		job.LastError = fmt.Sprintf("transient retry attempt limit reached after %d attempts", m.cfg.TransientMaxAttempts)
+		job.LastValidation = "transient retry parked at attempt limit"
+		if m.updateJob(index, job) {
+			m.logf("limit diagnostic pane=%s job=%s provider=%s reason=transient-retry-attempt-limit", job.PaneID, job.ID, job.Provider)
+		}
+		return
+	}
+	delay := transientBackoff(nextAttempt)
+	job.State = store.StateWaiting
+	job.RetryAttempt = nextAttempt
+	job.ResumeAtUTC = now.Add(delay).UTC()
+	job.Attempts = 0
+	job.AttemptID = ""
+	job.AttemptAtUTC = time.Time{}
+	job.VerifyDeadlineUTC = time.Time{}
+	job.LastValidation = "transient retry scheduled"
+	if m.updateJob(index, job) {
+		m.logf("transient retry pane=%s attempt=%d next_delay=%s class=%s", job.PaneID, nextAttempt, delay, job.TransientClass)
+	}
 }
 
 func resumeDiagnosticReason(reason string) string {

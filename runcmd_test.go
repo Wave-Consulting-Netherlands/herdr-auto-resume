@@ -158,6 +158,40 @@ func TestParseRunFlagsAdmitAgentEventsPrecedenceIncludingSetToDefault(t *testing
 	}
 }
 
+func TestParseRunFlagsTransientRetryPrecedenceIncludingSetToDefault(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cases := []struct {
+		name   string
+		args   []string
+		config string
+		want   bool
+	}{
+		{name: "default", args: []string{"--pane", "w1:p1"}, want: false},
+		{name: "flag true", args: []string{"--pane", "w1:p1", "--transient-retry"}, want: true},
+		{name: "flag false set to default", args: []string{"--pane", "w1:p1", "--transient-retry=false"}, want: false},
+		{name: "yaml true", config: "monitoring:\n  transient_retry: true\n", args: []string{"--pane", "w1:p1"}, want: true},
+		{name: "yaml true flag false", config: "monitoring:\n  transient_retry: true\n", args: []string{"--pane", "w1:p1", "--transient-retry=false"}, want: false},
+		{name: "yaml false flag true", config: "monitoring:\n  transient_retry: false\n", args: []string{"--pane", "w1:p1", "--transient-retry=true"}, want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append([]string(nil), tc.args...)
+			if tc.config != "" {
+				path := filepath.Join(t.TempDir(), "config.yaml")
+				if err := os.WriteFile(path, []byte("version: 1\n"+tc.config), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = append([]string{"--config", path}, args...)
+			}
+			var stderr bytes.Buffer
+			cfg, err := parseRunFlags(args, &stderr)
+			if err != nil || cfg.TransientRetry != tc.want {
+				t.Fatalf("cfg=%#v err=%v stderr=%q, want transient_retry=%v", cfg, err, stderr.String(), tc.want)
+			}
+		})
+	}
+}
+
 func TestAgentEventAdmissionIsInertUnderCLITransport(t *testing.T) {
 	var log bytes.Buffer
 	announceAgentEventAdmission(runConfig{AdmitAgentEvents: true, Transport: "cli"}, &log)

@@ -21,6 +21,7 @@ type Config struct {
 	SessionFileChannel  bool
 	AdmitSessionMatches bool
 	AdmitAgentEvents    bool
+	TransientRetry      bool
 	Margin              time.Duration
 	VerifyTimeout       time.Duration
 }
@@ -55,6 +56,21 @@ type LimitEvent struct {
 // JobSink owns known-reset limit episodes when configured by the headless runner.
 type JobSink interface {
 	HandleLimit(LimitEvent) bool
+}
+
+// TransientJobSink owns opt-in non-reset transient retry episodes.
+type TransientJobSink interface {
+	HandleTransient(TransientEvent) bool
+}
+
+// TransientEvent is the complete transient evidence observed for one pane.
+type TransientEvent struct {
+	Pane           runtime.Pane
+	Provider       string
+	TransientClass detection.TransientClass
+	Content        string
+	Evidence       string
+	ObservedAt     time.Time
 }
 
 type SessionFileSource interface {
@@ -126,6 +142,7 @@ type Coordinator struct {
 	providers          *provider.Registry
 	logw               io.Writer
 	diagnosticEvidence map[string]string
+	transientEvidence  map[string]string
 	sessionFileSource  SessionFileSource
 }
 
@@ -144,6 +161,7 @@ func New(rt runtime.Runtime, cfg Config, opts ...Option) *Coordinator {
 		providers:          defaultRegistry(),
 		logw:               io.Discard,
 		diagnosticEvidence: make(map[string]string),
+		transientEvidence:  make(map[string]string),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -170,6 +188,11 @@ func (c *Coordinator) SetPanes(panes []runtime.Pane) {
 	for paneID := range c.diagnosticEvidence {
 		if _, ok := updated[paneID]; !ok {
 			delete(c.diagnosticEvidence, paneID)
+		}
+	}
+	for paneID := range c.transientEvidence {
+		if _, ok := updated[paneID]; !ok {
+			delete(c.transientEvidence, paneID)
 		}
 	}
 }
@@ -216,6 +239,15 @@ func (c *Coordinator) Poll() {
 		}
 		state.ProviderChecked = true
 		analysis := current.Analyze(content, now)
+		if c.cfg.TransientRetry {
+			// Transient state is deliberately supplemented at this
+			// flag-gated coordinator seam. It is not provider identity and
+			// does not alter shared provider safety methods.
+			transientAnalysis := detection.Analyze(content, now)
+			if transientAnalysis.Transient {
+				analysis = transientAnalysis
+			}
+		}
 		statusLimited := analysis.IsLimited
 
 		wasLimited := state.IsRateLimited
@@ -279,6 +311,21 @@ func (c *Coordinator) Poll() {
 					if c.sendResume(paneID, current) == nil {
 						state.LastPeriodicContinue = now
 					}
+				}
+			}
+		}
+
+		// Reset-bearing limits take the branch above. A transient is never
+		// allowed to pre-empt or downgrade that ordinary limit episode.
+		if !state.IsRateLimited && c.cfg.TransientRetry && state.Mode == ModeAuto && analysis.Transient {
+			c.logTransientDiagnostic(state.Pane, current.Name(), analysis, content)
+			if sink, ok := c.jobSink.(TransientJobSink); ok {
+				owned := sink.HandleTransient(TransientEvent{
+					Pane: state.Pane, Provider: current.Name(), TransientClass: analysis.TransientClass,
+					Content: content, Evidence: content, ObservedAt: now,
+				})
+				if owned {
+					state.ContinueSent = true
 				}
 			}
 		}
