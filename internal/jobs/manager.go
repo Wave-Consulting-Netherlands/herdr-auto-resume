@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/coordinator"
+	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/detection"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/provider/claude"
 	"github.com/Wave-Consulting-Netherlands/herdr-auto-resume/internal/runtime"
@@ -25,15 +26,20 @@ import (
 // LimitEvent is re-exported for callers that only need the jobs boundary.
 type LimitEvent = coordinator.LimitEvent
 
+// TransientEvent is re-exported for callers that only need the jobs boundary.
+type TransientEvent = coordinator.TransientEvent
+
 // Config controls scheduling and validation.
 type Config struct {
-	Provider        string
-	Margin          time.Duration
-	MaxHorizon      time.Duration
-	VerifyTimeout   time.Duration
-	ReadLines       int
-	DryRun          bool
-	AnswerLimitMenu bool
+	Provider             string
+	Margin               time.Duration
+	MaxHorizon           time.Duration
+	VerifyTimeout        time.Duration
+	ReadLines            int
+	DryRun               bool
+	AnswerLimitMenu      bool
+	TransientRetry       bool
+	TransientMaxAttempts int
 }
 
 type Option func(*Manager)
@@ -155,6 +161,9 @@ func withDefaults(cfg Config) Config {
 	if cfg.ReadLines <= 0 {
 		cfg.ReadLines = 200
 	}
+	if cfg.TransientMaxAttempts <= 0 {
+		cfg.TransientMaxAttempts = 5
+	}
 	return cfg
 }
 
@@ -201,6 +210,25 @@ func (m *Manager) HandleLimit(event LimitEvent) bool {
 	if err := store.WithLock(m.store, func() error {
 		m.reloadLocked()
 		owned = m.handleLimitLocked(event)
+		return nil
+	}); err != nil {
+		m.logf("state transaction: %v", err)
+		return false
+	}
+	return owned
+}
+
+// HandleTransient owns one opt-in transient episode. It is level-triggered:
+// an active transient job is the single flight, so repeated observations can
+// never create parallel retries for one pane.
+func (m *Manager) HandleTransient(event coordinator.TransientEvent) bool {
+	if !m.cfg.TransientRetry {
+		return false
+	}
+	owned := false
+	if err := store.WithLock(m.store, func() error {
+		m.reloadLocked()
+		owned = m.handleTransientLocked(event)
 		return nil
 	}); err != nil {
 		m.logf("state transaction: %v", err)
@@ -269,11 +297,19 @@ func (m *Manager) handleLimitLocked(event LimitEvent) bool {
 		}
 	}
 	evidenceHash := hashEvidence(evidence)
-	for _, job := range m.file.Jobs {
+	for i := range m.file.Jobs {
+		job := m.file.Jobs[i]
 		if event.EpisodeID != "" && job.Episode == event.EpisodeID {
 			return true
 		}
 		if job.PaneID != event.Pane.ID {
+			continue
+		}
+		if job.Source == "transient" && !job.State.Terminal() {
+			job.State = store.StateManualRequired
+			job.LastError = "transient retry superseded by reset-bearing limit"
+			job.LastValidation = "reset-bearing limit superseded transient retry"
+			m.file.Jobs[i] = job
 			continue
 		}
 		// Acknowledging a terminal park releases the pane only for a genuinely
@@ -334,6 +370,95 @@ func (m *Manager) handleLimitLocked(event LimitEvent) bool {
 		m.notify("auto-resume", fmt.Sprintf("job %s scheduled for pane %s; reset at %s", job.ID, job.PaneID, localReset), false)
 	}
 	return true
+}
+
+func (m *Manager) handleTransientLocked(event coordinator.TransientEvent) bool {
+	now := event.ObservedAt
+	if now.IsZero() {
+		now = m.clock()
+	}
+	providerName := event.Provider
+	if providerName == "" {
+		providerName = m.cfg.Provider
+	}
+	transientClass := event.TransientClass
+	if transientClass == "" {
+		match, ok := detection.ClassifyTransient(event.Content)
+		if !ok {
+			return false
+		}
+		transientClass = match.Class
+	}
+	evidence := event.Evidence
+	if evidence == "" {
+		evidence = event.Content
+	}
+	evidenceHash := hashEvidence(evidence)
+	for _, job := range m.file.Jobs {
+		if job.PaneID != event.Pane.ID {
+			continue
+		}
+		if !job.State.Terminal() {
+			return true
+		}
+		if job.Source == "transient" && (job.EvidenceHash == evidenceHash || job.AckedAt.IsZero()) {
+			return true
+		}
+	}
+
+	attempt := 1
+	delay := transientBackoff(attempt)
+	job := store.Job{
+		ID: m.nextID(), Provider: providerName, PaneID: event.Pane.ID,
+		TerminalID: event.Pane.TerminalID, Workspace: event.Pane.WorkspaceID, Agent: event.Pane.Agent,
+		DetectedAt: now.UTC(), State: store.StateWaiting, ResumeAtUTC: now.Add(delay).UTC(),
+		EvidenceHash: evidenceHash, EvidenceAtUTC: now.UTC(), DryRun: m.cfg.DryRun,
+		Source: "transient", TransientClass: string(transientClass), RetryAttempt: attempt,
+		LastValidation: "transient retry scheduled",
+	}
+	if info, err := m.rt.ProcessInfo(event.Pane.ID); err == nil {
+		job.ProcCommand = info.Command
+		job.WorkingDir = info.CWD
+	}
+	if job.ResumeAtUTC.Sub(now) > m.cfg.MaxHorizon {
+		job.State = store.StateFailed
+		job.LastError = fmt.Sprintf("transient retry time exceeds maximum horizon of %s", m.cfg.MaxHorizon)
+	}
+	next := append(append([]store.Job(nil), m.file.Jobs...), job)
+	if err := m.store.Save(store.File{Version: 1, Jobs: next}); err != nil {
+		m.logf("save job %s: %v", job.ID, err)
+		return false
+	}
+	m.file = store.File{Version: 1, Jobs: next}
+	m.noteModTime()
+	if job.State == store.StateFailed {
+		m.logf("transient retry pane=%s attempt=%d terminal=%s class=%s", job.PaneID, attempt, job.LastError, job.TransientClass)
+	} else {
+		m.logf("transient retry pane=%s attempt=%d next_delay=%s class=%s", job.PaneID, attempt, delay, job.TransientClass)
+	}
+	return true
+}
+
+const (
+	transientBaseDelay = time.Minute
+	transientMaxDelay  = 5 * time.Minute
+)
+
+func transientBackoff(attempt int) time.Duration {
+	if attempt <= 1 {
+		return transientBaseDelay
+	}
+	delay := transientBaseDelay
+	for i := 1; i < attempt; i++ {
+		if delay >= transientMaxDelay/2 {
+			return transientMaxDelay
+		}
+		delay *= 2
+	}
+	if delay > transientMaxDelay {
+		return transientMaxDelay
+	}
+	return delay
 }
 
 // Tick advances waiting jobs and performs validation when their scheduled time arrives.

@@ -24,3 +24,11 @@ type Provider interface {
 	ResumeAction() ResumeAction
 	AllowPeriodicNudge() bool
 }
+
+// TransientRetrySafety is deliberately separate from Provider.SafeToResume.
+// The coordinator/job layer invokes it only for an explicitly enabled,
+// identity-established transient retry; ordinary resume callers cannot gain
+// new authorization through this predicate.
+type TransientRetrySafety interface {
+	SafeToRetryTransient(content string, now time.Time) (bool, string)
+}

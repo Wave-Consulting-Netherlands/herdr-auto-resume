@@ -33,6 +33,9 @@ func validate(cfg Config) error {
 	if cfg.Monitoring.Lines < 0 {
 		return fmt.Errorf("monitoring.lines must be positive")
 	}
+	if cfg.Monitoring.TransientMaxAttempts < 0 {
+		return fmt.Errorf("monitoring.transient_max_attempts must be positive")
+	}
 	if cfg.Resume.Margin < 0 {
 		return fmt.Errorf("resume.margin must be non-negative")
 	}

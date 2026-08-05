@@ -34,7 +34,6 @@ func IsClaudeCode(content string) bool {
 	if isRateLimitSignal(content) {
 		return true
 	}
-
 	// Footer hint is very reliable
 	if footerHintPattern.MatchString(content) {
 		return true

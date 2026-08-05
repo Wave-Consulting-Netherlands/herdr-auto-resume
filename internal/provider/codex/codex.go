@@ -126,6 +126,19 @@ func (c *Codex) SafeToResume(content string, now time.Time) (bool, string) {
 	return true, "validation passed"
 }
 
+// SafeToRetryTransient is an explicit transient-path gate. Provider identity
+// is checked by the job layer; this method only accepts a still-transient,
+// non-busy screen and never changes SafeToResume.
+func (c *Codex) SafeToRetryTransient(content string, now time.Time) (bool, string) {
+	if hasBusyLiveTail(content) || detection.HasRateLimitMenu(content) {
+		return false, "terminal is not in a safe blocked or idle state"
+	}
+	if analysis := detection.Analyze(content, now); !analysis.Transient {
+		return false, "terminal is not in a safe blocked or idle state"
+	}
+	return true, "validation passed"
+}
+
 func (c *Codex) ResumeAction() provider.ResumeAction {
 	return provider.ResumeAction{Text: c.prompt, SubmitKey: "enter"}
 }
