@@ -21,7 +21,7 @@ upgrading.
 
 Install tagged source with Go:
 
-    go install github.com/Wave-Consulting-Netherlands/herdr-auto-resume@v0.4.0
+    go install github.com/Wave-Consulting-Netherlands/herdr-auto-resume@v0.5.0
 
 Or build from a checkout:
 
@@ -90,11 +90,21 @@ launchctl bootstrap workflow. Its stdout and stderr are under ~/Library/Logs.
     herdr-auto-resume status
     herdr-auto-resume inspect <job-id-prefix>
     herdr-auto-resume cancel <job-id-prefix>
+    herdr-auto-resume ack <job-id-prefix> [--reason "why"]
     herdr-auto-resume revive <session-id-prefix>
     herdr-auto-resume doctor
     herdr-auto-resume doctor --transport socket --socket ~/.config/herdr/herdr.sock
     herdr-auto-resume detect --provider claude --file path/to/pane-capture.txt
     herdr-auto-resume detect --provider codex --file path/to/codex-capture.txt
+
+`ack` releases a pane that a handled terminal job was still holding. Any terminal job that is
+not RESUMED parks its pane: the watcher treats the pane as already owned and creates no further
+jobs for it, permanently and — before v0.5.0 — invisibly. `ack` records `acked_at` and
+`acked_reason` (default `acknowledged by operator`) in one locked transaction, after which a
+NEW limit episode on that pane creates a job again; identical evidence stays suppressed, so
+acknowledging cannot replay the episode you just handled. RESUMED jobs are rejected (nothing to
+acknowledge) and active jobs are rejected in favour of `cancel`. `status` shows a PARKED column
+naming the reason, and `inspect` reports `parked` and `park_reason`.
 
 Job commands read configured state.file when --state-file is omitted. doctor reports version,
 config, watcher-lock, Herdr, adapter, schema, and self-pane diagnostics. Run-lock errors name
