@@ -116,6 +116,22 @@ session, takes a non-blocking per-session lease, records crash-recovery intent, 
 state file. It sends no continuation; once the pane is monitored, the normal detection and
 verification path handles it.
 
+### Diagnosing a pane herdr will not tag
+
+When a pane is not being picked up, or is picked up as the wrong agent, ask herdr what it
+thinks before reading this tool's logs:
+
+    herdr agent explain --target <pane-id>
+
+It explains herdr's own agent-detection state for that pane, which is the input everything here
+depends on: `admit_agent_events` seeding, the `agent_session` correlation used by the
+session-file channel, and the identity gate in the resume path all start from herdr's answer.
+A pane herdr has not tagged will not be seeded, and its limit menu cannot be answered — the
+menu answer deliberately requires a real `agent_session`.
+
+Scrub `HERDR_*` from the environment when running herdr commands from inside a pane; children
+inherit the live pane identity and will otherwise report on the wrong pane.
+
 ## Configuration
 
 The default file is ~/.config/herdr-auto-resume/config.yaml, or

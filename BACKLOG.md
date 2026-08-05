@@ -56,8 +56,13 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     aged-connection drill passed (job `cdc0f5e1`: detection over a 50h-old event stream, durable
     WAITING job, exactly one resume, “resume verified”, and RESUMED). Production is now on the
     socket default; `--transport cli` remains the explicit opt-out.
-17. **AUDIT DELIVERED 2026-08-05 (read-only Codex); adopt-list below, item stays open for the
-    two adoptions.** Verdicts: `pane.agent_detected` — adopted in v0.4.0. `agent.explain` —
+17. **AUDIT DELIVERED and BOTH ADOPTIONS DONE 2026-08-05; item CLOSED.** `pane.agent_detected`
+    shipped in v0.4.0; `agent explain` is now documented in the README runbook as the first
+    step when a pane is not picked up or is tagged as the wrong agent — it explains herdr's own
+    detection state, which is the input that seeding, `agent_session` correlation, and the
+    identity gate all depend on. The three "do not adopt" verdicts stand as recorded below and
+    are the item's lasting value: they are reasons NOT to write code.
+    **Original verdicts.** Verdicts: `pane.agent_detected` — adopted in v0.4.0. `agent.explain` —
     adopt as a manual diagnostic (zero cost in the runbook). `agent_status_changed` — keep as a
     wake-up hint only; `blocked` is not rate-limit-specific and carries no reset time, so
     trusting it to authorize injection REDUCES safety. `agent.wait` — trap: status cannot prove
