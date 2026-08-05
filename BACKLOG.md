@@ -2,7 +2,12 @@
 
 Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked up.
 
-1. **clear/ack command for parked jobs — PROMOTED to next-up (2026-08-05).** A pane with any
+1. **CLOSED in v0.5.0 (2026-08-05, commit 2fd52e0).** `ack <id-prefix> [--reason text]`
+   releases a handled park inside one locked transaction; an acked job with CHANGED evidence
+   creates a new job while identical evidence stays suppressed; `status` gained a PARKED column
+   and `inspect` gained `parked`/`park_reason`, so the exclusion is no longer invisible — that
+   visibility was half the defect. Original report below.
+   **clear/ack command for parked jobs — PROMOTED to next-up (2026-08-05).** A pane with any
    non-RESUMED terminal job is parked; add a safe CLI verb to acknowledge or clear a handled
    job without hand-editing state. No longer hypothetical: `manager.go:279` returns "already
    owned" for any same-pane job that is terminal-but-not-RESUMED, so a stale park **silently
@@ -159,6 +164,14 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     attach reports `panes=N` indefinitely and can never act on them. Reproduced live in both
     directions on one pane, banner, binary, and transport. Must land with `--wait-for-panes`,
     which otherwise converts a visible crash loop into a silent no-op.
+19. **Minor, pre-existing: the JSON store chmods its PARENT DIRECTORY to 0700 on every save**
+    (`internal/store/json_store.go:96`), so any state file whose directory is not owned by the
+    user fails to save with `chmod <dir>: operation not permitted`. Hit while testing `ack`
+    against a state file in /tmp. Harmless for the normal XDG state directory and NOT a
+    regression — confirmed present on master before the ack work — but the failure message
+    names chmod rather than the real problem, and tightening a directory the tool does not own
+    is overreach. Fix: chmod only the state FILE, or ignore a chmod failure on a
+    pre-existing directory.
 11. **Poisoned-window sub-30s transients.** pane.output_matched does not refire within one
     subscription, so a stale detection window can consume the armed shot. Live drilling caught
     clean-window 2s transients and poisoned 40s banners; poisoned sub-30s windows remain a
