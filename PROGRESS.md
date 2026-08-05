@@ -714,6 +714,36 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     and stopped". Untrue — `events.go:193` already subscribes to `pane.agent_status_changed`
     and feeds it in as a detection tick. The item overstated the gap.
 
+- 2026-08-05/06 overnight, **backlog sweep: v0.5.0, v0.6.0, v0.7.0 released and deployed.**
+  - Closed: **1** (ack verb + PARKED visibility), **7** (Codex billing parks named and
+    ack-able), **11** (damped recycle: immediate post-trigger recycle, 5s identical-content
+    damping, trigger consumed each poll), **12/13/14** (stale statuses corrected), **15**
+    (event + snapshot admission), **17** (audit delivered, both adoptions done), **19** (store
+    no longer chmods its parent directory), **20** (menu rescue for untagged panes).
+  - **16 landed but OFF.** Every transient pattern is a hypothesis — no real capture existed —
+    so the table carries per-entry provenance, the feature defaults off, and
+    `limit-capture.sh` now harvests transient candidates so the guesses can become knowledge.
+  - **Rejected once, on review, before merge.** The first transient implementation passed 641
+    tests and reported "default off, no gate weakened". Reading the diff showed
+    `detection.IsClaudeCode`/`IsCodex` returning true on transient text — the shared identity
+    oracle used by the registry and the identity gate — plus `Codex.SafeToResume` returning
+    "validation passed" on transient state. All of it OUTSIDE the opt-in flag, driven by
+    guessed patterns. Preserved as f04b6ee (NOT MERGEABLE) and reworked: identity reverted,
+    a separate `SafeToRetryTransient` added, decision moved to the flag-gated job layer, and
+    regression tests that fail against f04b6ee now pin the shared primitives.
+    **Lesson worth keeping: an opt-in feature can be unconditionally live if it edits shared
+    primitives. Review what a feature touched that OTHER callers also use.**
+  - **Menu drill, twice.** Run 1 parked `unknown-current-provider-for-pane` → found BACKLOG 20
+    (v0.3.1 fixed the content-identity gate at validate.go:91 but not the earlier
+    provider-resolution at :68). Run 2, after the fix, reached the MENU BRANCH and stopped at
+    `missing session or episode identity` — the session guard, which is correct and which no
+    synthetic pane can satisfy. The harness's ceiling is now documented in its own header,
+    with an explicit instruction not to weaken the guard to make the drill green.
+  - **Still open:** BACKLOG 6 (blocked on an exhausted-window Codex rollout fixture, which our
+    headless usage may never produce), BACKLOG 16's live gate (needs a real transient capture),
+    and BACKLOG 18's final gate (needs a real Claude limit menu on a real pane).
+  - Coverage in production went from `panes=1` to seven panes; `admit_agent_events` enabled.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
