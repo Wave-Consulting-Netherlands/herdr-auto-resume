@@ -164,7 +164,22 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     attach reports `panes=N` indefinitely and can never act on them. Reproduced live in both
     directions on one pane, banner, binary, and transport. Must land with `--wait-for-panes`,
     which otherwise converts a visible crash loop into a silent no-op.
-20. **The v0.3.1 menu fix is incomplete: a menu-only pane with NO agent hint still parks
+20. **FIXED and drill-verified 2026-08-05 (same night it was found).** The rescue is local to
+    the validate path: unresolved content-provider + `answer_limit_menu` on + EMPTY agent hint
+    + stored provider claude + limit-menu content. Shared identity detection, both
+    `SafeToResume` implementations and registry resolution are untouched. Re-drill evidence:
+    job 02ca6136 on w1J:p1 reached the MENU BRANCH — refusal changed from
+    `unknown-current-provider-for-pane` to `menu answer refused: missing session or episode
+    identity`, which is the session guard, not an identity gate.
+    **Bound discovered while proving it:** no synthetic pane can complete the menu answer.
+    `answerLimitMenu` requires both a pane `agent_session` and a job episode, and a shell-script
+    pane has neither. The guard is correct and must NOT be relaxed to make a drill pass — for
+    real panes the episode registry synthesises an episode from `AgentSessionID`
+    (`manager.go:191`), so there is no production gap. The menu keypress itself can therefore
+    only be proven by a real Claude pane hitting a real limit menu. That is the one open live
+    gate for BACKLOG 18.
+    Original report below.
+    **The v0.3.1 menu fix is incomplete: a menu-only pane with NO agent hint still parks
     (found 2026-08-05 by the first real menu drill).** v0.3.1 taught the CONTENT-identity gate
     (`validate.go` ~:91) that the limit menu counts as Claude. But `providers.Resolve(
     candidate.Agent, content)` runs earlier at `validate.go:68` and returns nil when the pane
@@ -191,7 +206,12 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     names chmod rather than the real problem, and tightening a directory the tool does not own
     is overreach. Fix: chmod only the state FILE, or ignore a chmod failure on a
     pre-existing directory.
-11. **Poisoned-window sub-30s transients.** pane.output_matched does not refire within one
+11. **CLOSED 2026-08-05.** `recycleDue` now recycles immediately after a trigger-poll instead
+    of on a one-minute floor, with a 5s identical-content damping window
+    (`recycleDampingWindow`) and the trigger consumed each poll so a repeated trigger cannot
+    spin. The polling fallback is unchanged — the recycle stays an optimisation, never the sole
+    detection path. Original report below.
+    **Poisoned-window sub-30s transients.** pane.output_matched does not refire within one
     subscription, so a stale detection window can consume the armed shot. Live drilling caught
     clean-window 2s transients and poisoned 40s banners; poisoned sub-30s windows remain a
     documented improvement opportunity. Candidate fix: recycle immediately after each

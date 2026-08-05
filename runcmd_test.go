@@ -636,16 +636,34 @@ func TestDetectionEventPumpTreatsAgentDetectedAsRefreshTrigger(t *testing.T) {
 	}
 }
 
-func TestRecycleDueRequiresTriggerAndSixtySecondBound(t *testing.T) {
+func TestRecycleDueRecyclesImmediatelyAfterTriggerPoll(t *testing.T) {
 	base := time.Unix(100, 0)
-	if recycleDue(base, time.Time{}, base.Add(2*time.Minute)) {
+	if recycleDue(base, time.Time{}, "", "", base.Add(2*time.Minute)) {
 		t.Fatal("recycleDue() = true without a trigger")
 	}
-	if recycleDue(base, base.Add(time.Second), base.Add(59*time.Second)) {
-		t.Fatal("recycleDue() = true before the sixty-second bound")
+	if !recycleDue(base, base.Add(time.Second), "fresh", "old", base.Add(time.Second)) {
+		t.Fatal("recycleDue() = false for a fresh trigger poll")
 	}
-	if !recycleDue(base, base.Add(time.Second), base.Add(time.Minute)) {
-		t.Fatal("recycleDue() = false after a triggered sixty-second interval")
+	if recycleDue(base.Add(time.Second), base.Add(time.Second), "fresh", "fresh", base.Add(2*time.Second)) {
+		t.Fatal("recycleDue() = true after the trigger was consumed")
+	}
+}
+
+func TestRecycleDueDampsIdenticalTriggerContentForFiveSeconds(t *testing.T) {
+	base := time.Unix(100, 0)
+	lastRecycle := base
+	if recycleDue(lastRecycle, base.Add(time.Second), "same", "same", base.Add(4*time.Second)) {
+		t.Fatal("recycleDue() = true for identical content inside damping window")
+	}
+	if !recycleDue(lastRecycle, base.Add(time.Second), "same", "same", base.Add(5*time.Second)) {
+		t.Fatal("recycleDue() = false after identical-content damping window")
+	}
+}
+
+func TestRecycleDueAllowsChangedContentWithoutDamping(t *testing.T) {
+	base := time.Unix(100, 0)
+	if !recycleDue(base, base.Add(time.Second), "changed", "previous", base.Add(time.Second)) {
+		t.Fatal("recycleDue() = false for changed trigger content")
 	}
 }
 

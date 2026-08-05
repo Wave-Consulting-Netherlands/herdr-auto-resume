@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -446,6 +448,8 @@ func filterPanesByIdentityWithPaneIDs(panes []runtimeapi.Pane, requested []strin
 
 const paneWaitBackoff = 5 * time.Second
 
+const recycleDampingWindow = 5 * time.Second
+
 func listPanesStartup(ctx context.Context, rt runtimeapi.Runtime, requested []string, ownPaneID string, waitForPanes bool, logw io.Writer) ([]runtimeapi.Pane, error) {
 	panes, _, _, err := listPanesStartupWithSnapshot(ctx, rt, requested, ownPaneID, waitForPanes, logw)
 	return panes, err
@@ -828,6 +832,8 @@ func runCommand(args []string, _, stderr io.Writer) int {
 	subscribedPaneIDs := paneIDs(panes)
 	lastRecycle := time.Now()
 	var lastTrigger time.Time
+	var lastTriggerContentHash string
+	var lastRecycledContentHash string
 	admitPane := func(pane runtimeapi.Pane) {
 		// Admission is watcher-lifetime state only. A restart must require a
 		// fresh session-file observation before widening monitoring again.
@@ -912,6 +918,7 @@ func runCommand(args []string, _, stderr io.Writer) int {
 						}
 					} else if event.Kind == runtimeapi.EventOutputMatched || event.Kind == runtimeapi.EventAgentStatus {
 						lastTrigger = time.Now()
+						lastTriggerContentHash = triggerContentHash(event)
 					} else if event.Kind == runtimeapi.EventAgentDetected {
 						agentEventRefresh = true
 						if event.PaneID != "" {
@@ -919,10 +926,16 @@ func runCommand(args []string, _, stderr io.Writer) int {
 						}
 					}
 				default:
-					if eventSource != nil && recycleDue(lastRecycle, lastTrigger, time.Now()) {
+					now := time.Now()
+					if eventSource != nil && recycleDue(lastRecycle, lastTrigger, lastTriggerContentHash, lastRecycledContentHash, now) {
 						eventSource.UpdateSubscribedPanes(append([]string(nil), subscribedPaneIDs...))
-						lastRecycle = time.Now()
+						lastRecycle = now
+						lastRecycledContentHash = lastTriggerContentHash
 					}
+					// Consume the trigger whether recycling was damped or performed;
+					// otherwise the same trigger would be reconsidered on every poll.
+					lastTrigger = time.Time{}
+					lastTriggerContentHash = ""
 					if hasSnapshot {
 						if agentEventRefresh {
 							coord.AdmitAgentEventPanes(snapshot, agentEventPanes, true, func(pane runtimeapi.Pane) bool {
@@ -968,8 +981,19 @@ func announceAgentEventAdmission(cfg runConfig, logw io.Writer) {
 	}
 }
 
-func recycleDue(lastRecycle, lastTrigger, now time.Time) bool {
-	return !lastTrigger.IsZero() && lastTrigger.After(lastRecycle) && now.Sub(lastRecycle) >= time.Minute
+func recycleDue(lastRecycle, lastTrigger time.Time, triggerContentHash, recycledContentHash string, now time.Time) bool {
+	if lastTrigger.IsZero() || !lastTrigger.After(lastRecycle) {
+		return false
+	}
+	if triggerContentHash != "" && triggerContentHash == recycledContentHash && now.Sub(lastRecycle) < recycleDampingWindow {
+		return false
+	}
+	return true
+}
+
+func triggerContentHash(event runtimeapi.Event) string {
+	digest := sha256.Sum256([]byte(event.PaneID + "\x00" + event.MatchedLine))
+	return hex.EncodeToString(digest[:])
 }
 
 func managerTick(manager *jobs.Manager) func(time.Time) {

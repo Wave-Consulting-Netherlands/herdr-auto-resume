@@ -71,6 +71,12 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 	if expectedProvider == "" {
 		expectedProvider = m.cfg.Provider
 	}
+	if current == nil && m.cfg.AnswerLimitMenu && strings.TrimSpace(candidate.Agent) == "" && strings.EqualFold(job.Provider, "claude") && looksLikeLimitMenu(content) {
+		// A bare Claude limit menu hides the provider chrome. This rescue is
+		// deliberately local to a stored Claude menu job; shared identity
+		// detection and registry resolution remain unchanged.
+		current = m.providers.Resolve(job.Provider, content)
+	}
 	if current == nil {
 		reason := fmt.Sprintf("unknown current provider for pane")
 		if strings.TrimSpace(candidate.Agent) != "" {
