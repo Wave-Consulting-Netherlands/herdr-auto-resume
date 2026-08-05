@@ -668,6 +668,20 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     exactly the gap BACKLOG 1's `ack` verb exists to close, and it is now the argument for
     pulling that item forward: today the only remedy is hand-editing production state.
 
+- 2026-08-05, **soak watcher retired; `soak-drill` workspace closed.**
+  - Reason to retire it is stronger than "evidence window closed": the soak unit reads the
+    SAME config.yaml as production, so it inherited `admit_session_matches: true` and had
+    quietly become a **second live resume authority**. Its soak-state.json shows it
+    independently created jobs for w1F:p1 and w1B:p1 — the same two real panes production
+    had. Both parked only because of the BACKLOG 18 menu defect; without that defect **both
+    watchers would have injected into the same panes at 11:11Z**. The defect masked a
+    double-injection hazard, and it violated the standing one-loop-authority rule.
+  - `herdr-auto-resume-soak.service` stopped and disabled (reversible:
+    `systemctl --user enable --now herdr-auto-resume-soak.service`). Workspace wV
+    (`soak-drill`, holding the 2026-08-03 `DRILL-RESUMED-OK` marker) closed.
+  - Lesson for any future second watcher: give it its OWN config file, not just its own state
+    file. A separate `--state-file` does not isolate admission policy.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
