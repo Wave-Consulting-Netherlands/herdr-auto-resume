@@ -93,9 +93,6 @@ func (s *JSONStore) Save(state File) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	if err := os.Chmod(dir, 0700); err != nil {
-		return err
-	}
 
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {

@@ -275,7 +275,8 @@ func (m *Manager) recordMenuAttempt(jobID string, attempt *store.MenuAttempt) (b
 }
 
 func (m *Manager) handleLimitLocked(event LimitEvent) bool {
-	if event.ResetTime.IsZero() {
+	parkReason := strings.TrimSpace(event.ParkReason)
+	if event.ResetTime.IsZero() && parkReason == "" {
 		return false
 	}
 	now := event.ObservedAt
@@ -321,8 +322,11 @@ func (m *Manager) handleLimitLocked(event LimitEvent) bool {
 		}
 	}
 
-	resetAt := event.ResetTime.UTC()
-	resumeAt := resetAt.Add(m.cfg.Margin)
+	var resetAt, resumeAt time.Time
+	if !event.ResetTime.IsZero() {
+		resetAt = event.ResetTime.UTC()
+		resumeAt = resetAt.Add(m.cfg.Margin)
+	}
 	job := store.Job{
 		ID:            m.nextID(),
 		Provider:      providerName,
@@ -345,11 +349,16 @@ func (m *Manager) handleLimitLocked(event LimitEvent) bool {
 		Episode:       event.EpisodeID,
 		Source:        source,
 	}
+	if parkReason != "" {
+		job.State = store.StateManualRequired
+		job.LastError = parkReason
+		job.LastValidation = parkReason
+	}
 	if info, err := m.rt.ProcessInfo(event.Pane.ID); err == nil {
 		job.ProcCommand = info.Command
 		job.WorkingDir = info.CWD
 	}
-	if resumeAt.Sub(now) > m.cfg.MaxHorizon {
+	if parkReason == "" && resumeAt.Sub(now) > m.cfg.MaxHorizon {
 		job.State = store.StateFailed
 		job.LastError = fmt.Sprintf("resume time exceeds maximum horizon of %s", m.cfg.MaxHorizon)
 	}
@@ -361,7 +370,9 @@ func (m *Manager) handleLimitLocked(event LimitEvent) bool {
 	}
 	m.file = store.File{Version: 1, Jobs: next}
 	m.noteModTime()
-	if job.State == store.StateFailed {
+	if parkReason != "" {
+		m.logf("job=%s provider=%s parked pane=%s reason=%s", job.ID, job.Provider, job.PaneID, parkReason)
+	} else if job.State == store.StateFailed {
 		m.logf("job=%s provider=%s failed: %s", job.ID, job.Provider, job.LastError)
 		m.notify("auto-resume", fmt.Sprintf("job %s failed: %s", job.ID, job.LastError), true)
 	} else {
