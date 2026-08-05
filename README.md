@@ -21,7 +21,7 @@ upgrading.
 
 Install tagged source with Go:
 
-    go install github.com/Wave-Consulting-Netherlands/herdr-auto-resume@v0.3.0
+    go install github.com/Wave-Consulting-Netherlands/herdr-auto-resume@v0.4.0
 
 Or build from a checkout:
 
@@ -128,6 +128,7 @@ flag-only behavior. See packaging/config.example.yaml for the full commented sch
       lines: 200
       wait_for_panes: false
       admit_session_matches: false
+      admit_agent_events: false
     resume:
       margin: 60s
       max_wait: 192h
@@ -144,7 +145,8 @@ flag-only behavior. See packaging/config.example.yaml for the full commented sch
 Run flags: --config, --runtime, --transport, repeatable --pane, --interval, --lines,
 --wait-for-panes, --dry-run, --test-pattern, --herdr-bin, --socket, --session, --workspace,
 --state-file, --margin, --max-wait, --verify-timeout, --providers, --session-file-channel,
---admit-session-matches, --answer-limit-menu, --claude-prompt, and --codex-prompt.
+--admit-session-matches, --admit-agent-events, --answer-limit-menu, --claude-prompt, and
+--codex-prompt.
 
 Doctor flags: --config, --transport, --herdr-bin, --socket, --session, --workspace, and
 --state-file. Job flags: --config and --state-file. Detect flags: --file and
@@ -168,6 +170,21 @@ Doctor flags: --config, --transport, --herdr-bin, --socket, --session, --workspa
   `Stop and wait for limit to reset`, and the cursor marker on that line are all present. It
   never selects by option index, requires a persistent state file and the Herdr runtime, and is
   subject to the read-then-send TOCTOU caveat because Herdr has no revision-conditional send.
+
+### v0.4.0 options
+
+- `--admit-agent-events` / `monitoring.admit_agent_events`: default `false`. Lets Herdr's own
+  agent detection define coverage instead of the static pane list: the watcher seeds from the
+  startup snapshot, follows `pane.agent_detected` for panes that appear later, and re-seeds
+  after a resync so a stream outage cannot silently narrow coverage. Socket transport only —
+  under `--transport cli` it logs one notice and stays inert.
+
+  Admission decides only *whether a pane is looked at*, never whether it may be typed into.
+  An event-admitted or seeded pane passes exactly the same resume gates as a configured one:
+  provider resolution, terminal identity, foreground process, working directory, menu/idle
+  safety, single-flight, and verification. The watcher's own pane and any explicitly disabled
+  pane are always refused, and every admission logs one line naming the pane, agent, and
+  trigger (`startup-snapshot` or `pane.agent_detected`).
 
 These session-identity features remain opt-in and are not enabled by the shipped service
 examples. The YAML keys must use the exact nesting shown above; unknown keys are rejected.

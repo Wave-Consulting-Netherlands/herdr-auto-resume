@@ -24,6 +24,9 @@ monitoring:
   # lines: 200
   # wait_for_panes: false  # retry transient startup reachability and zero matches
   # admit_session_matches: false  # requires providers.session_file_channel
+  # admit_agent_events: false  # Herdr socket only; herdr's agent detection defines
+  #                            # coverage instead of the pane list above. Seeds from
+  #                            # the startup snapshot and follows pane.agent_detected.
 
 # Safety margins and wait bounds.
 resume:
