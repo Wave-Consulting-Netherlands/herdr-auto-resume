@@ -2,7 +2,7 @@
 # the partial phases, or the rasteriser -- so every run reproduces these
 # byte for byte. Committing them would just be a second copy.
 state/
-tsingou.mp4
+tsingou.mp4          # the 1080p60 crf16 master, ~133 MB
 *.wav
 *.f32
 __pycache__/

@@ -88,9 +88,12 @@ python3 render.py --preview  # single frames instead, for checking layout
 ```
 
 There is no randomness anywhere — not in the integration, not in the partial
-phases, not in the rendering. Every run produces the same bytes. That is why the
-generated media are not committed here: the code is the piece, and it is a
-faithful copy of itself.
+phases, not in the rendering. Every run produces the same bytes.
+
+`tsingou-1080p.mp4` (27 MB, crf 34) is committed so the piece survives without a
+40-minute render. The crf 16 master it came from is 133 MB and is not — if you
+merge this branch anywhere permanent, the 27 MB is worth a second thought, since
+`render.py` reproduces the master exactly.
 
 ## Files
 
