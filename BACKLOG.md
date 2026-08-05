@@ -21,9 +21,25 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
    names now use herdr-auto-resume; the first release is v0.2.0.
 5. **Out of repository.** The Go toolchain PATH belongs in the chezmoi-managed dotfiles, not
    this application repository.
-6. **Codex rollout resets_at epoch integration.** Codex rollout JSONL carries structured
-   rate_limits.resets_at epochs; integrate this as a future signal without changing the
-   terminal fallback.
+6. **Codex rollout resets_at epoch integration — SPIKE PARTLY RUN 2026-08-05 (D-P8-6 / PLANS
+   step 18); still blocked on one fixture.** Codex rollout JSONL carries structured
+   `rate_limits.resets_at` epochs; integrate as a future signal without changing the terminal
+   fallback. Evidence gathered from seven real rollouts written today:
+   - **cwd is NOT a usable selector.** Three rollouts share `~/dev/Herdr-auto-resume`, two
+     share `~/dev/workspace`, two share `~/dev/psft_instanceid`. Any cwd-based file-selection
+     rule is ambiguous in ordinary daily use, not just in a contrived case.
+   - **`session_id` is not 1:1 with the file either.** The two 20:41:00 rollouts, 145 ms
+     apart, carry DIFFERENT top-level `id`s but the SAME `session_id`. File selection must
+     therefore tolerate several files per session (latest-wins or merge) instead of assuming
+     one.
+   - **`originator` is the field that identifies pane-backed sessions:** `codex-tui` is a real
+     pane; `codex_exec` and `Claude Code` are headless. Only `codex-tui` rollouts can
+     correspond to a herdr pane, so the resolver must filter on it before matching.
+   - **Still blocked:** every observed window is healthy (`used_percent` 14–16,
+     `window_minutes` 10080). No exhausted-window fixture exists yet, so the primary/secondary
+     selection rule and the tolerance duration remain unproven. Note the structural risk: our
+     Codex usage is almost entirely headless, so a pane-backed exhausted rollout may never
+     occur naturally here — if it does not, PLANS step 18's stop-and-defer condition applies.
 7. **Codex credits-park UX.** Workspace credits and spend-cap banners are detected and
    non-actionable; add an explicit credits/park resolution command when acknowledgement is
    designed.
