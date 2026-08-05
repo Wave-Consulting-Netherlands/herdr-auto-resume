@@ -73,6 +73,24 @@ func TestLoadParsesWaitForPanes(t *testing.T) {
 	}
 }
 
+func TestLoadParsesAdmitAgentEventsIncludingFalse(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		data string
+		want bool
+	}{
+		{name: "true", data: "version: 1\nmonitoring:\n  admit_agent_events: true\n", want: true},
+		{name: "false", data: "version: 1\nmonitoring:\n  admit_agent_events: false\n", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, found, err := Load(writeConfig(t, tc.data))
+			if err != nil || !found || !cfg.Has("monitoring.admit_agent_events") || cfg.Monitoring.AdmitAgentEvents != tc.want {
+				t.Fatalf("cfg=%#v found=%v err=%v, want admit_agent_events=%v", cfg, found, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadParsesAnswerLimitMenu(t *testing.T) {
 	path := writeConfig(t, "version: 1\nresume:\n  answer_limit_menu: true\n")
 	cfg, found, err := Load(path)

@@ -201,6 +201,9 @@ func subscriptionParams(spec runtimeapi.SubscribeSpec) map[string]any {
 			},
 		)
 	}
+	if spec.AdmitAgentEvents {
+		subscriptions = append(subscriptions, map[string]any{"type": "pane.agent_detected"})
+	}
 	for _, kind := range []string{"pane.created", "pane.updated", "pane.closed", "pane.moved", "layout.updated"} {
 		subscriptions = append(subscriptions, map[string]any{"type": kind})
 	}
@@ -369,7 +372,9 @@ func decodeEvent(frame eventFrame) (runtimeapi.Event, bool) {
 		event.Kind = runtimeapi.EventPaneMoved
 	case "pane.closed":
 		event.Kind = runtimeapi.EventPaneClosed
-	case "pane.created", "pane.updated", "pane.focused", "pane.exited", "pane.agent.detected", "layout.updated":
+	case "pane.agent.detected":
+		event.Kind = runtimeapi.EventAgentDetected
+	case "pane.created", "pane.updated", "pane.focused", "pane.exited", "layout.updated":
 		event.Kind = runtimeapi.EventPanesChanged
 	default:
 		return runtimeapi.Event{}, false

@@ -20,6 +20,7 @@ type Config struct {
 	ReadLines           int
 	SessionFileChannel  bool
 	AdmitSessionMatches bool
+	AdmitAgentEvents    bool
 	Margin              time.Duration
 	VerifyTimeout       time.Duration
 }
@@ -362,6 +363,36 @@ func (c *Coordinator) AdmitSessionFilePanes(panes []runtime.Pane, complete bool,
 			episodeID = episode.ID
 		}
 		c.logf("session-file admission: admitted pane=%s session=%s episode=%s", pane.ID, observation.SessionID, episodeID)
+		admit(pane)
+	}
+}
+
+// AdmitAgentEventPanes reconciles an agent-detected event against a fresh,
+// complete pane snapshot. The event is only a trigger: the current snapshot is
+// authoritative, so replayed lifecycle frames for vanished panes cannot admit
+// anything. Admission changes coverage only; Poll and the job manager retain
+// all provider, identity, process, cwd, menu, and safety gates.
+func (c *Coordinator) AdmitAgentEventPanes(panes []runtime.Pane, eventPanes map[string]string, complete bool, isMonitored func(runtime.Pane) bool, selfPaneID string, admit func(runtime.Pane), now time.Time) {
+	if !c.cfg.AdmitAgentEvents || len(eventPanes) == 0 || !complete || admit == nil {
+		return
+	}
+	for _, pane := range panes {
+		reportedAgent, triggered := eventPanes[pane.ID]
+		if !triggered || pane.ID == "" || (selfPaneID != "" && pane.ID == selfPaneID) {
+			continue
+		}
+		if state, ok := c.states[pane.ID]; ok && state.UserDisabled {
+			continue
+		}
+		if isMonitored != nil && isMonitored(pane) {
+			continue
+		}
+		reportedProvider := c.providers.Resolve(reportedAgent, "")
+		currentProvider := c.providers.Resolve(pane.Agent, "")
+		if reportedProvider == nil || currentProvider == nil || !strings.EqualFold(reportedProvider.Name(), currentProvider.Name()) {
+			continue
+		}
+		c.logf("agent-event admission: admitted pane=%s agent=%s trigger=pane.agent_detected", pane.ID, pane.Agent)
 		admit(pane)
 	}
 }

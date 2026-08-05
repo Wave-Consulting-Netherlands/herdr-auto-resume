@@ -10,6 +10,7 @@ const (
 	EventPaneMoved     EventKind = "pane_moved"
 	EventPaneClosed    EventKind = "pane_closed"
 	EventPanesChanged  EventKind = "panes_changed"
+	EventAgentDetected EventKind = "agent_detected"
 	EventResync        EventKind = "resync"
 )
 
@@ -28,10 +29,11 @@ type Event struct {
 }
 
 type SubscribeSpec struct {
-	PaneIDs    []string
-	MatchRegex string
-	ReadSource string
-	ReadLines  int
+	PaneIDs          []string
+	MatchRegex       string
+	ReadSource       string
+	ReadLines        int
+	AdmitAgentEvents bool
 }
 
 // EventSource is an optional Runtime capability. Runtime itself intentionally
