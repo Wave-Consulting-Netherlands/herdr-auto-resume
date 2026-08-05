@@ -21,7 +21,7 @@ upgrading.
 
 Install tagged source with Go:
 
-    go install github.com/Wave-Consulting-Netherlands/herdr-auto-resume@v0.6.0
+    go install github.com/Wave-Consulting-Netherlands/herdr-auto-resume@v0.7.0
 
 Or build from a checkout:
 
@@ -105,6 +105,11 @@ NEW limit episode on that pane creates a job again; identical evidence stays sup
 acknowledging cannot replay the episode you just handled. RESUMED jobs are rejected (nothing to
 acknowledge) and active jobs are rejected in favour of `cancel`. `status` shows a PARKED column
 naming the reason, and `inspect` reports `parked` and `park_reason`.
+
+Codex workspace-credits and spend-cap banners park with an explicit billing reason ("Codex
+billing action required: ...") because there is no reset to wait for — a human must add credits
+or raise the cap. Such a pane is held until you `ack` it, which is deliberate: it is what makes
+the state visible in `status` and acknowledgeable, rather than a silent no-op.
 
 Job commands read configured state.file when --state-file is omitted. doctor reports version,
 config, watcher-lock, Herdr, adapter, schema, and self-pane diagnostics. Run-lock errors name

@@ -45,7 +45,11 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
      selection rule and the tolerance duration remain unproven. Note the structural risk: our
      Codex usage is almost entirely headless, so a pane-backed exhausted rollout may never
      occur naturally here — if it does not, PLANS step 18's stop-and-defer condition applies.
-7. **Codex credits-park UX.** Workspace credits and spend-cap banners are detected and
+7. **CLOSED in v0.7.0 (2026-08-05).** Billing banners park with an explicit, self-explanatory
+   reason and are released by `ack`. No retry or timer — there is nothing to wait for. Note the
+   deliberate trade-off: a billing banner now creates a terminal job, so the pane is held until
+   acked; that is only acceptable because v0.5.0 made parking visible in `status`.
+   **Codex credits-park UX.** Workspace credits and spend-cap banners are detected and
    non-actionable; add an explicit credits/park resolution command when acknowledgement is
    designed.
 8. **Done — Claude review and triage of review.md.** All ten findings were validated, ordered,
@@ -203,7 +207,9 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     provider — subject to the unchanged terminal-ID, process, cwd, and single-shot gates. Then
     re-run `scripts/menu-drill-harness.sh`; the pass condition is MENU-ANSWERED-OK plus a
     recorded MenuAttempt, NOT a RESUMED job.
-19. **Minor, pre-existing: the JSON store chmods its PARENT DIRECTORY to 0700 on every save**
+19. **CLOSED in v0.7.0 (2026-08-05).** The parent-directory chmod is gone; MkdirAll still
+    creates new directories 0700 and state files remain 0600.
+    **Minor, pre-existing: the JSON store chmods its PARENT DIRECTORY to 0700 on every save**
     (`internal/store/json_store.go:96`), so any state file whose directory is not owned by the
     user fails to save with `chmod <dir>: operation not permitted`. Hit while testing `ack`
     against a state file in /tmp. Harmless for the normal XDG state directory and NOT a
