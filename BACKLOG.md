@@ -238,7 +238,15 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     clean-window 2s transients and poisoned 40s banners; poisoned sub-30s windows remain a
     documented improvement opportunity. Candidate fix: recycle immediately after each
     trigger-poll with identical-content damping of about five seconds.
-21. **Answering the menu clears the block but does not resume the work — found live
+21. **CLOSED in v0.8.0 (2026-08-06).** The menu path now falls through to the normal resume on a
+    freshly-read pane instead of parking: menu gone + provider still resolves + `SafeToResume`
+    passes. A busy pane parks `menu answered; pane busy, resume suppressed`. Three new tests,
+    all verified to FAIL against c429616 before merge. A fourth case surfaced while diagnosing
+    the same event and became a merge blocker: a pane blocked on an ordinary interactive
+    multi-select is not a limit menu and must not be resumed either — `IsIdlePrompt` is the only
+    predicate refusing it, now pinned by a fixture captured from the real pane. Original report
+    below.
+    **Answering the menu clears the block but does not resume the work — found live
     2026-08-06.** On the first real production menu event (item 18), all three menu panes were
     answered successfully, then `validate.go:133` set `StateManualRequired` unconditionally and
     returned. No continuation prompt is ever sent on the menu path. Observed outcome 90s later:
@@ -254,7 +262,14 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     busy (the w1M case) the resume must be suppressed, not queued — that means the idle check
     is load-bearing, not cosmetic. Needs the menu-only fixture from item 18 plus a fixture of
     the post-answer idle prompt, and a test that a busy post-answer pane is left alone.
-22. **Persist the pane content the watcher acted on — found 2026-08-06 while trying to build the
+22. **CLOSED in v0.8.0 (2026-08-06).** `internal/jobs/capture.go` writes the justifying content
+    to `captures/` beside the state file: 0600 files in a 0700 directory, 256 KiB per file,
+    4 MiB total with oldest-first eviction, every failure logged and ignored. Both paths are
+    covered. Review caught one regression before merge — the first version called
+    `os.Chmod(dir, 0700)`, which is item 19 reintroduced in a new file; removed with a comment
+    naming why, since a chmod failure there would have silently disabled capture on exactly the
+    shared state dirs where it matters. Original report below.
+    **Persist the pane content the watcher acted on — found 2026-08-06 while trying to build the
     item-18 fixture.** After the first real menu event, the menu text could not be recovered
     from any pane: Claude Code redraws the menu in place, so it never enters scrollback and a
     `--source recent --lines 2000` read of all three panes found nothing. The one moment the

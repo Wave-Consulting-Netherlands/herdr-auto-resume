@@ -1,0 +1,8 @@
+╭──────────────────────────────────────────────╮
+│ Claude Code                                  │
+╰──────────────────────────────────────────────╯
+? Which environments should be included?
+❯ 1. [ ] Staging
+  2. [ ] Production
+  3. [ ] Development
+Enter to select · ↑/↓ to navigate · Esc to cancel

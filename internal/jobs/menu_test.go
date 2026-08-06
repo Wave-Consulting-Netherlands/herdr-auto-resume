@@ -98,17 +98,74 @@ func TestAnswerLimitMenuSupportsBothCommittedVariants(t *testing.T) {
 				t.Fatal("HandleLimit() did not own menu episode")
 			}
 			m.Tick(testNow.Add(2 * time.Hour))
-			if len(rt.SentKeys) != 1 || rt.SentKeys[0].PaneID != "p1" || len(rt.SentKeys[0].Keys) != 1 || rt.SentKeys[0].Keys[0] != "enter" {
-				t.Fatalf("sent keys = %#v, want exactly one enter", rt.SentKeys)
+			if len(rt.SentKeys) != 3 || rt.SentKeys[0].PaneID != "p1" || rt.SentKeys[0].Keys[0] != "enter" || len(rt.SentText) != 1 {
+				t.Fatalf("sent keys = %#v text=%#v, want menu enter and normal resume", rt.SentKeys, rt.SentText)
 			}
 			job := m.Snapshot()[0]
-			if job.State != store.StateManualRequired || job.MenuAttempt == nil || job.MenuAttempt.SessionID != "session-1" || job.MenuAttempt.EpisodeID != "episode-1" || job.MenuAttempt.PaneID != "p1" {
-				t.Fatalf("job = %#v, want persisted menu attempt and manual-required outcome", job)
+			if job.State != store.StateVerifyingResume || job.MenuAttempt == nil || job.MenuAttempt.SessionID != "session-1" || job.MenuAttempt.EpisodeID != "episode-1" || job.MenuAttempt.PaneID != "p1" {
+				t.Fatalf("job = %#v, want persisted menu attempt and resumed outcome", job)
 			}
-			if !strings.Contains(job.LastValidation, "menu gone") {
-				t.Fatalf("validation = %q, want menu gone outcome", job.LastValidation)
+			if !strings.Contains(job.LastValidation, "resume submitted") {
+				t.Fatalf("validation = %q, want normal resume outcome", job.LastValidation)
 			}
 		})
+	}
+}
+
+func TestMenuAnswerGoneResumesFreshIdlePane(t *testing.T) {
+	content := menuValidationContent(readMenuFixture(t, "claude/positive/cc2026-08_menu-team-plan.txt"))
+	m, rt, _ := menuManager(t, content, true, false)
+	if !m.HandleLimit(menuEvent(content)) {
+		t.Fatal("HandleLimit() did not own menu episode")
+	}
+	m.Tick(testNow.Add(2 * time.Hour))
+
+	job := m.Snapshot()[0]
+	if job.State != store.StateVerifyingResume {
+		t.Fatalf("state = %s, want VERIFYING_RESUME after menu answer cleared to idle prompt", job.State)
+	}
+	if len(rt.SentKeys) != 3 || len(rt.SentText) != 1 {
+		t.Fatalf("runtime writes = keys %#v text %#v, want one menu answer and one resume", rt.SentKeys, rt.SentText)
+	}
+}
+
+func TestMenuAnswerGoneBusyPaneIsParkedWithoutResume(t *testing.T) {
+	content := menuValidationContent(readMenuFixture(t, "claude/positive/cc2026-08_menu-team-plan.txt"))
+	m, rt, _ := menuManager(t, content, true, false)
+	rt.afterSend = "Claude Code\n⏺ Working…"
+	if !m.HandleLimit(menuEvent(content)) {
+		t.Fatal("HandleLimit() did not own menu episode")
+	}
+	m.Tick(testNow.Add(2 * time.Hour))
+
+	job := m.Snapshot()[0]
+	if job.State != store.StateManualRequired || len(rt.SentText) != 0 {
+		t.Fatalf("job=%#v text=%#v, want manual-required busy park without resume", job, rt.SentText)
+	}
+	if !strings.Contains(job.LastValidation, "menu answered; pane busy, resume suppressed") {
+		t.Fatalf("validation = %q, want named busy suppression reason", job.LastValidation)
+	}
+}
+
+func TestMenuAnswerGoneInteractiveAskQuestionIsNotResumed(t *testing.T) {
+	content := menuValidationContent(readMenuFixture(t, "claude/positive/cc2026-08_menu-team-plan.txt"))
+	askQuestion := readMenuFixture(t, "claude/positive/cc2026-08_ask-user-multiselect.txt")
+	if !detection.IsClaudeCode(askQuestion) || detection.HasRateLimitMenu(askQuestion) || detection.IsIdlePrompt(askQuestion) || detection.Analyze(askQuestion, testNow).MenuVisible {
+		t.Fatalf("AskUserQuestion fixture no longer pins the measured state: claude=%v rate_menu=%v idle=%v analysis=%#v", detection.IsClaudeCode(askQuestion), detection.HasRateLimitMenu(askQuestion), detection.IsIdlePrompt(askQuestion), detection.Analyze(askQuestion, testNow))
+	}
+	m, rt, _ := menuManager(t, content, true, false)
+	rt.afterSend = askQuestion
+	if !m.HandleLimit(menuEvent(content)) {
+		t.Fatal("HandleLimit() did not own menu episode")
+	}
+	m.Tick(testNow.Add(2 * time.Hour))
+
+	job := m.Snapshot()[0]
+	if job.State != store.StateManualRequired || len(rt.SentText) != 0 || len(rt.SentKeys) != 1 {
+		t.Fatalf("job=%#v text=%#v keys=%#v, want interactive question parked after one menu answer", job, rt.SentText, rt.SentKeys)
+	}
+	if !strings.Contains(job.LastValidation, "pane busy, resume suppressed") {
+		t.Fatalf("validation = %q, want existing SafeToResume refusal pinned as busy suppression", job.LastValidation)
 	}
 }
 
@@ -131,11 +188,11 @@ func TestMenuOnlyViewportWithAnswerLimitMenuAnswersBeforeIdentityGate(t *testing
 	m.Tick(testNow.Add(2 * time.Hour))
 
 	job := m.Snapshot()[0]
-	if len(rt.SentKeys) != 1 || rt.SentKeys[0].Keys[0] != "enter" {
-		t.Fatalf("sent keys = %#v, want one menu answer", rt.SentKeys)
+	if len(rt.SentKeys) != 3 || rt.SentKeys[0].Keys[0] != "enter" || len(rt.SentText) != 1 {
+		t.Fatalf("sent keys = %#v text=%#v, want menu answer and resume", rt.SentKeys, rt.SentText)
 	}
-	if job.MenuAttempt == nil || job.State != store.StateManualRequired {
-		t.Fatalf("job = %#v, want persisted menu answer and manual-required outcome", job)
+	if job.MenuAttempt == nil || job.State != store.StateVerifyingResume {
+		t.Fatalf("job = %#v, want persisted menu answer and resume outcome", job)
 	}
 	if strings.Contains(job.LastValidation, "pane is not claude") {
 		t.Fatalf("validation = %q, menu-only pane hit content identity gate", job.LastValidation)
@@ -152,10 +209,10 @@ func TestMenuOnlyViewportWithoutAgentHintUsesStoredClaudeProvider(t *testing.T) 
 	m.Tick(testNow.Add(2 * time.Hour))
 
 	job := m.Snapshot()[0]
-	if len(rt.SentKeys) != 1 || rt.SentKeys[0].Keys[0] != "enter" {
-		t.Fatalf("sent keys = %#v, want one menu answer", rt.SentKeys)
+	if len(rt.SentKeys) != 3 || rt.SentKeys[0].Keys[0] != "enter" || len(rt.SentText) != 1 {
+		t.Fatalf("sent keys = %#v text=%#v, want menu answer and resume", rt.SentKeys, rt.SentText)
 	}
-	if job.MenuAttempt == nil || strings.Contains(job.LastValidation, "unknown current provider") {
+	if job.MenuAttempt == nil || job.State != store.StateVerifyingResume || strings.Contains(job.LastValidation, "unknown current provider") {
 		t.Fatalf("job = %#v, want stored Claude provider rescue to reach menu answer", job)
 	}
 }
@@ -316,8 +373,8 @@ func TestAnswerLimitMenuLogsStillPresentAfterSend(t *testing.T) {
 		t.Fatal("HandleLimit() did not own menu episode")
 	}
 	m.Tick(testNow.Add(2 * time.Hour))
-	if len(rt.SentKeys) != 1 || !strings.Contains(log.String(), "menu still present") {
-		t.Fatalf("keys=%#v log=%q, want one send and still-present outcome", rt.SentKeys, log.String())
+	if len(rt.SentKeys) != 1 || len(rt.SentText) != 0 || !strings.Contains(log.String(), "menu still present") {
+		t.Fatalf("keys=%#v text=%#v log=%q, want one send, no resume, and still-present outcome", rt.SentKeys, rt.SentText, log.String())
 	}
 }
 
@@ -351,8 +408,8 @@ func TestAnswerLimitMenuRefusesUnsafeCursorAndContent(t *testing.T) {
 func TestAnswerLimitMenuRestartHonorsPersistedAttempt(t *testing.T) {
 	content := menuValidationContent(readMenuFixture(t, "claude/positive/cc2026-08_menu-team-plan.txt"))
 	m, rt, st := runMenuValidation(t, content, true, false)
-	if len(rt.SentKeys) != 1 {
-		t.Fatalf("initial sends=%d, want one", len(rt.SentKeys))
+	if len(rt.SentKeys) != 3 || len(rt.SentText) != 1 {
+		t.Fatalf("initial sends=%d text=%d, want menu answer plus resume", len(rt.SentKeys), len(rt.SentText))
 	}
 	file := m.Snapshot()
 	file[0].State = store.StateValidating
@@ -375,8 +432,8 @@ func TestAnswerLimitMenuDryRunLogsWithoutSendingOrExpectingClear(t *testing.T) {
 	content := menuValidationContent(readMenuFixture(t, "claude/positive/cc2026-08_menu-team-plan.txt"))
 	m, rt, _ := runMenuValidation(t, content, true, true)
 	job := m.Snapshot()[0]
-	if len(rt.SentKeys) != 0 || job.MenuAttempt == nil || !strings.Contains(job.LastValidation, "dry-run") {
-		t.Fatalf("keys=%#v attempt=%#v validation=%q, want log-only dry-run", rt.SentKeys, job.MenuAttempt, job.LastValidation)
+	if len(rt.SentKeys) != 0 || len(rt.SentText) != 0 || job.MenuAttempt == nil || job.State != store.StateManualRequired || !strings.Contains(job.LastValidation, "dry-run") {
+		t.Fatalf("keys=%#v text=%#v attempt=%#v state=%s validation=%q, want log-only dry-run", rt.SentKeys, rt.SentText, job.MenuAttempt, job.State, job.LastValidation)
 	}
 }
 

@@ -122,6 +122,7 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 		finish(store.StateManualRequired, "menu-visible: transient retry requires a non-menu screen", true)
 		return
 	}
+	menuAnswered := false
 	if m.cfg.AnswerLimitMenu && current.Name() == "claude" && looksLikeLimitMenu(content) {
 		if result, handled := m.answerLimitMenu(index, job, candidate, now); handled {
 			for _, persisted := range m.file.Jobs {
@@ -130,15 +131,38 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 					break
 				}
 			}
-			job.State = store.StateManualRequired
-			job.LastValidation = result
-			_ = m.updateJob(index, job)
+			if !strings.Contains(result, "menu gone") {
+				job.State = store.StateManualRequired
+				job.LastValidation = result
+				_ = m.updateJob(index, job)
+				return
+			}
+			fresh, err := m.rt.ReadPane(job.PaneID, m.cfg.ReadLines)
+			if err != nil {
+				finish(store.StateManualRequired, "menu answered; pane reread failed: "+err.Error(), true)
+				return
+			}
+			if detection.HasRateLimitMenu(fresh) {
+				finish(store.StateManualRequired, "menu answered; menu still present", true)
+				return
+			}
+			current = m.providers.Resolve(candidate.Agent, fresh)
+			if current == nil {
+				finish(store.StateManualRequired, "menu answered; pane no longer resolves as "+expectedProvider, true)
+				return
+			}
+			if !strings.EqualFold(current.Name(), expectedProvider) {
+				finish(store.StateManualRequired, fmt.Sprintf("menu answered; provider mismatch: job %q, current pane %q", expectedProvider, current.Name()), true)
+				return
+			}
+			content = fresh
+			menuAnswered = true
+		} else {
+			// An interactive-looking menu that fails the strict guard remains
+			// manual; it must never fall through to the normal resume action.
+			finish(store.StateManualRequired, "menu-visible: terminal menu failed strict answer guard", true)
 			return
 		}
-		// An interactive-looking menu that fails the strict guard remains
-		// manual; it must never fall through to the normal resume action.
-		finish(store.StateManualRequired, "menu-visible: terminal menu failed strict answer guard", true)
-		return
 	}
 	if job.Source == "transient" {
 		safety, ok := current.(provider.TransientRetrySafety)
@@ -150,9 +174,16 @@ func (m *Manager) validate(index int, job store.Job, now time.Time) {
 			finish(store.StateManualRequired, reason, true)
 			return
 		}
-	} else if ok, reason := current.SafeToResume(content, now); !ok {
-		finish(store.StateManualRequired, reason, true)
-		return
+	} else {
+		m.capturePaneContent(job.ID, content, now)
+		if ok, reason := current.SafeToResume(content, now); !ok {
+			if menuAnswered {
+				finish(store.StateManualRequired, "menu answered; pane busy, resume suppressed: "+reason, true)
+				return
+			}
+			finish(store.StateManualRequired, reason, true)
+			return
+		}
 	}
 	job.LastValidation = "validation passed"
 	if m.updateJob(index, job) {
@@ -172,6 +203,7 @@ func (m *Manager) answerLimitMenu(index int, job store.Job, pane runtime.Pane, n
 	if err != nil || !safeStopAndWaitMenu(fresh) {
 		return "", false
 	}
+	m.capturePaneContent(job.ID, fresh, now)
 	attempt := &store.MenuAttempt{
 		SessionID: pane.AgentSessionID, EpisodeID: job.Episode,
 		PaneID: pane.ID, AttemptedAt: now.UTC(),

@@ -233,6 +233,39 @@ Doctor flags: --config, --transport, --herdr-bin, --socket, --session, --workspa
   transient-looking panes so real fixtures can be collected. Leave this off until you have
   captured a genuine transient and drilled it.
 
+### v0.8.0 behaviour
+
+Two changes here have no config flag; they apply whenever `answer_limit_menu` is on and
+whenever a resume is attempted.
+
+- **Answering the limit menu now continues the work.** Before v0.8.0 the menu path answered the
+  menu and then always parked `MANUAL_REQUIRED`, which unblocked the pane but abandoned whatever
+  it had been doing. Observed live on 2026-08-06: three real menu panes were answered, one
+  happened to self-recover because it had an in-flight turn, and two sat idle with their work
+  lost. The menu answer is still strictly single-shot, and the continuation is now a *separate*
+  decision made on a freshly-read pane: the menu must be gone, the pane must still resolve as
+  the same provider, and `SafeToResume` must pass. A pane that is busy after the answer is
+  parked `menu answered; pane busy, resume suppressed` — never queued, never retried.
+
+  The load-bearing guard is `IsIdlePrompt`. A pane blocked on an ordinary interactive question
+  (a multi-select prompt, not the limit menu) is **not** a limit menu and is **not** idle, so it
+  is refused. That case is pinned by `TestMenuAnswerGoneInteractiveAskQuestionIsNotResumed`
+  against a fixture captured from a real pane, because a naive idle check would type into the
+  question instead of resuming.
+
+- **The pane content behind each action is captured.** Every resume-time decision writes the
+  content that justified it to a `captures/` directory beside the state file — the guarded
+  pre-answer read on the menu path, the `SafeToResume` read on the banner path. Files are 0600
+  in a 0700 directory, individually truncated at 256 KiB and evicted oldest-first past 4 MiB
+  total. Any capture failure is logged and ignored: a capture can never block, delay, or fail a
+  resume. This exists because the limit menu is redrawn in place and never enters scrollback, so
+  after 2026-08-06 the real menu text could not be recovered from any pane — the fixtures this
+  project still needs can only be taken at the instant the watcher acts.
+
+  **Note that these files contain verbatim terminal output**, including anything a session had
+  on screen. They carry the same protection as the state file, but if a pane displays a secret,
+  that secret is now also on disk until eviction. Delete the directory to opt out retroactively.
+
 These session-identity features remain opt-in and are not enabled by the shipped service
 examples. The YAML keys must use the exact nesting shown above; unknown keys are rejected.
 
