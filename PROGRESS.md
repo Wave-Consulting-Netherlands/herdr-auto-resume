@@ -744,6 +744,47 @@ and v0.2.0 release remain the orchestrator's commit-6 work.
     and BACKLOG 18's final gate (needs a real Claude limit menu on a real pane).
   - Coverage in production went from `panes=1` to seven panes; `admit_agent_events` enabled.
 
+- 2026-08-06, **the real limit fired — BACKLOG 18's live gate passed, and it exposed BACKLOG 21.
+  v0.8.0 released and deployed.**
+  - **The event.** Four real Claude panes hit `You've hit your session limit · resets 11:20am
+    (UTC)` at 06:44–06:47Z; all four detected via the session-file channel, scheduled high
+    confidence for 11:21Z. At the resume moment three showed the real limit menu (w1M ponytail,
+    w19 psft_instanceid, w1K dev) and one the bare banner (wA — this project's own session).
+  - **18 CLOSED on production evidence.** All three menu panes cleared every identity gate and
+    reached `answerLimitMenu`; Enter was sent; `menu answer outcome: menu gone` on all three.
+    The banner pane went `RESUMED` / `resume verified` — the watcher resumed the session that
+    builds it. v0.3.1 + v0.6.0 proven against the real event, not the harness.
+  - **21 found and CLOSED same day.** Answering the menu parked MANUAL_REQUIRED unconditionally
+    and never sent a continuation: w1M self-recovered only because it had an in-flight turn;
+    w19 and w1K sat idle with their work abandoned — the exact stall the tool exists to prevent.
+    2-of-4 on outcome, not 3-of-4 on mechanics. Fix: after `menu gone`, re-read the pane and
+    continue into the normal resume iff menu gone + provider still resolves + `SafeToResume`.
+    Busy pane → `menu answered; pane busy, resume suppressed`, never queued.
+  - **A fourth failure mode became a merge blocker.** Restarting w1K by hand surfaced an
+    interrupted AskUserQuestion multi-select — not a limit menu (`hasMenuLines` requires the
+    literal title), not idle. Probed against the real capture: `MenuVisible=false,
+    HasRateLimitMenu=false, IsIdlePrompt=false, IsClaudeCode=true`. `IsIdlePrompt` is the ONLY
+    predicate stopping the new resume path from typing into an arbitrary question — now pinned
+    by a committed fixture (`cc2026-08_ask-user-multiselect.txt`) and
+    `TestMenuAnswerGoneInteractiveAskQuestionIsNotResumed`.
+  - **22 CLOSED: capture what the watcher acted on.** The dismissed menu was unrecoverable —
+    redrawn in place, never enters scrollback, 2000-line reads of all three panes found
+    nothing. Every resume-time decision now writes its justifying content to `captures/` beside
+    the state file (0600/0700, 256 KiB/file, 4 MiB dir, oldest-first eviction, failures logged
+    and ignored — capture can never block a resume). Rare events become fixtures.
+  - **Review caught BACKLOG 19 reintroduced.** Codex's first capture.go called
+    `os.Chmod(dir, 0700)` — the exact overreach deleted from json_store.go the night before,
+    in a brand-new file. Removed with a comment naming the item. All three behaviour tests
+    verified to FAIL against c429616 before merge. 675 → 683 tests, `-race` green.
+  - **Tooling trap: `gh` `{owner}/{repo}` resolves to the `upstream` fork remote**
+    (henryaj/autoclaude), not origin — a CI query against it silently reads the wrong project.
+    Use the explicit `Wave-Consulting-Netherlands/herdr-auto-resume` path. (v0.7.0's CI claim
+    re-verified against the correct repo: holds.)
+  - v0.8.0 (e7e8cb2) released, checksum verified, deployed; doctor 5 PASS; coverage now
+    **11 panes**. The three stranded-pane parks acked with reasons. Remaining open: 6 and 16,
+    both waiting on real fixtures that `captures/` now harvests automatically; plus v0.8.0's
+    own live gate — the resume-after-menu path has not yet seen a real menu.
+
 ## Project status
 
 **All BRIEF.md phases 0–7 complete and released.** Remaining follow-ups live in
