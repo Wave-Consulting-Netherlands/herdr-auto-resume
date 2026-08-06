@@ -97,7 +97,18 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     RESET TIME (parsing stays), and none cover the session-file cases (limit with no pane,
     closed workspace), so the file channel remains the authority. Do this as a post-v0.3.0
     refactor with drills per replacement, not a rewrite.
-18. **FIXED in v0.3.1 (2026-08-05, commit b142329) — pending a live drill.** The limit-menu
+18. **CLOSED 2026-08-06 — live gate passed on a real production limit.** At 06:44–06:47Z four
+    real Claude panes hit a genuine session limit (`You've hit your session limit · resets
+    11:20am (UTC)`) and were scheduled with high confidence for 11:21Z. At the resume moment
+    three of them (w1M:p1, w19:p1, w1K:p1) were showing the real limit menu, and all three
+    cleared **every** identity gate and reached `answerLimitMenu`, which sent Enter and
+    confirmed `menu answer outcome: menu gone`. The fourth (wA:p1) took the banner path and
+    reached `RESUMED` / `resume verified`. This is exactly the case that parked
+    `"pane is not claude"` on 2026-08-04, so v0.3.1 + v0.6.0 (item 20) are now proven against
+    the real thing rather than a harness. The menu-only viewport fixture is still worth
+    capturing opportunistically; the behavioural gap this run exposed is item 21.
+    Original report below.
+    **FIXED in v0.3.1 (2026-08-05, commit b142329).** The limit-menu
     signature now satisfies the chrome check when `answer_limit_menu` is on and the provider
     already resolved to claude; a terminal-ID gate was added so a reused pane id still parks;
     every other gate is unchanged; resume-time parks now emit one diagnostic line. 553 tests
@@ -227,3 +238,35 @@ Ordered follow-ups with rationale. Not scheduled; pull into PLANS.md when picked
     clean-window 2s transients and poisoned 40s banners; poisoned sub-30s windows remain a
     documented improvement opportunity. Candidate fix: recycle immediately after each
     trigger-poll with identical-content damping of about five seconds.
+21. **Answering the menu clears the block but does not resume the work — found live
+    2026-08-06.** On the first real production menu event (item 18), all three menu panes were
+    answered successfully, then `validate.go:133` set `StateManualRequired` unconditionally and
+    returned. No continuation prompt is ever sent on the menu path. Observed outcome 90s later:
+    w1M:p1 resumed by itself (Claude had an in-flight turn, so dismissing the menu at/after the
+    reset let it retry), while **w19:p1 and w1K:p1 sat idle at an empty prompt with their work
+    abandoned** — the exact stall this tool exists to prevent. The banner path in the same run
+    (wA:p1) went to `RESUMED` correctly, so the gap is specific to the menu branch.
+    Fix direction: after `menu answer outcome: menu gone`, re-read the pane and, if it now
+    presents as a safe idle Claude prompt, fall through to the normal resume action
+    (`SafeToResume` + `beginResume`) instead of parking. Keep every existing guard: the menu
+    answer stays single-shot via `MenuAttempt`, the continuation is a separate decision made on
+    freshly-read content, and `menu still present` must continue to park. If the pane is already
+    busy (the w1M case) the resume must be suppressed, not queued — that means the idle check
+    is load-bearing, not cosmetic. Needs the menu-only fixture from item 18 plus a fixture of
+    the post-answer idle prompt, and a test that a busy post-answer pane is left alone.
+22. **Persist the pane content the watcher acted on — found 2026-08-06 while trying to build the
+    item-18 fixture.** After the first real menu event, the menu text could not be recovered
+    from any pane: Claude Code redraws the menu in place, so it never enters scrollback and a
+    `--source recent --lines 2000` read of all three panes found nothing. The one moment the
+    real menu provably existed in a buffer we controlled was inside `answerLimitMenu`, which
+    read it, matched it, acted on it, and discarded it. Consequence: the highest-value fixtures
+    this project needs (menu-only viewport, post-answer idle prompt, and the real transient text
+    item 16 is still guessing at) can only be captured at the instant of a rare live event, and
+    we currently capture none of them.
+    Fix: on any resume-time action, write the pane content that justified it to a capture
+    directory (`~/.local/state/herdr-auto-resume/captures/<job>-<utc>.txt`, 0600, alongside the
+    guarded read for the menu path and the `SafeToResume` read for the banner path). Bounded:
+    cap file size, cap directory size with oldest-first eviction, and treat any capture failure
+    as non-fatal — a capture must never be able to block or fail a resume. This is the cheapest
+    path to closing the remaining live gates, because it turns each rare real event into a
+    permanent regression fixture instead of a log line.
